@@ -7,6 +7,7 @@ use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use realfft::{RealFftPlanner, RealToComplex};
 use rustc_hash::FxHashMap;
 use rustfft::num_complex::Complex32;
+use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
 
@@ -22,7 +23,7 @@ pub struct SpectrogramConfig {
     pub fft_size: usize,
     /// Hop size between successive frames.
     pub hop_size: usize,
-    /// Optional Hann/Hamming/Blackman window selection.
+    /// Window selection controlling spectral leakage characteristics.
     pub window: WindowKind,
     /// Maximum retained history columns.
     pub history_length: usize,
@@ -34,19 +35,22 @@ impl Default for SpectrogramConfig {
             sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: 8192,
             hop_size: 1024,
-            window: WindowKind::Hann,
+            // I'm not sure what the "best" beta value is for spectral analysis.
+            // going for moderate sidelobe suppression without excessive main lobe widening.
+            window: WindowKind::Kaiser { beta: 4.0 },
             history_length: 240,
         }
     }
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy)]
 pub enum WindowKind {
     Rectangular,
     Hann,
     Hamming,
     Blackman,
+    Kaiser { beta: f32 },
 }
 
 impl WindowKind {
@@ -75,6 +79,39 @@ impl WindowKind {
                         a0 - a1 * phase.cos() + a2 * (2.0 * phase).cos()
                     })
                     .collect()
+            }
+            WindowKind::Kaiser { beta } => kaiser_coefficients(len, beta),
+        }
+    }
+}
+
+impl PartialEq for WindowKind {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (WindowKind::Rectangular, WindowKind::Rectangular)
+            | (WindowKind::Hann, WindowKind::Hann)
+            | (WindowKind::Hamming, WindowKind::Hamming)
+            | (WindowKind::Blackman, WindowKind::Blackman) => true,
+            (WindowKind::Kaiser { beta: a }, WindowKind::Kaiser { beta: b }) => {
+                canonical_f32_bits(*a) == canonical_f32_bits(*b)
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for WindowKind {}
+
+impl Hash for WindowKind {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            WindowKind::Rectangular => state.write_u8(0),
+            WindowKind::Hann => state.write_u8(1),
+            WindowKind::Hamming => state.write_u8(2),
+            WindowKind::Blackman => state.write_u8(3),
+            WindowKind::Kaiser { beta } => {
+                state.write_u8(4);
+                state.write_u32(canonical_f32_bits(*beta));
             }
         }
     }
@@ -114,6 +151,97 @@ impl WindowCache {
                 .entry(key)
                 .or_insert_with(|| Arc::from(kind.coefficients(len))),
         )
+    }
+}
+
+#[inline]
+fn canonical_f32_bits(value: f32) -> u32 {
+    if value == 0.0 {
+        0
+    } else if value.is_nan() {
+        f32::NAN.to_bits()
+    } else {
+        value.to_bits()
+    }
+}
+
+fn kaiser_coefficients(len: usize, beta: f32) -> Vec<f32> {
+    if len == 0 {
+        return Vec::new();
+    }
+    if len == 1 {
+        return vec![1.0];
+    }
+
+    let beta = if beta.is_finite() { beta.max(0.0) } else { 0.0 };
+
+    let denom = modified_bessel_i0(beta as f64);
+    let span = (len.saturating_sub(1)) as f32;
+    (0..len)
+        .map(|n| {
+            let ratio = if span > 0.0 {
+                (2.0 * n as f32) / span - 1.0
+            } else {
+                0.0
+            };
+            let inside = (1.0 - ratio * ratio).max(0.0).sqrt() as f64;
+            let numer = modified_bessel_i0((beta as f64) * inside);
+            (numer / denom) as f32
+        })
+        .collect()
+}
+
+fn modified_bessel_i0(x: f64) -> f64 {
+    // Approximation based on the public-domain Cephes library. See
+    // https://www.dsprelated.com/freebooks/sasp/Kaiser_Window.html
+    // for background on its use in the Kaiser window definition.
+    let ax = x.abs();
+    if ax < 3.75 {
+        let y = (x / 3.75).powi(2);
+        1.0 + y
+            * (3.515_622_9
+                + y * (3.089_942_4
+                    + y * (1.206_749_2
+                        + y * (0.265_973_2
+                            + y * (0.036_076_8 + y * (0.004_581_3 + y * 0.000_324_11))))))
+    } else {
+        let y = 3.75 / ax;
+        let poly = 0.398_942_28
+            + y * (0.013_285_92
+                + y * (0.002_253_19
+                    + y * (-0.001_575_65
+                        + y * (0.009_162_81
+                            + y * (-0.020_577_06
+                                + y * (0.026_355_37 + y * (-0.016_476_33 + y * 0.003_923_77)))))));
+        poly * ax.exp() / ax.sqrt()
+    }
+}
+
+/// Estimate the Kaiser beta parameter for a target stop-band attenuation in dB.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn kaiser_beta_from_attenuation_db(atten_db: f32) -> f32 {
+    if atten_db <= 21.0 {
+        0.0
+    } else if atten_db <= 50.0 {
+        let term = atten_db - 21.0;
+        0.5842 * term.powf(0.4) + 0.07886 * term
+    } else {
+        0.1102 * (atten_db - 8.7)
+    }
+}
+
+/// Approximate minimum window length that satisfies attenuation and transition width specs.
+#[cfg_attr(not(test), allow(dead_code))]
+pub fn kaiser_length_estimate(atten_db: f32, transition_width: f32) -> usize {
+    if transition_width <= 0.0 || !transition_width.is_finite() {
+        return 1;
+    }
+    let atten = atten_db.max(0.0);
+    let n = ((atten - 8.0) / (2.285 * transition_width) + 1.0).ceil();
+    if !n.is_finite() || n <= 1.0 {
+        1
+    } else {
+        n as usize
     }
 }
 
@@ -781,5 +909,49 @@ mod tests {
         let block = make_block(samples, 1, config.sample_rate);
         let _ = processor.process_block(&block);
         assert!(processor.history.len() <= config.history_length);
+    }
+
+    #[test]
+    fn kaiser_coefficients_reduces_to_rectangular_when_beta_zero() {
+        let coeffs = kaiser_coefficients(8, 0.0);
+        assert_eq!(coeffs.len(), 8);
+        for value in coeffs {
+            assert!((value - 1.0).abs() < f32::EPSILON);
+        }
+    }
+
+    #[test]
+    fn kaiser_coefficients_are_even_symmetric() {
+        let coeffs = kaiser_coefficients(17, 6.5);
+        assert_eq!(coeffs.len(), 17);
+        for i in 0..coeffs.len() {
+            let j = coeffs.len() - 1 - i;
+            assert!((coeffs[i] - coeffs[j]).abs() < 1.0e-6);
+        }
+        assert!(coeffs[0] < coeffs[coeffs.len() / 2]);
+    }
+
+    #[test]
+    fn modified_bessel_matches_reference_values() {
+        assert!((modified_bessel_i0(0.0) - 1.0).abs() < 1.0e-12);
+        let expected = 27.239_871_823_604;
+        let actual = modified_bessel_i0(5.0);
+        assert!((actual - expected).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn kaiser_beta_design_matches_reference_points() {
+        let beta_40 = kaiser_beta_from_attenuation_db(40.0);
+        assert!((beta_40 - 3.395_321_5).abs() < 1.0e-5);
+        let beta_60 = kaiser_beta_from_attenuation_db(60.0);
+        assert!((beta_60 - 5.653_26).abs() < 1.0e-5);
+    }
+
+    #[test]
+    fn kaiser_length_estimate_handles_transition_width() {
+        let length = kaiser_length_estimate(60.0, 0.1 * std::f32::consts::PI);
+        assert!(length > 1);
+        let minimum = kaiser_length_estimate(30.0, 0.0);
+        assert_eq!(minimum, 1);
     }
 }
