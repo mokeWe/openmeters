@@ -376,11 +376,7 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LufsMeter<'a> {
             Length::Fixed(self.height)
         };
 
-        let fallback_height = if self.fill_height {
-            self.height
-        } else {
-            self.height
-        };
+        let fallback_height = self.height;
 
         let size = limits.resolve(
             Length::Fixed(width),

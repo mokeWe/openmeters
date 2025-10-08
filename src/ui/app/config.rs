@@ -147,18 +147,22 @@ impl ConfigPage {
                         .padding(12)
                         .width(Length::FillPortion(1))
                         .style(move |_theme, status| {
-                            let mut style = iced::widget::button::Style::default();
-                            style.background = Some(iced::Background::Color(if entry.enabled {
+                            let base_background = if entry.enabled {
                                 theme::surface_color()
                             } else {
                                 theme::elevated_color()
-                            }));
-                            style.text_color = if entry.enabled {
+                            };
+                            let text_color = if entry.enabled {
                                 theme::text_color()
                             } else {
                                 theme::text_secondary()
                             };
-                            style.border = theme::sharp_border();
+                            let mut style = iced::widget::button::Style {
+                                background: Some(iced::Background::Color(base_background)),
+                                text_color,
+                                border: theme::sharp_border(),
+                                ..Default::default()
+                            };
 
                             match status {
                                 iced::widget::button::Status::Hovered => {
@@ -217,10 +221,12 @@ impl ConfigPage {
         .padding(8)
         .width(Length::Fill)
         .style(|_theme, status| {
-            let mut style = iced::widget::button::Style::default();
-            style.background = Some(iced::Background::Color(theme::surface_color()));
-            style.text_color = theme::text_color();
-            style.border = theme::sharp_border();
+            let mut style = iced::widget::button::Style {
+                background: Some(iced::Background::Color(theme::surface_color())),
+                text_color: theme::text_color(),
+                border: theme::sharp_border(),
+                ..Default::default()
+            };
 
             match status {
                 iced::widget::button::Status::Hovered => {
@@ -296,18 +302,22 @@ impl ConfigPage {
                     .padding(12)
                     .width(Length::FillPortion(1))
                     .style(move |_theme, status| {
-                        let mut style = iced::widget::button::Style::default();
-                        style.background = Some(iced::Background::Color(if enabled {
+                        let base_background = if enabled {
                             theme::surface_color()
                         } else {
                             theme::elevated_color()
-                        }));
-                        style.text_color = if enabled {
+                        };
+                        let text_color = if enabled {
                             theme::text_color()
                         } else {
                             theme::text_secondary()
                         };
-                        style.border = theme::sharp_border();
+                        let mut style = iced::widget::button::Style {
+                            background: Some(iced::Background::Color(base_background)),
+                            text_color,
+                            border: theme::sharp_border(),
+                            ..Default::default()
+                        };
 
                         match status {
                             iced::widget::button::Status::Hovered => {

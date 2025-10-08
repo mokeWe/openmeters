@@ -74,6 +74,7 @@ where
             .operate(tree, layout, renderer, operation);
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn on_event(
         &mut self,
         tree: &mut Tree,
@@ -94,6 +95,7 @@ where
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn draw(
         &self,
         tree: &Tree,

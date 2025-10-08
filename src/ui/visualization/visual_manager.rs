@@ -160,7 +160,7 @@ pub struct VisualSlotSnapshot {
 pub enum VisualContent {
     LufsMeter { state: LufsMeterState },
     Oscilloscope { state: OscilloscopeState },
-    Spectrogram { state: SpectrogramState },
+    Spectrogram { state: Box<SpectrogramState> },
     Placeholder { message: Cow<'static, str> },
 }
 
@@ -211,8 +211,8 @@ enum VisualRuntime {
         state: OscilloscopeState,
     },
     Spectrogram {
-        processor: SpectrogramProcessor,
-        state: SpectrogramState,
+        processor: Box<SpectrogramProcessor>,
+        state: Box<SpectrogramState>,
     },
     Placeholder,
 }
@@ -231,8 +231,8 @@ impl VisualRuntime {
                 state: OscilloscopeState::new(),
             },
             VisualKind::Spectrogram => VisualRuntime::Spectrogram {
-                processor: SpectrogramProcessor::new(DEFAULT_SAMPLE_RATE),
-                state: SpectrogramState::new(),
+                processor: Box::new(SpectrogramProcessor::new(DEFAULT_SAMPLE_RATE)),
+                state: Box::new(SpectrogramState::new()),
             },
             _ => VisualRuntime::Placeholder,
         }

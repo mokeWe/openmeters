@@ -269,14 +269,17 @@ fn tab_button_style(
     active: bool,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
-    let mut style = iced::widget::button::Style::default();
-    style.background = Some(iced::Background::Color(if active {
+    let base_background = if active {
         theme::elevated_color()
     } else {
         theme::surface_color()
-    }));
-    style.text_color = theme::text_color();
-    style.border = theme::sharp_border();
+    };
+    let mut style = iced::widget::button::Style {
+        background: Some(iced::Background::Color(base_background)),
+        text_color: theme::text_color(),
+        border: theme::sharp_border(),
+        ..Default::default()
+    };
 
     match status {
         iced::widget::button::Status::Hovered => {

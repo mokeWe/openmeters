@@ -358,10 +358,10 @@ impl RegistryState {
 
     /// Insert or update a node, returning whether the state changed.
     fn upsert_node(&mut self, info: NodeInfo) -> bool {
-        let needs_update = match self.nodes.get(&info.id) {
-            Some(existing) if existing == &info => false,
-            _ => true,
-        };
+        let needs_update = !matches!(
+            self.nodes.get(&info.id),
+            Some(existing) if existing == &info
+        );
 
         if needs_update {
             self.nodes.insert(info.id, info);
@@ -389,10 +389,10 @@ impl RegistryState {
 
     /// Insert or update a device description.
     fn upsert_device(&mut self, info: DeviceInfo) -> bool {
-        let needs_update = match self.devices.get(&info.id) {
-            Some(existing) if existing == &info => false,
-            _ => true,
-        };
+        let needs_update = !matches!(
+            self.devices.get(&info.id),
+            Some(existing) if existing == &info
+        );
 
         if needs_update {
             self.devices.insert(info.id, info);

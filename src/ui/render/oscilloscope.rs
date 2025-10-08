@@ -232,7 +232,7 @@ impl ClipTransform {
     }
 
     #[inline]
-    fn to_clip(&self, x: f32, y: f32) -> [f32; 2] {
+    fn to_clip(self, x: f32, y: f32) -> [f32; 2] {
         [x * self.scale_x - 1.0, 1.0 - y * self.scale_y]
     }
 }

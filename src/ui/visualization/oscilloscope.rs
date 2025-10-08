@@ -30,8 +30,10 @@ pub struct OscilloscopeProcessor {
 
 impl OscilloscopeProcessor {
     pub fn new(sample_rate: f32) -> Self {
-        let mut config = OscilloscopeConfig::default();
-        config.sample_rate = sample_rate;
+        let config = OscilloscopeConfig {
+            sample_rate,
+            ..Default::default()
+        };
         Self {
             inner: CoreOscilloscopeProcessor::new(config),
             channels: DEFAULT_CHANNELS,

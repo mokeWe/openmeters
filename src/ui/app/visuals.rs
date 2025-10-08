@@ -56,7 +56,7 @@ impl VisualPane {
                 )
             }
             VisualContent::Spectrogram { state } => {
-                let spec = spectrogram::widget(state);
+                let spec = spectrogram::widget(state.as_ref());
                 Element::from(
                     container(spec)
                         .width(Length::Fill)
@@ -208,9 +208,7 @@ impl VisualsPage {
 
     fn build_panes(slots: &[&VisualSlotSnapshot]) -> Option<pane_grid::State<VisualPane>> {
         let mut iter = slots.iter();
-        let Some(first) = iter.next() else {
-            return None;
-        };
+        let first = *iter.next()?;
 
         let (mut state, mut last_pane) = pane_grid::State::new(VisualPane::from_snapshot(first));
 
