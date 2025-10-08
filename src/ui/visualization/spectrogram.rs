@@ -10,6 +10,7 @@ use crate::ui::render::spectrogram::{
     SpectrogramParams, SpectrogramPrimitive,
 };
 use crate::ui::theme;
+use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, tree};
@@ -367,7 +368,7 @@ impl SpectrogramBuffer {
             last_timestamp: None,
             pending_base: None,
             pending_updates: Vec::new(),
-            sample_rate: 48_000.0,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: 0,
             row_bin_positions: Vec::new(),
             row_lower_bins: Vec::new(),
@@ -464,7 +465,7 @@ impl SpectrogramBuffer {
 
         self.capacity = history_length as u32;
         self.sample_rate = if sample_rate <= 0.0 {
-            48_000.0
+            DEFAULT_SAMPLE_RATE
         } else {
             sample_rate
         };
@@ -700,7 +701,7 @@ mod tests {
     fn row_positions_follow_log_profile() {
         let mut buffer = SpectrogramBuffer::new();
         buffer.height = 8;
-        buffer.sample_rate = 48_000.0;
+        buffer.sample_rate = DEFAULT_SAMPLE_RATE;
         buffer.fft_size = 2048;
         buffer.rebuild_row_positions();
 

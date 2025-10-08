@@ -1,6 +1,7 @@
 //! PipeWire virtual sink integration for OpenMeters.
 
 use super::ring_buffer::RingBuffer;
+use crate::util::audio::DEFAULT_SAMPLE_RATE_HZ;
 use crate::util::{bytes_per_sample, convert_samples_to_f32};
 use pipewire as pw;
 use pw::{properties::properties, spa};
@@ -12,7 +13,7 @@ use std::thread;
 use std::time::Duration;
 
 /// Default sample rate advertised to PipeWire peers.
-const VIRTUAL_SINK_SAMPLE_RATE: u32 = 48_000;
+const VIRTUAL_SINK_SAMPLE_RATE: u32 = DEFAULT_SAMPLE_RATE_HZ;
 /// Default channel count advertised to PipeWire peers.
 const VIRTUAL_SINK_CHANNELS: u32 = 2;
 /// Number of audio frames we keep in memory for downstream consumers.
@@ -317,9 +318,9 @@ mod tests {
 
     #[test]
     fn virtual_sink_state_defaults_match_requested_configuration() {
-        let state = VirtualSinkState::new(2, 48_000);
+        let state = VirtualSinkState::new(2, DEFAULT_SAMPLE_RATE_HZ);
         assert_eq!(state.channels, 2);
-        assert_eq!(state.sample_rate, 48_000);
+        assert_eq!(state.sample_rate, DEFAULT_SAMPLE_RATE_HZ);
         assert_eq!(state.format, spa::param::audio::AudioFormat::F32LE);
         assert_eq!(
             state.frame_bytes,

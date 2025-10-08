@@ -2,6 +2,7 @@
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::dsp::spectrogram::{SpectrogramConfig, WindowKind};
+use crate::util::audio::DEFAULT_SAMPLE_RATE;
 
 /// Output magnitude spectrum.
 #[derive(Debug, Clone)]
@@ -33,7 +34,7 @@ pub struct SpectrumConfig {
 impl Default for SpectrumConfig {
     fn default() -> Self {
         Self {
-            sample_rate: 48_000.0,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: 2048,
             window: WindowKind::Hann,
             averaging: AveragingMode::Exponential { factor: 0.5 },

@@ -1,6 +1,7 @@
 //! Oscilloscope/triggered waveform DSP scaffolding.
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use crate::util::audio::DEFAULT_SAMPLE_RATE;
 
 /// Options controlling oscilloscope behaviour.
 #[derive(Debug, Clone, Copy)]
@@ -21,7 +22,7 @@ pub struct OscilloscopeConfig {
 impl Default for OscilloscopeConfig {
     fn default() -> Self {
         Self {
-            sample_rate: 48_000.0,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             segment_duration: 0.02,
             trigger_level: 0.05,
             trigger_rising: true,
@@ -246,7 +247,7 @@ mod tests {
             samples.push(-sample);
         }
 
-        match processor.process_block(&make_block(&samples, 2, 48_000.0)) {
+        match processor.process_block(&make_block(&samples, 2, DEFAULT_SAMPLE_RATE)) {
             ProcessorUpdate::Snapshot(snapshot) => {
                 assert_eq!(snapshot.channels, 2);
                 assert_eq!(snapshot.samples_per_channel, 64);
@@ -273,7 +274,8 @@ mod tests {
             samples.push(value);
         }
 
-        let snapshot = match processor.process_block(&make_block(&samples, 2, 48_000.0)) {
+        let snapshot = match processor.process_block(&make_block(&samples, 2, DEFAULT_SAMPLE_RATE))
+        {
             ProcessorUpdate::Snapshot(snapshot) => snapshot,
             ProcessorUpdate::None => panic!("expected snapshot"),
         };

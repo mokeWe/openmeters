@@ -1,6 +1,7 @@
 //! Real-time waveform DSP scaffolding.
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use crate::util::audio::DEFAULT_SAMPLE_RATE;
 
 /// Strategy used to downsample the waveform when pixel budget is limited.
 #[derive(Debug, Clone, Copy)]
@@ -25,7 +26,7 @@ pub struct WaveformConfig {
 impl Default for WaveformConfig {
     fn default() -> Self {
         Self {
-            sample_rate: 48_000.0,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             history_window: 0.5,
             target_sample_count: 1_024,
             downsample: DownsampleStrategy::MinMax,

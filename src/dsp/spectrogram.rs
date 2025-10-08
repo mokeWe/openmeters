@@ -1,6 +1,7 @@
 //! Spectrogram DSP implementation built on a short-time Fourier transform.
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use realfft::{RealFftPlanner, RealToComplex};
 use rustc_hash::FxHashMap;
 use rustfft::num_complex::Complex32;
@@ -28,7 +29,7 @@ pub struct SpectrogramConfig {
 impl Default for SpectrogramConfig {
     fn default() -> Self {
         Self {
-            sample_rate: 48_000.0,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: 8192,
             hop_size: 1024,
             window: WindowKind::Hann,
@@ -721,7 +722,7 @@ mod tests {
             fft_size: 1024,
             hop_size: 512,
             history_length: 8,
-            sample_rate: 48_000.0,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             window: WindowKind::Hann,
         };
         let mut processor = SpectrogramProcessor::new(config);

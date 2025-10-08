@@ -191,71 +191,12 @@ fn update(app: &mut UiApp, message: Message) -> Task<Message> {
 
 fn view(app: &UiApp) -> Element<'_, Message> {
     let content: Element<'_, Message> = if app.ui_visible {
-        let config_button = {
-            let mut btn = button(text("config")).style(move |_theme, status| {
-                let mut style = iced::widget::button::Style::default();
-                style.background = Some(iced::Background::Color(
-                    if app.current_page == Page::Config {
-                        theme::elevated_color()
-                    } else {
-                        theme::surface_color()
-                    },
-                ));
-                style.text_color = theme::text_color();
-                style.border = theme::sharp_border();
-
-                match status {
-                    iced::widget::button::Status::Hovered => {
-                        style.background = Some(iced::Background::Color(theme::hover_color()));
-                    }
-                    iced::widget::button::Status::Pressed => {
-                        style.border = theme::focus_border();
-                    }
-                    _ => {}
-                }
-
-                style
-            });
-            if app.current_page != Page::Config {
-                btn = btn.on_press(Message::PageSelected(Page::Config));
-            }
-            btn.width(Length::Fill).padding(8)
-        };
-
-        let visuals_button = {
-            let mut btn = button(text("visuals")).style(move |_theme, status| {
-                let mut style = iced::widget::button::Style::default();
-                style.background = Some(iced::Background::Color(
-                    if app.current_page == Page::Visuals {
-                        theme::elevated_color()
-                    } else {
-                        theme::surface_color()
-                    },
-                ));
-                style.text_color = theme::text_color();
-                style.border = theme::sharp_border();
-
-                match status {
-                    iced::widget::button::Status::Hovered => {
-                        style.background = Some(iced::Background::Color(theme::hover_color()));
-                    }
-                    iced::widget::button::Status::Pressed => {
-                        style.border = theme::focus_border();
-                    }
-                    _ => {}
-                }
-
-                style
-            });
-            if app.current_page != Page::Visuals {
-                btn = btn.on_press(Message::PageSelected(Page::Visuals));
-            }
-            btn.width(Length::Fill).padding(8)
-        };
-
-        let tabs = row![config_button, visuals_button]
-            .spacing(8)
-            .width(Length::Fill);
+        let tabs = row![
+            tab_button("config", Page::Config, app.current_page),
+            tab_button("visuals", Page::Visuals, app.current_page)
+        ]
+        .spacing(8)
+        .width(Length::Fill);
 
         let page_content = match app.current_page {
             Page::Config => app.config_page.view().map(Message::Config),
@@ -306,4 +247,45 @@ fn view(app: &UiApp) -> Element<'_, Message> {
     };
 
     content
+}
+
+fn tab_button(
+    label: &'static str,
+    target: Page,
+    current: Page,
+) -> iced::widget::Button<'static, Message> {
+    let active = current == target;
+    let mut btn = button(text(label)).style(move |_theme, status| tab_button_style(active, status));
+
+    if !active {
+        btn = btn.on_press(Message::PageSelected(target));
+    }
+
+    btn.width(Length::Fill).padding(8)
+}
+
+fn tab_button_style(
+    active: bool,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let mut style = iced::widget::button::Style::default();
+    style.background = Some(iced::Background::Color(if active {
+        theme::elevated_color()
+    } else {
+        theme::surface_color()
+    }));
+    style.text_color = theme::text_color();
+    style.border = theme::sharp_border();
+
+    match status {
+        iced::widget::button::Status::Hovered => {
+            style.background = Some(iced::Background::Color(theme::hover_color()));
+        }
+        iced::widget::button::Status::Pressed => {
+            style.border = theme::focus_border();
+        }
+        _ => {}
+    }
+
+    style
 }

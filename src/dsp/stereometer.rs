@@ -1,6 +1,7 @@
 //! Stereometer (vector scope & correlation meter) DSP scaffolding.
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use crate::util::audio::DEFAULT_SAMPLE_RATE;
 
 /// Correlation range bounded between -1.0 and 1.0.
 pub type Correlation = f32;
@@ -18,7 +19,7 @@ pub struct StereometerConfig {
 impl Default for StereometerConfig {
     fn default() -> Self {
         Self {
-            sample_rate: 48_000.0,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             correlation_window: 0.1,
             persistence: 0.8,
         }

@@ -1,0 +1,84 @@
+use std::mem;
+
+/// Batches small PCM chunks into larger buffers to reduce channel overhead
+/// while reusing allocated memory.
+#[derive(Default)]
+pub struct SampleBatcher {
+    target_samples: usize,
+    total_samples: usize,
+    chunks: Vec<Vec<f32>>,
+    recycle: Vec<Vec<f32>>,
+}
+
+impl SampleBatcher {
+    pub fn new(target_samples: usize) -> Self {
+        Self {
+            target_samples,
+            ..Self::default()
+        }
+    }
+
+    pub fn push(&mut self, chunk: Vec<f32>) {
+        self.total_samples = self.total_samples.saturating_add(chunk.len());
+        self.chunks.push(chunk);
+    }
+
+    pub fn should_flush(&self) -> bool {
+        self.total_samples >= self.target_samples
+    }
+
+    pub fn take(&mut self) -> Option<Vec<f32>> {
+        if self.total_samples == 0 {
+            return None;
+        }
+
+        if self.chunks.len() == 1 {
+            self.total_samples = 0;
+            return self.chunks.pop();
+        }
+
+        let total_samples = mem::take(&mut self.total_samples);
+        let mut batch = self.reuse_buffer(total_samples);
+
+        for mut chunk in self.chunks.drain(..) {
+            batch.append(&mut chunk);
+            self.recycle.push(chunk);
+        }
+
+        Some(batch)
+    }
+
+    fn reuse_buffer(&mut self, needed: usize) -> Vec<f32> {
+        if let Some(mut recycled) = self.recycle.pop() {
+            if recycled.capacity() < needed {
+                recycled.reserve(needed - recycled.capacity());
+            }
+            recycled
+        } else {
+            Vec::with_capacity(needed)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SampleBatcher;
+
+    #[test]
+    fn batches_and_reuses_buffers() {
+        let mut batcher = SampleBatcher::new(4);
+        batcher.push(vec![0.0, 1.0]);
+        assert!(!batcher.should_flush());
+        batcher.push(vec![2.0, 3.0]);
+        assert!(batcher.should_flush());
+
+        let batch = batcher.take().expect("batch should be available");
+        assert_eq!(batch, vec![0.0, 1.0, 2.0, 3.0]);
+        assert!(batcher.take().is_none());
+
+        batcher.push(vec![4.0, 5.0]);
+        batcher.push(vec![6.0, 7.0]);
+        let second = batcher.take().expect("second batch available");
+        assert_eq!(second, vec![4.0, 5.0, 6.0, 7.0]);
+    }
+}

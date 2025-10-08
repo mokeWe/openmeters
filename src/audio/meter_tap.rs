@@ -1,4 +1,5 @@
 use super::pw_virtual_sink::{self, CaptureBuffer};
+use crate::util::audio::SampleBatcher;
 use async_channel::{Receiver as AsyncReceiver, Sender as AsyncSender};
 use std::sync::{Arc, OnceLock};
 use std::thread;
@@ -51,10 +52,8 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
                 batcher.push(samples);
                 let flush_due = batcher.should_flush() || last_flush.elapsed() >= MAX_BATCH_LATENCY;
                 if flush_due {
-                    if let Some(batch) = batcher.take() {
-                        if sender.send_blocking(batch).is_err() {
-                            break;
-                        }
+                    if flush_batch(&sender, &mut batcher) {
+                        break;
                     }
                     last_flush = Instant::now();
                 }
@@ -65,10 +64,8 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
                 }
 
                 if last_flush.elapsed() >= MAX_BATCH_LATENCY {
-                    if let Some(batch) = batcher.take() {
-                        if sender.send_blocking(batch).is_err() {
-                            break;
-                        }
+                    if flush_batch(&sender, &mut batcher) {
+                        break;
                     }
                     last_flush = Instant::now();
                 }
@@ -80,69 +77,14 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
         }
     }
 
-    if let Some(batch) = batcher.take() {
-        let _ = sender.send_blocking(batch);
-    }
+    let _ = flush_batch(&sender, &mut batcher);
 
     println!("[meter-tap] audio channel closed; ending tap thread");
 }
 
-#[derive(Default)]
-struct SampleBatcher {
-    target_samples: usize,
-    total_samples: usize,
-    chunks: Vec<Vec<f32>>,
-    recycle: Vec<Vec<f32>>,
-}
-
-/// batches incoming audio chunks into larger buffers to reduce channel overhead and
-/// CPU usage.
-impl SampleBatcher {
-    fn new(target_samples: usize) -> Self {
-        Self {
-            target_samples,
-            ..Self::default()
-        }
-    }
-
-    fn push(&mut self, chunk: Vec<f32>) {
-        self.total_samples = self.total_samples.saturating_add(chunk.len());
-        self.chunks.push(chunk);
-    }
-
-    fn should_flush(&self) -> bool {
-        self.total_samples >= self.target_samples
-    }
-
-    fn take(&mut self) -> Option<Vec<f32>> {
-        if self.total_samples == 0 {
-            return None;
-        }
-
-        let mut batch = if self.chunks.len() == 1 {
-            self.total_samples = 0;
-            return self.chunks.pop();
-        } else {
-            self.reuse_buffer(self.total_samples)
-        };
-
-        for mut chunk in self.chunks.drain(..) {
-            batch.append(&mut chunk);
-            self.recycle.push(chunk);
-        }
-
-        self.total_samples = 0;
-        Some(batch)
-    }
-
-    fn reuse_buffer(&mut self, needed: usize) -> Vec<f32> {
-        if let Some(mut recycled) = self.recycle.pop() {
-            if recycled.capacity() < needed {
-                recycled.reserve(needed - recycled.capacity());
-            }
-            recycled
-        } else {
-            Vec::with_capacity(needed)
-        }
+fn flush_batch(sender: &AsyncSender<Vec<f32>>, batcher: &mut SampleBatcher) -> bool {
+    match batcher.take() {
+        Some(batch) => sender.send_blocking(batch).is_err(),
+        None => false,
     }
 }

@@ -2,6 +2,7 @@ use crate::dsp::ProcessorUpdate;
 use crate::ui::visualization::lufs_meter::{LufsMeterState, LufsProcessor};
 use crate::ui::visualization::oscilloscope::{OscilloscopeProcessor, OscilloscopeState};
 use crate::ui::visualization::spectrogram::{SpectrogramProcessor, SpectrogramState};
+use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use std::borrow::Cow;
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
@@ -222,15 +223,15 @@ impl VisualRuntime {
     fn new(kind: VisualKind) -> Self {
         match kind {
             VisualKind::LufsMeter => VisualRuntime::LufsMeter {
-                processor: LufsProcessor::new(48_000.0),
+                processor: LufsProcessor::new(DEFAULT_SAMPLE_RATE),
                 state: LufsMeterState::new(),
             },
             VisualKind::Oscilloscope => VisualRuntime::Oscilloscope {
-                processor: OscilloscopeProcessor::new(48_000.0),
+                processor: OscilloscopeProcessor::new(DEFAULT_SAMPLE_RATE),
                 state: OscilloscopeState::new(),
             },
             VisualKind::Spectrogram => VisualRuntime::Spectrogram {
-                processor: SpectrogramProcessor::new(48_000.0),
+                processor: SpectrogramProcessor::new(DEFAULT_SAMPLE_RATE),
                 state: SpectrogramState::new(),
             },
             _ => VisualRuntime::Placeholder,

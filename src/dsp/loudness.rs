@@ -1,13 +1,14 @@
 //! Loudness-related DSP utilities for combined LUFS, RMS, and peak metering.
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
+use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use std::collections::VecDeque;
 
 const MIN_MEAN_SQUARE: f64 = 1e-12;
 const LOG10_FACTOR: f64 = 10.0;
 const DB_FACTOR: f32 = 20.0;
 const LUFS_OFFSET: f64 = -0.691;
-const NOMINAL_SAMPLE_RATE: f32 = 48_000.0;
+const NOMINAL_SAMPLE_RATE: f32 = DEFAULT_SAMPLE_RATE;
 const SAMPLE_RATE_TOLERANCE: f32 = 0.1;
 
 // https://www.itu.int/dms_pubrec/itu-r/rec/bs/R-REC-BS.1770-5-202311-I!!PDF-E.pdf
@@ -130,7 +131,7 @@ pub struct LoudnessConfig {
 impl Default for LoudnessConfig {
     fn default() -> Self {
         Self {
-            sample_rate: 48_000.0,
+            sample_rate: DEFAULT_SAMPLE_RATE,
             short_term_window: 3.0,
             rms_fast_window: 0.3,
             floor_lufs: -60.0,
@@ -412,7 +413,7 @@ mod tests {
     #[test]
     fn processor_estimates_short_term_and_rms() {
         fn measure(amp: f32) -> (Vec<f32>, Vec<f32>) {
-            let sample_rate = 48_000.0;
+            let sample_rate = DEFAULT_SAMPLE_RATE;
             let duration_secs = 3.0;
             let frames = (sample_rate * duration_secs) as usize;
             let freq = 1_000.0;
@@ -451,7 +452,7 @@ mod tests {
         let mut processor = LoudnessProcessor::new(LoudnessConfig::default());
         let mut samples = vec![0.0; 1024 * 2];
         samples[0] = 0.9;
-        let block = AudioBlock::new(&samples, 2, 48_000.0, Instant::now());
+        let block = AudioBlock::new(&samples, 2, DEFAULT_SAMPLE_RATE, Instant::now());
         let snapshot = match processor.process_block(&block) {
             ProcessorUpdate::Snapshot(snapshot) => snapshot,
             ProcessorUpdate::None => panic!("expected snapshot"),
@@ -471,7 +472,7 @@ mod tests {
                 .collect()
         }
 
-        let sample_rate = 48_000.0;
+        let sample_rate = DEFAULT_SAMPLE_RATE;
         let duration_secs = 3.0;
         let freq = 1_000.0;
         let amplitude = 0.5;
@@ -514,7 +515,7 @@ mod tests {
 
     #[test]
     fn processor_matches_ebur128_short_term_within_0_01_db() {
-        let sample_rate = 48_000.0;
+        let sample_rate = DEFAULT_SAMPLE_RATE;
         let duration_secs = 4.0;
         let freq = 1_000.0;
         let amplitude = 0.5;
