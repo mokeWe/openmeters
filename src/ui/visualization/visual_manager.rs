@@ -336,10 +336,9 @@ impl VisualManager {
             .entries
             .iter_mut()
             .find(|entry| entry.slot.kind == kind)
+            && entry.slot.enabled != enabled
         {
-            if entry.slot.enabled != enabled {
-                entry.slot.enabled = enabled;
-            }
+            entry.slot.enabled = enabled;
         }
     }
 

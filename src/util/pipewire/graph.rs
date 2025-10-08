@@ -3,6 +3,7 @@ use pipewire as pw;
 use pw::registry::GlobalObject;
 use pw::spa::utils::dict::DictRef;
 use std::collections::{HashMap, VecDeque};
+use tracing::warn;
 
 /// Descriptor for a PipeWire node present in the graph.
 #[derive(Clone, Debug)]
@@ -96,7 +97,7 @@ impl GraphPort {
         let port_id = match port_id_str.and_then(|value| value.parse::<u32>().ok()) {
             Some(id) => id,
             None => {
-                eprintln!(
+                warn!(
                     "[loopback] skipping port global {}: missing or invalid port.id (props keys: {:?})",
                     global.id,
                     props.keys().collect::<Vec<_>>()
@@ -112,7 +113,7 @@ impl GraphPort {
         let node_id = match node_id_str.and_then(|value| value.parse::<u32>().ok()) {
             Some(id) => id,
             None => {
-                eprintln!(
+                warn!(
                     "[loopback] skipping port global {}: missing or invalid node.id (props keys: {:?})",
                     global.id,
                     props.keys().collect::<Vec<_>>()
@@ -195,23 +196,22 @@ pub fn pair_ports_by_channel(
     for source in sources {
         let mut candidate = None;
 
-        if let Some(channel) = source.channel_key() {
-            if let Some(queue) = targets_by_channel.get_mut(&normalize_channel_name(channel)) {
-                candidate = queue.pop_front();
-            }
+        if let Some(channel) = source.channel_key()
+            && let Some(queue) = targets_by_channel.get_mut(&normalize_channel_name(channel))
+        {
+            candidate = queue.pop_front();
         }
 
         if candidate.is_none() {
             candidate = fallback_targets.pop_front();
         }
 
-        if candidate.is_none() {
-            if let Some(queue) = targets_by_channel
+        if candidate.is_none()
+            && let Some(queue) = targets_by_channel
                 .values_mut()
                 .find(|queue| !queue.is_empty())
-            {
-                candidate = queue.pop_front();
-            }
+        {
+            candidate = queue.pop_front();
         }
 
         if let Some(target) = candidate {

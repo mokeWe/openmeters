@@ -11,6 +11,7 @@ use std::io::Cursor;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
+use tracing::{error, info, warn};
 
 /// Default sample rate advertised to PipeWire peers.
 const VIRTUAL_SINK_SAMPLE_RATE: u32 = DEFAULT_SAMPLE_RATE_HZ;
@@ -63,7 +64,7 @@ impl CaptureBuffer {
         let mut guard = match self.inner.lock() {
             Ok(guard) => guard,
             Err(err) => {
-                eprintln!("[virtual-sink] capture buffer lock poisoned: {err}");
+                error!("[virtual-sink] capture buffer lock poisoned: {err}");
                 return Err(());
             }
         };
@@ -80,7 +81,7 @@ impl CaptureBuffer {
             let (new_guard, wait_result) = match self.available.wait_timeout(guard, timeout) {
                 Ok(outcome) => outcome,
                 Err(err) => {
-                    eprintln!("[virtual-sink] capture buffer wait failed: {err}");
+                    error!("[virtual-sink] capture buffer wait failed: {err}");
                     return Err(());
                 }
             };
@@ -116,7 +117,7 @@ pub fn run() {
         .name("openmeters-pw-virtual-sink".into())
         .spawn(|| {
             if let Err(err) = run_virtual_sink() {
-                eprintln!("[virtual-sink] stopped: {err}");
+                error!("[virtual-sink] stopped: {err}");
             }
         }) {
         Ok(handle) => {
@@ -124,7 +125,7 @@ pub fn run() {
                 // Another caller raced us; the thread will keep running but we can drop our handle.
             }
         }
-        Err(err) => eprintln!("[virtual-sink] failed to start PipeWire thread: {err}"),
+        Err(err) => error!("[virtual-sink] failed to start PipeWire thread: {err}"),
     }
 }
 
@@ -163,12 +164,12 @@ impl VirtualSinkState {
         if let Some(sample_bytes) = bytes_per_sample(self.format) {
             self.frame_bytes = self.channels as usize * sample_bytes;
         } else {
-            eprintln!(
+            warn!(
                 "[virtual-sink] unsupported audio format {:?}; falling back to recorded frame size",
                 self.format
             );
         }
-        println!(
+        info!(
             "[virtual-sink] negotiated format: {:?}, rate {} Hz, channels {}",
             info.format(),
             self.sample_rate,
@@ -207,7 +208,7 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
     let _listener = stream
         .add_local_listener_with_user_data(audio_state)
         .state_changed(|_, _, previous, current| {
-            println!("[virtual-sink] state {previous:?} -> {current:?}");
+            info!("[virtual-sink] state {previous:?} -> {current:?}");
         })
         .param_changed(|_, state, id, param| {
             if id != spa::param::ParamType::Format.as_raw() {
@@ -223,7 +224,7 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
         })
         .process(move |stream, state| {
             let Some(mut buffer) = stream.dequeue_buffer() else {
-                eprintln!("[virtual-sink] no buffer available to dequeue");
+                warn!("[virtual-sink] no buffer available to dequeue");
                 return;
             };
 
@@ -270,12 +271,12 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
     )?;
 
     if let Err(err) = stream.set_active(true) {
-        eprintln!("[virtual-sink] failed to activate stream: {err}");
+        error!("[virtual-sink] failed to activate stream: {err}");
     }
 
-    println!("[virtual-sink] PipeWire sink active");
+    info!("[virtual-sink] PipeWire sink active");
     mainloop.run();
-    println!("[virtual-sink] main loop exited");
+    info!("[virtual-sink] main loop exited");
 
     Ok(())
 }

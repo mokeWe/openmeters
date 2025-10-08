@@ -19,6 +19,7 @@ use std::rc::Rc;
 use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
+use tracing::{error, info, warn};
 
 const REGISTRY_THREAD_NAME: &str = "openmeters-pw-registry";
 
@@ -44,7 +45,7 @@ pub fn spawn_registry() -> Result<AudioRegistryHandle> {
                 .name(REGISTRY_THREAD_NAME.into())
                 .spawn(move || {
                     if let Err(err) = registry_thread_main(thread_runtime) {
-                        eprintln!("[registry] thread terminated: {err:?}");
+                        error!("[registry] thread terminated: {err:?}");
                     }
                 })
                 .context("failed to spawn PipeWire registry thread")?;
@@ -498,23 +499,22 @@ impl MetadataDefaults {
 
     /// Ensure metadata targets point at live nodes when possible.
     fn reconcile_with_nodes(&mut self, nodes: &HashMap<u32, NodeInfo>) {
-        for target in [&mut self.audio_sink, &mut self.audio_source] {
-            if let Some(target) = target {
-                if let Some(node_id) = target.node_id {
-                    if !nodes.contains_key(&node_id) {
-                        target.node_id = None;
-                    }
-                }
-                if target.node_id.is_none() {
-                    if let Some(name) = &target.name {
-                        if let Some((id, _)) = nodes
-                            .iter()
-                            .find(|(_, node)| node.name.as_deref() == Some(name))
-                        {
-                            target.node_id = Some(*id);
-                        }
-                    }
-                }
+        for target in [&mut self.audio_sink, &mut self.audio_source]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(node_id) = target.node_id
+                && !nodes.contains_key(&node_id)
+            {
+                target.node_id = None;
+            }
+            if target.node_id.is_none()
+                && let Some(name) = &target.name
+                && let Some((id, _)) = nodes
+                    .iter()
+                    .find(|(_, node)| node.name.as_deref() == Some(name))
+            {
+                target.node_id = Some(*id);
             }
         }
     }
@@ -537,14 +537,14 @@ impl MetadataDefaults {
     fn clear_node(&mut self, node_id: u32, fallback_name: Option<String>) -> bool {
         let mut changed = false;
         for slot in [&mut self.audio_sink, &mut self.audio_source] {
-            if let Some(target) = slot {
-                if target.node_id == Some(node_id) {
-                    target.node_id = None;
-                    if target.name.is_none() {
-                        target.name = fallback_name.clone();
-                    }
-                    changed = true;
+            if let Some(target) = slot
+                && target.node_id == Some(node_id)
+            {
+                target.node_id = None;
+                if target.name.is_none() {
+                    target.name = fallback_name.clone();
                 }
+                changed = true;
             }
         }
         changed
@@ -644,12 +644,12 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
         .register();
 
     if let Err(err) = core.sync(0) {
-        eprintln!("[registry] failed to sync core: {err}");
+        error!("[registry] failed to sync core: {err}");
     }
 
-    println!("[registry] PipeWire registry thread running");
+    info!("[registry] PipeWire registry thread running");
     mainloop.run();
-    println!("[registry] PipeWire registry loop exited");
+    info!("[registry] PipeWire registry loop exited");
 
     // Drop resources tied to the loop before returning.
     drop(registry);
@@ -719,7 +719,7 @@ fn process_metadata_added(
     let metadata = match registry.bind::<Metadata, _>(global) {
         Ok(metadata) => metadata,
         Err(err) => {
-            eprintln!("[registry] failed to bind metadata {metadata_id}: {err}");
+            warn!("[registry] failed to bind metadata {metadata_id}: {err}");
             return;
         }
     };

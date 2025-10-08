@@ -597,7 +597,7 @@ impl Pipeline {
         key: usize,
         vertices: &[Vertex],
     ) {
-        let required_size = (vertices.len() * mem::size_of::<Vertex>()) as wgpu::BufferAddress;
+        let required_size = std::mem::size_of_val(vertices) as wgpu::BufferAddress;
         let entry = self
             .instances
             .entry(key)

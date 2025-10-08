@@ -5,6 +5,7 @@ use async_channel::Sender;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
+use tracing::{error, info, warn};
 
 pub fn init_registry_monitor(
     command_rx: mpsc::Receiver<RoutingCommand>,
@@ -13,12 +14,12 @@ pub fn init_registry_monitor(
     match pw_registry::spawn_registry() {
         Ok(handle) => {
             if let Err(err) = spawn_registry_monitor(handle.clone(), command_rx, snapshot_tx) {
-                eprintln!("[registry] failed to spawn monitor thread: {err}");
+                error!("[registry] failed to spawn monitor thread: {err}");
             }
             Some(handle)
         }
         Err(err) => {
-            eprintln!("[registry] failed to start PipeWire registry: {err:?}");
+            error!("[registry] failed to start PipeWire registry: {err:?}");
             None
         }
     }
@@ -44,7 +45,7 @@ fn run_registry_monitor(
     let router = match pw_router::Router::new() {
         Ok(router) => Some(router),
         Err(err) => {
-            eprintln!("[router] failed to initialise PipeWire router: {err:?}");
+            error!("[router] failed to initialise PipeWire router: {err:?}");
             None
         }
     };
@@ -61,7 +62,7 @@ fn run_registry_monitor(
             Ok(Some(snapshot)) => {
                 monitor.process_snapshot(&snapshot);
                 if snapshot_tx.send_blocking(snapshot.clone()).is_err() {
-                    println!("[registry] UI channel closed; stopping snapshot forwarding");
+                    info!("[registry] UI channel closed; stopping snapshot forwarding");
                     break;
                 }
             }
@@ -71,7 +72,7 @@ fn run_registry_monitor(
         }
     }
 
-    println!("[registry] update stream ended");
+    info!("[registry] update stream ended");
 }
 
 struct RegistryMonitor {
@@ -211,10 +212,10 @@ impl RoutingManager {
         self.routed_nodes
             .retain(|node_id, _| observed.contains(node_id));
 
-        if let Some(id) = self.last_hardware_sink_id {
-            if !observed.contains(&id) {
-                self.last_hardware_sink_id = None;
-            }
+        if let Some(id) = self.last_hardware_sink_id
+            && !observed.contains(&id)
+        {
+            self.last_hardware_sink_id = None;
         }
     }
 
@@ -249,7 +250,7 @@ impl RoutingManager {
 
         let Some(sink) = snapshot.find_node_by_label(VIRTUAL_SINK_NAME) else {
             if log_sink_missing && !self.sink_warning_logged {
-                println!(
+                warn!(
                     "[router] virtual sink '{}' not yet available; will retry on future updates",
                     VIRTUAL_SINK_NAME
                 );
@@ -273,7 +274,7 @@ impl RoutingManager {
             } else if let Some(hardware) = hardware_sink {
                 self.route_to_target(node, hardware, RouteTarget::Hardware(hardware.id));
             } else if self.routed_nodes.remove(&node.id).is_some() {
-                println!(
+                warn!(
                     "[router] no hardware sink available to restore '{}' (id={})",
                     node.display_name(),
                     node.id
@@ -292,7 +293,7 @@ impl RoutingManager {
         if !self
             .routed_nodes
             .get(&node.id)
-            .map_or(true, |state| state.should_retry(desired, now))
+            .is_none_or(|state| state.should_retry(desired, now))
         {
             return;
         }
@@ -315,7 +316,7 @@ impl RoutingManager {
                 RouteTarget::Virtual(_) => "routed",
                 RouteTarget::Hardware(_) => "restored",
             };
-            println!(
+            info!(
                 "[router] {action} '{}' (id={}) -> '{}' (id={})",
                 node.display_name(),
                 node.id,
@@ -326,7 +327,7 @@ impl RoutingManager {
         }
 
         let err = route_result.err().unwrap();
-        eprintln!(
+        error!(
             "[router] failed to route node '{}' (id={}): {err:?}",
             node.display_name(),
             node.id
@@ -344,20 +345,20 @@ impl RoutingManager {
         }
 
         let now = Instant::now();
-        if let Some(retry_after) = self.router_retry_after {
-            if now < retry_after {
-                return None;
-            }
+        if let Some(retry_after) = self.router_retry_after
+            && now < retry_after
+        {
+            return None;
         }
 
         match pw_router::Router::new() {
             Ok(router) => {
-                println!("[router] reinitialised PipeWire router connection");
+                info!("[router] reinitialised PipeWire router connection");
                 self.router = Some(router);
                 self.router_retry_after = None;
             }
             Err(err) => {
-                eprintln!("[router] failed to reinitialise router: {err:?}");
+                error!("[router] failed to reinitialise router: {err:?}");
                 const ROUTER_RETRY_DELAY: Duration = Duration::from_secs(5);
                 self.router_retry_after = Some(now + ROUTER_RETRY_DELAY);
             }
@@ -370,25 +371,25 @@ impl RoutingManager {
         &mut self,
         snapshot: &'a pw_registry::RegistrySnapshot,
     ) -> Option<&'a pw_registry::NodeInfo> {
-        if let Some(target) = snapshot.defaults.audio_sink.as_ref() {
-            if let Some(node) = snapshot.resolve_default_target(target) {
-                self.cache_hardware_sink(node);
-                return Some(node);
-            }
+        if let Some(target) = snapshot.defaults.audio_sink.as_ref()
+            && let Some(node) = snapshot.resolve_default_target(target)
+        {
+            self.cache_hardware_sink(node);
+            return Some(node);
         }
 
-        if let Some(id) = self.last_hardware_sink_id {
-            if let Some(node) = snapshot.nodes.iter().find(|node| node.id == id) {
-                self.cache_hardware_sink(node);
-                return Some(node);
-            }
+        if let Some(id) = self.last_hardware_sink_id
+            && let Some(node) = snapshot.nodes.iter().find(|node| node.id == id)
+        {
+            self.cache_hardware_sink(node);
+            return Some(node);
         }
 
-        if let Some(label) = self.last_hardware_sink_label.as_deref() {
-            if let Some(node) = snapshot.nodes.iter().find(|node| node.matches_label(label)) {
-                self.cache_hardware_sink(node);
-                return Some(node);
-            }
+        if let Some(label) = self.last_hardware_sink_label.as_deref()
+            && let Some(node) = snapshot.nodes.iter().find(|node| node.matches_label(label))
+        {
+            self.cache_hardware_sink(node);
+            return Some(node);
         }
 
         self.last_hardware_sink_id = None;

@@ -84,7 +84,7 @@ impl ColumnBuffer {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.data.as_ref().map_or(true, |d| d.is_empty())
+        self.data.as_ref().is_none_or(|d| d.is_empty())
     }
 }
 

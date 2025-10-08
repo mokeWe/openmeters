@@ -304,7 +304,7 @@ impl Pipeline {
         key: usize,
         vertices: &[Vertex],
     ) {
-        let required_size = (vertices.len() * mem::size_of::<Vertex>()) as wgpu::BufferAddress;
+        let required_size = std::mem::size_of_val(vertices) as wgpu::BufferAddress;
         let entry = self
             .instances
             .entry(key)
@@ -393,7 +393,7 @@ fn compute_normals(positions: &[(f32, f32)]) -> Vec<(f32, f32)> {
     let mut normals = Vec::with_capacity(count);
     for i in 0..count {
         let normal = if i == 0 {
-            segment_normals.get(0).copied().unwrap_or((0.0, 1.0))
+            segment_normals.first().copied().unwrap_or((0.0, 1.0))
         } else if i == count - 1 {
             segment_normals
                 .get(count - 2)

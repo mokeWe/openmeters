@@ -5,6 +5,7 @@ use crate::util::pipewire::{
 };
 use pipewire as pw;
 use std::collections::{HashMap, HashSet};
+use tracing::{debug, error, info, warn};
 
 pub(super) struct LoopbackState {
     core: pw::core::CoreRc,
@@ -29,10 +30,7 @@ impl LoopbackState {
 
     pub(super) fn upsert_node(&mut self, node: GraphNode) {
         let node_id = node.id();
-        let entry = self
-            .nodes
-            .entry(node_id)
-            .or_insert_with(TrackedNode::default);
+        let entry = self.nodes.entry(node_id).or_default();
         entry.set_info(node);
 
         if entry.has_name(OPENMETERS_SINK_NAME) {
@@ -69,15 +67,12 @@ impl LoopbackState {
     pub(super) fn upsert_port(&mut self, port: GraphPort) {
         let node_id = port.node_id;
         let port_id = port.port_id;
-        let node = self
-            .nodes
-            .entry(node_id)
-            .or_insert_with(TrackedNode::default);
+        let node = self.nodes.entry(node_id).or_default();
         node.upsert_port(port.clone());
         self.port_index.insert(port.global_id, (node_id, port_id));
 
         if self.is_tracked_node(node_id) {
-            println!(
+            debug!(
                 "[loopback] tracked port discovered: node={} port={} dir={:?} monitor={} channel={} name={}",
                 node_id,
                 port_id,
@@ -100,7 +95,7 @@ impl LoopbackState {
         }
 
         if self.is_tracked_node(node_id) {
-            println!(
+            debug!(
                 "[loopback] tracked port removed: node={} port={}",
                 node_id, port_id
             );
@@ -126,11 +121,11 @@ impl LoopbackState {
 
         if changed {
             if let Some(node_id) = self.default_sink.node_id {
-                println!("[loopback] default audio sink is node #{node_id}");
+                info!("[loopback] default audio sink is node #{node_id}");
             } else if let Some(name) = self.default_sink.name.as_deref() {
-                println!("[loopback] default audio sink set to '{name}' (node unresolved)");
+                info!("[loopback] default audio sink set to '{name}' (node unresolved)");
             } else {
-                println!("[loopback] default audio sink cleared");
+                info!("[loopback] default audio sink cleared");
             }
         }
 
@@ -179,14 +174,14 @@ impl LoopbackState {
                 Ok(link) => {
                     let source_desc = format_port_debug(&output_port);
                     let target_desc = format_port_debug(&input_port);
-                    println!(
+                    info!(
                         "[loopback] linking node {} {} -> node {} {}",
                         source_id, source_desc, target_id, target_desc
                     );
                     self.active_links.insert(key, link);
                 }
                 Err(err) => {
-                    eprintln!(
+                    error!(
                         "[loopback] failed to create link {}:{} -> {}:{}: {err}",
                         source_id, output_port.port_id, target_id, input_port.port_id
                     );
@@ -235,7 +230,7 @@ impl LoopbackState {
             if let Some(link) = self.active_links.remove(&key) {
                 drop(link);
             }
-            println!(
+            info!(
                 "[loopback] removed link {}:{} -> {}:{}",
                 key.output_node, key.output_port, key.input_node, key.input_port
             );
@@ -256,7 +251,7 @@ impl LoopbackState {
             Some(node) => node,
             None => {
                 self.clear_links();
-                println!(
+                warn!(
                     "[loopback] {label} node {} missing; cleared active links",
                     node_id
                 );
@@ -269,7 +264,7 @@ impl LoopbackState {
             let snapshot = node.clone_ports();
             self.clear_links();
             Self::log_ports_snapshot(label, node_id, &snapshot);
-            println!(
+            warn!(
                 "[loopback] no {port_role} ports available on node {} for loopback",
                 node_id
             );
@@ -285,40 +280,39 @@ impl LoopbackState {
         }
 
         self.active_links.clear();
-        println!("[loopback] cleared all active links");
+        info!("[loopback] cleared all active links");
     }
 
     fn log_ports_snapshot(label: &str, node_id: u32, ports: &[GraphPort]) {
         if ports.is_empty() {
-            println!("[loopback] {label} node {} has no known ports", node_id);
+            info!("[loopback] {label} node {} has no known ports", node_id);
             return;
         }
 
-        println!(
+        info!(
             "[loopback] {label} node {} port inventory ({} ports):",
             node_id,
             ports.len()
         );
         for port in ports {
-            println!("[loopback]   {}", format_port_debug(port));
+            info!("[loopback]   {}", format_port_debug(port));
         }
     }
 
     fn resolve_default_sink_node(&mut self) {
-        if let Some(node_id) = self.default_sink.node_id {
-            if self.nodes.contains_key(&node_id) {
-                return;
-            }
+        if let Some(node_id) = self.default_sink.node_id
+            && self.nodes.contains_key(&node_id)
+        {
+            return;
         }
 
-        if let Some(name) = self.default_sink.name.clone() {
-            if let Some(node_id) = self
+        if let Some(name) = self.default_sink.name.clone()
+            && let Some(node_id) = self
                 .nodes
                 .iter()
                 .find_map(|(&id, node)| node.matches_name(&name).then_some(id))
-            {
-                self.default_sink.node_id = Some(node_id);
-            }
+        {
+            self.default_sink.node_id = Some(node_id);
         }
     }
 
@@ -328,8 +322,8 @@ impl LoopbackState {
         }
 
         match (self.openmeters_node_id, node_id) {
-            (_, Some(id)) => println!("[loopback] detected OpenMeters sink node #{id}"),
-            (Some(_), None) => println!("[loopback] OpenMeters sink node removed"),
+            (_, Some(id)) => info!("[loopback] detected OpenMeters sink node #{id}"),
+            (Some(_), None) => info!("[loopback] OpenMeters sink node removed"),
             (None, None) => {}
         }
 
@@ -369,18 +363,10 @@ struct LinkKey {
     input_port: u32,
 }
 
+#[derive(Default)]
 struct TrackedNode {
     info: Option<GraphNode>,
     ports: HashMap<u32, GraphPort>,
-}
-
-impl Default for TrackedNode {
-    fn default() -> Self {
-        Self {
-            info: None,
-            ports: HashMap::new(),
-        }
-    }
 }
 
 impl TrackedNode {

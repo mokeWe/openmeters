@@ -10,6 +10,7 @@ use pw::types::ObjectType;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
+use tracing::{info, warn};
 
 /// Metadata key instructing PipeWire where to route a node by object serial.
 const TARGET_OBJECT_KEY: &str = "target.object";
@@ -55,7 +56,7 @@ impl Router {
         let (metadata, metadata_name) =
             select_metadata(&mainloop, &registry).context("failed to bind PipeWire metadata")?;
 
-        println!(
+        info!(
             "[router] using metadata '{}'",
             metadata_name.as_deref().unwrap_or("unnamed")
         );
@@ -147,7 +148,7 @@ fn select_metadata(
                     }
                 }
                 Err(err) => {
-                    eprintln!("[router] failed to bind metadata {}: {err}", global.id);
+                    warn!("[router] failed to bind metadata {}: {err}", global.id);
                 }
             }
         })
@@ -168,10 +169,10 @@ fn select_metadata(
             fallback_deadline = Some(Instant::now() + FALLBACK_WAIT_GRACE);
         }
 
-        if let Some(limit) = fallback_deadline {
-            if Instant::now() >= limit {
-                break;
-            }
+        if let Some(limit) = fallback_deadline
+            && Instant::now() >= limit
+        {
+            break;
         }
     }
 

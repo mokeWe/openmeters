@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::OnceLock;
 use std::thread;
+use tracing::{error, info};
 
 const LOOPBACK_THREAD_NAME: &str = "openmeters-pw-loopback";
 const OPENMETERS_SINK_NAME: &str = "openmeters.sink";
@@ -31,13 +32,13 @@ pub fn run() {
         .name(LOOPBACK_THREAD_NAME.into())
         .spawn(|| {
             if let Err(err) = run_loopback() {
-                eprintln!("[loopback] stopped: {err:?}");
+                error!("[loopback] stopped: {err:?}");
             }
         }) {
         Ok(handle) => {
             let _ = LOOPBACK_THREAD.set(handle);
         }
-        Err(err) => eprintln!("[loopback] failed to spawn thread: {err}"),
+        Err(err) => error!("[loopback] failed to spawn thread: {err}"),
     }
 }
 
@@ -69,9 +70,9 @@ fn run_loopback() -> Result<()> {
         })
         .register();
 
-    println!("[loopback] PipeWire loopback thread running");
+    info!("[loopback] PipeWire loopback thread running");
     mainloop.run();
-    println!("[loopback] PipeWire loopback loop exited");
+    info!("[loopback] PipeWire loopback loop exited");
 
     drop(runtime);
     drop(registry);
@@ -137,7 +138,7 @@ impl LoopbackRuntime {
         let metadata = match self.registry.bind::<Metadata, _>(global) {
             Ok(metadata) => metadata,
             Err(err) => {
-                eprintln!("[loopback] failed to bind metadata {metadata_id}: {err}");
+                error!("[loopback] failed to bind metadata {metadata_id}: {err}");
                 return;
             }
         };

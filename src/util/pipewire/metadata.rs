@@ -1,4 +1,5 @@
 use serde_json::Value;
+use tracing::warn;
 
 /// Metadata key identifying the default audio sink in PipeWire.
 pub const DEFAULT_AUDIO_SINK_KEY: &str = "default.audio.sink";
@@ -71,7 +72,7 @@ pub fn parse_metadata_name(type_hint: Option<&str>, value: Option<&str>) -> Opti
             Ok(Value::String(name)) => Some(name),
             Ok(_) => None,
             Err(err) => {
-                eprintln!(
+                warn!(
                     "[loopback] failed to parse default sink metadata JSON: {err} (value={value})"
                 );
                 None

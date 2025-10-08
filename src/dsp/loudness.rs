@@ -60,10 +60,10 @@ impl RollingMeanSquare {
     }
 
     fn push(&mut self, value: f64) {
-        if self.samples.len() == self.capacity {
-            if let Some(oldest) = self.samples.pop_front() {
-                self.sum -= oldest;
-            }
+        if self.samples.len() == self.capacity
+            && let Some(oldest) = self.samples.pop_front()
+        {
+            self.sum -= oldest;
         }
 
         self.samples.push_back(value);
@@ -168,11 +168,12 @@ impl LoudnessProcessor {
         let channels = requested_channels.max(1);
         let mut needs_rebuild = self.channels.len() != channels;
 
-        if sample_rate.is_finite() && sample_rate > 0.0 {
-            if (self.config.sample_rate - sample_rate).abs() > f32::EPSILON {
-                self.config.sample_rate = sample_rate;
-                needs_rebuild = true;
-            }
+        if sample_rate.is_finite()
+            && sample_rate > 0.0
+            && (self.config.sample_rate - sample_rate).abs() > f32::EPSILON
+        {
+            self.config.sample_rate = sample_rate;
+            needs_rebuild = true;
         }
 
         if needs_rebuild {

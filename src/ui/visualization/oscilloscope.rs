@@ -92,9 +92,9 @@ impl OscilloscopeState {
         let mut channel_palette = if channels <= self.style.channel_colors.len() {
             self.style.channel_colors[..channels].to_vec()
         } else {
-            self.style.channel_colors.repeat(
-                (channels + self.style.channel_colors.len() - 1) / self.style.channel_colors.len(),
-            )
+            self.style
+                .channel_colors
+                .repeat(channels.div_ceil(self.style.channel_colors.len()))
         };
         channel_palette.truncate(channels);
 

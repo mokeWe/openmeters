@@ -2,6 +2,7 @@ pub mod batcher;
 
 use pipewire::spa;
 use std::convert::TryInto;
+use tracing::warn;
 
 pub use batcher::SampleBatcher;
 
@@ -38,8 +39,8 @@ pub fn convert_samples_to_f32(
     use spa::param::audio::AudioFormat as Fmt;
 
     let sample_bytes = bytes_per_sample(format)?;
-    if bytes.len() % sample_bytes != 0 {
-        eprintln!(
+    if !bytes.len().is_multiple_of(sample_bytes) {
+        warn!(
             "[virtual-sink] buffer length {} is not aligned to {:?}",
             bytes.len(),
             format

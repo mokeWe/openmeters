@@ -191,10 +191,9 @@ impl SpectrogramState {
             self.history
                 .front()
                 .map(|column| column.magnitudes_db.len()),
-        ) {
-            if incoming != existing {
-                needs_rebuild = true;
-            }
+        ) && incoming != existing
+        {
+            needs_rebuild = true;
         }
 
         for column in &update.new_columns {

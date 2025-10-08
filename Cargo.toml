@@ -18,6 +18,8 @@ iced_wgpu = "0.13.5"
 rustc-hash = "1.1"
 rustfft = "6.4"
 realfft = "3.5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
 ebur128 = "0.1"

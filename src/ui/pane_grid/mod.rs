@@ -357,15 +357,14 @@ where
 
             match mouse_event {
                 mouse::Event::ButtonPressed(Button::Left) if self.drag_enabled() => {
-                    if let Some(on_drag) = &self.on_drag {
-                        if let Some(cursor_position) = cursor.position() {
-                            if let Some(pane) = self.pane_at(layout, cursor_position) {
-                                interaction.dragging = Some(pane);
-                                interaction.hovered = Some(pane);
-                                shell.publish(on_drag(DragEvent::Picked { pane }));
-                                return event::Status::Captured;
-                            }
-                        }
+                    if let Some(on_drag) = &self.on_drag
+                        && let Some(cursor_position) = cursor.position()
+                        && let Some(pane) = self.pane_at(layout, cursor_position)
+                    {
+                        interaction.dragging = Some(pane);
+                        interaction.hovered = Some(pane);
+                        shell.publish(on_drag(DragEvent::Picked { pane }));
+                        return event::Status::Captured;
                     }
                 }
                 mouse::Event::CursorMoved { position } => {
@@ -398,10 +397,10 @@ where
                     }
                 }
                 mouse::Event::CursorLeft => {
-                    if let Some(pane) = interaction.dragging.take() {
-                        if let Some(on_drag) = &self.on_drag {
-                            shell.publish(on_drag(DragEvent::Canceled { pane }));
-                        }
+                    if let Some(pane) = interaction.dragging.take()
+                        && let Some(on_drag) = &self.on_drag
+                    {
+                        shell.publish(on_drag(DragEvent::Canceled { pane }));
                     }
 
                     interaction.hovered = None;

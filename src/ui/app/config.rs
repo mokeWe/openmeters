@@ -94,7 +94,7 @@ impl ConfigPage {
                     .routing_sender
                     .send(RoutingCommand::SetApplicationEnabled { node_id, enabled })
                 {
-                    eprintln!("[ui] failed to send routing command: {err}");
+                    tracing::error!("[ui] failed to send routing command: {err}");
                 }
             }
             ConfigMessage::ToggleApplicationsVisibility => {
@@ -356,7 +356,7 @@ impl ConfigPage {
 
         self.preferences.retain(|node_id, _| seen.contains(node_id));
 
-        entries.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
+        entries.sort_by_key(|a| a.sort_key());
         self.applications = entries;
     }
 }

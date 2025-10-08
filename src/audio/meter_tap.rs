@@ -4,6 +4,7 @@ use async_channel::{Receiver as AsyncReceiver, Sender as AsyncSender};
 use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
+use tracing::{error, info};
 
 /// Capacity of the channel forwarding audio frames to the UI.
 const CHANNEL_CAPACITY: usize = 64;
@@ -71,7 +72,7 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
                 }
             }
             Err(_) => {
-                eprintln!("[meter-tap] capture buffer unavailable; stopping tap");
+                error!("[meter-tap] capture buffer unavailable; stopping tap");
                 break;
             }
         }
@@ -79,7 +80,7 @@ fn forward_loop(sender: AsyncSender<Vec<f32>>, buffer: Arc<CaptureBuffer>) {
 
     let _ = flush_batch(&sender, &mut batcher);
 
-    println!("[meter-tap] audio channel closed; ending tap thread");
+    info!("[meter-tap] audio channel closed; ending tap thread");
 }
 
 fn flush_batch(sender: &AsyncSender<Vec<f32>>, batcher: &mut SampleBatcher) -> bool {

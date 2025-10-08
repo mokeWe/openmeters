@@ -133,18 +133,16 @@ impl VisualsPage {
     pub fn update(&mut self, message: VisualsMessage) -> Task<VisualsMessage> {
         match message {
             VisualsMessage::PaneDragged(event) => {
-                if let Some(panes) = self.panes.as_mut() {
-                    if let pane_grid::DragEvent::Dropped {
+                if let Some(panes) = self.panes.as_mut()
+                    && let pane_grid::DragEvent::Dropped {
                         pane,
                         target: pane_grid::Target::Pane(target),
                     } = event
-                    {
-                        panes.swap(pane, target);
-                        let new_order: Vec<VisualId> =
-                            panes.iter().map(|(_, pane)| pane.id).collect();
-                        self.order = new_order.clone();
-                        self.visual_manager.borrow_mut().reorder(&new_order);
-                    }
+                {
+                    panes.swap(pane, target);
+                    let new_order: Vec<VisualId> = panes.iter().map(|(_, pane)| pane.id).collect();
+                    self.order = new_order.clone();
+                    self.visual_manager.borrow_mut().reorder(&new_order);
                 }
             }
         }

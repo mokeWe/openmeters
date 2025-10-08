@@ -5,21 +5,11 @@ use crate::dsp::spectrogram::{SpectrogramConfig, WindowKind};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 
 /// Output magnitude spectrum.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SpectrumSnapshot {
     pub frequency_bins: Vec<f32>,
     pub magnitudes_db: Vec<f32>,
     pub peak_frequency_hz: Option<f32>,
-}
-
-impl Default for SpectrumSnapshot {
-    fn default() -> Self {
-        Self {
-            frequency_bins: Vec::new(),
-            magnitudes_db: Vec::new(),
-            peak_frequency_hz: None,
-        }
-    }
 }
 
 /// Configuration for the spectrum analyser.

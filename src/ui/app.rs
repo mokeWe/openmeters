@@ -133,10 +133,11 @@ impl UiApp {
         }
 
         subscriptions.push(keyboard::on_key_press(|key, modifiers| {
-            if modifiers.control() && modifiers.shift() {
-                if matches!(key, Key::Character(value) if value.eq_ignore_ascii_case("h")) {
-                    return Some(Message::ToggleChrome);
-                }
+            if modifiers.control()
+                && modifiers.shift()
+                && matches!(key, Key::Character(value) if value.eq_ignore_ascii_case("h"))
+            {
+                return Some(Message::ToggleChrome);
             }
 
             None
