@@ -8,27 +8,25 @@ use std::mem;
 use crate::ui::render::geometry::compute_normals;
 
 #[derive(Debug, Clone)]
-pub struct OscilloscopeParams {
+pub struct SpectrumParams {
     pub bounds: Rectangle,
-    pub channels: usize,
-    pub samples_per_channel: usize,
-    pub samples: Vec<f32>,
-    pub colors: Vec<[f32; 4]>,
-    pub line_alpha: f32,
-    pub fade_alpha: f32,
-    pub vertical_padding: f32,
-    pub channel_gap: f32,
-    pub amplitude_scale: f32,
-    pub stroke_width: f32,
+    pub normalized_points: Vec<[f32; 2]>,
+    pub secondary_points: Vec<[f32; 2]>,
+    pub line_color: [f32; 4],
+    pub line_width: f32,
+    pub secondary_line_color: [f32; 4],
+    pub secondary_line_width: f32,
+    pub highlight_threshold: f32,
+    pub highlight_color: [f32; 4],
 }
 
 #[derive(Debug)]
-pub struct OscilloscopePrimitive {
-    params: OscilloscopeParams,
+pub struct SpectrumPrimitive {
+    params: SpectrumParams,
 }
 
-impl OscilloscopePrimitive {
-    pub fn new(params: OscilloscopeParams) -> Self {
+impl SpectrumPrimitive {
+    pub fn new(params: SpectrumParams) -> Self {
         Self { params }
     }
 
@@ -37,93 +35,147 @@ impl OscilloscopePrimitive {
     }
 
     fn build_vertices(&self, viewport: &Viewport) -> Vec<Vertex> {
-        let samples_per_channel = self.params.samples_per_channel;
-        let channels = self.params.channels.max(1);
-        let total_samples = channels * samples_per_channel;
-        if samples_per_channel < 2 || self.params.samples.len() < total_samples {
-            return Vec::new();
-        }
-
         let bounds = self.params.bounds;
         let clip = ClipTransform::new(
             viewport.logical_size().width.max(1.0),
             viewport.logical_size().height.max(1.0),
         );
 
-        let width = bounds.width.max(1.0);
-        let vertical_padding = self.params.vertical_padding.max(0.0);
-        let channel_gap = self.params.channel_gap.max(0.0);
-        let usable_height = (bounds.height
-            - vertical_padding * 2.0
-            - channel_gap * (channels.saturating_sub(1) as f32))
-            .max(1.0);
-        let channel_height = usable_height / channels as f32;
-        let amplitude_scale = channel_height * 0.5 * self.params.amplitude_scale.max(0.01);
-        let step = width / (samples_per_channel.saturating_sub(1) as f32).max(1.0);
+        let mut positions = Vec::with_capacity(self.params.normalized_points.len());
+        let mut amplitudes = Vec::with_capacity(self.params.normalized_points.len());
+        for point in &self.params.normalized_points {
+            let amp = point[1].clamp(0.0, 1.0);
+            let x = bounds.x + bounds.width * point[0].clamp(0.0, 1.0);
+            let y = bounds.y + bounds.height * (1.0 - amp);
+            positions.push((x, y));
+            amplitudes.push(amp);
+        }
 
-        let mut vertices = Vec::with_capacity(samples_per_channel * 2 * channels);
-        let half_thickness = (self.params.stroke_width.max(0.1)) * 0.5;
-        let mut previous_last: Option<Vertex> = None;
-        for channel in 0..channels {
-            let color = self
-                .params
-                .colors
-                .get(channel)
-                .cloned()
-                .unwrap_or([0.6, 0.8, 0.9, 1.0]);
-            let color = [color[0], color[1], color[2], self.params.line_alpha];
+        if positions.len() < 2 {
+            return Vec::new();
+        }
 
-            let top = bounds.y + vertical_padding + channel as f32 * (channel_height + channel_gap);
-            let center = top + channel_height * 0.5;
+        let mut vertices = Vec::new();
+        let baseline = bounds.y + bounds.height;
 
-            let mut channel_vertices = Vec::with_capacity(samples_per_channel * 2);
-            let mut positions = Vec::with_capacity(samples_per_channel);
+        // Highlight energetic columns before drawing the fill so they sit behind the curve.
+        let highlight_color = self.params.highlight_color;
+        let highlight_threshold = self.params.highlight_threshold.clamp(0.0, 1.0);
+        if highlight_color[3] > 0.0 && highlight_threshold < 1.0 {
+            let denom = (1.0 - highlight_threshold).max(1.0e-6);
+            for (segment, amp_segment) in positions.windows(2).zip(amplitudes.windows(2)) {
+                let amp_max = amp_segment[0].max(amp_segment[1]);
+                if amp_max < highlight_threshold {
+                    continue;
+                }
 
-            for index in 0..samples_per_channel {
-                let sample_index = channel * samples_per_channel + index;
-                if let Some(sample) = self.params.samples.get(sample_index) {
-                    let x = bounds.x + step * index as f32;
-                    let y = center - sample * amplitude_scale;
-                    positions.push((x, y));
+                let intensity = ((amp_max - highlight_threshold) / denom).clamp(0.0, 1.0);
+                let alpha = (highlight_color[3] * intensity).clamp(0.0, 1.0);
+                if alpha <= 0.0 {
+                    continue;
+                }
+
+                let (x0, y0) = segment[0];
+                let (x1, y1) = segment[1];
+
+                let top_left = clip.to_clip(x0, y0);
+                let top_right = clip.to_clip(x1, y1);
+                let bottom_left = clip.to_clip(x0, baseline);
+                let bottom_right = clip.to_clip(x1, baseline);
+                let column_color = [
+                    highlight_color[0],
+                    highlight_color[1],
+                    highlight_color[2],
+                    alpha,
+                ];
+
+                vertices.extend_from_slice(&triangle_vertices_with_colors(
+                    bottom_left,
+                    top_left,
+                    top_right,
+                    column_color,
+                    column_color,
+                    column_color,
+                ));
+                vertices.extend_from_slice(&triangle_vertices_with_colors(
+                    bottom_left,
+                    top_right,
+                    bottom_right,
+                    column_color,
+                    column_color,
+                    column_color,
+                ));
+            }
+        }
+
+        // Build polyline with thickness.
+        let normals = compute_normals(&positions);
+        let half = self.params.line_width.max(0.1) * 0.5;
+        let mut strip: Vec<([f32; 2], [f32; 2])> = Vec::with_capacity(positions.len());
+
+        for ((x, y), normal) in positions.iter().zip(normals.iter()) {
+            let offset_x = normal.0 * half;
+            let offset_y = normal.1 * half;
+            let left = clip.to_clip(x - offset_x, y - offset_y);
+            let right = clip.to_clip(x + offset_x, y + offset_y);
+            strip.push((left, right));
+        }
+
+        let line_color = self.params.line_color;
+        for window in strip.windows(2) {
+            let (left0, right0) = window[0];
+            let (left1, right1) = window[1];
+            vertices.extend_from_slice(&triangle_vertices(left0, right0, right1, line_color));
+            vertices.extend_from_slice(&triangle_vertices(left0, right1, left1, line_color));
+        }
+
+        if !self.params.secondary_points.is_empty() {
+            let mut overlay_positions = Vec::with_capacity(self.params.secondary_points.len());
+            for point in &self.params.secondary_points {
+                let x = bounds.x + bounds.width * point[0].clamp(0.0, 1.0);
+                let y = bounds.y + bounds.height * (1.0 - point[1].clamp(0.0, 1.0));
+                overlay_positions.push((x, y));
+            }
+
+            if overlay_positions.len() >= 2 {
+                let overlay_normals = compute_normals(&overlay_positions);
+                let half_overlay = self.params.secondary_line_width.max(0.1) * 0.5;
+                let mut overlay_strip: Vec<([f32; 2], [f32; 2])> =
+                    Vec::with_capacity(overlay_positions.len());
+
+                for ((x, y), normal) in overlay_positions.iter().zip(overlay_normals.iter()) {
+                    let offset_x = normal.0 * half_overlay;
+                    let offset_y = normal.1 * half_overlay;
+                    let left = clip.to_clip(x - offset_x, y - offset_y);
+                    let right = clip.to_clip(x + offset_x, y + offset_y);
+                    overlay_strip.push((left, right));
+                }
+
+                let overlay_color = self.params.secondary_line_color;
+                for window in overlay_strip.windows(2) {
+                    let (left0, right0) = window[0];
+                    let (left1, right1) = window[1];
+                    vertices.extend_from_slice(&triangle_vertices(
+                        left0,
+                        right0,
+                        right1,
+                        overlay_color,
+                    ));
+                    vertices.extend_from_slice(&triangle_vertices(
+                        left0,
+                        right1,
+                        left1,
+                        overlay_color,
+                    ));
                 }
             }
-
-            if positions.len() < 2 {
-                continue;
-            }
-
-            let normals = compute_normals(&positions);
-
-            for (pos, normal) in positions.iter().zip(normals.iter()) {
-                let offset_x = normal.0 * half_thickness;
-                let offset_y = normal.1 * half_thickness;
-                let left = clip.to_clip(pos.0 - offset_x, pos.1 - offset_y);
-                let right = clip.to_clip(pos.0 + offset_x, pos.1 + offset_y);
-
-                channel_vertices.push(Vertex {
-                    position: left,
-                    color,
-                });
-                channel_vertices.push(Vertex {
-                    position: right,
-                    color,
-                });
-            }
-
-            if let (Some(last), Some(first)) = (previous_last, channel_vertices.first().cloned()) {
-                vertices.push(last);
-                vertices.push(first);
-            }
-
-            previous_last = channel_vertices.last().cloned();
-            vertices.extend(channel_vertices);
         }
 
         vertices
     }
 }
 
-impl Primitive for OscilloscopePrimitive {
+impl Primitive for SpectrumPrimitive {
     fn prepare(
         &self,
         device: &wgpu::Device,
@@ -139,7 +191,7 @@ impl Primitive for OscilloscopePrimitive {
 
         let pipeline = storage
             .get_mut::<Pipeline>()
-            .expect("pipeline must exist after storage check");
+            .expect("spectrum pipeline must exist after storage check");
 
         let vertices = self.build_vertices(viewport);
         pipeline.prepare_instance(device, queue, self.key(), &vertices);
@@ -155,17 +207,15 @@ impl Primitive for OscilloscopePrimitive {
         let Some(pipeline) = storage.get::<Pipeline>() else {
             return;
         };
-
         let Some(instance) = pipeline.instance(self.key()) else {
             return;
         };
-
         if instance.vertex_count == 0 {
             return;
         }
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Oscilloscope pass"),
+            label: Some("Spectrum pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 resolve_target: None,
@@ -189,6 +239,38 @@ impl Primitive for OscilloscopePrimitive {
         pass.set_vertex_buffer(0, instance.vertex_buffer.slice(0..instance.used_bytes()));
         pass.draw(0..instance.vertex_count, 0..1);
     }
+}
+
+fn triangle_vertices(a: [f32; 2], b: [f32; 2], c: [f32; 2], color: [f32; 4]) -> [Vertex; 3] {
+    [
+        Vertex { position: a, color },
+        Vertex { position: b, color },
+        Vertex { position: c, color },
+    ]
+}
+
+fn triangle_vertices_with_colors(
+    a: [f32; 2],
+    b: [f32; 2],
+    c: [f32; 2],
+    color_a: [f32; 4],
+    color_b: [f32; 4],
+    color_c: [f32; 4],
+) -> [Vertex; 3] {
+    [
+        Vertex {
+            position: a,
+            color: color_a,
+        },
+        Vertex {
+            position: b,
+            color: color_b,
+        },
+        Vertex {
+            position: c,
+            color: color_c,
+        },
+    ]
 }
 
 #[repr(C)]
@@ -233,8 +315,7 @@ impl ClipTransform {
         }
     }
 
-    #[inline]
-    fn to_clip(self, x: f32, y: f32) -> [f32; 2] {
+    fn to_clip(&self, x: f32, y: f32) -> [f32; 2] {
         [x * self.scale_x - 1.0, 1.0 - y * self.scale_y]
     }
 }
@@ -248,18 +329,18 @@ struct Pipeline {
 impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Oscilloscope shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/oscilloscope.wgsl").into()),
+            label: Some("Spectrum shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/spectrum.wgsl").into()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Oscilloscope pipeline layout"),
+            label: Some("Spectrum pipeline layout"),
             bind_group_layouts: &[],
             push_constant_ranges: &[],
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Oscilloscope pipeline"),
+            label: Some("Spectrum pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -276,7 +357,7 @@ impl Pipeline {
                 })],
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None,
@@ -361,7 +442,7 @@ impl InstanceBuffer {
 
 fn create_vertex_buffer(device: &wgpu::Device, size: wgpu::BufferAddress) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Oscilloscope vertex buffer"),
+        label: Some("Spectrum vertex buffer"),
         size,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,

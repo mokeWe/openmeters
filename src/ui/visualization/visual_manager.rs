@@ -2,6 +2,7 @@ use crate::dsp::ProcessorUpdate;
 use crate::ui::visualization::lufs_meter::{LufsMeterState, LufsProcessor};
 use crate::ui::visualization::oscilloscope::{OscilloscopeProcessor, OscilloscopeState};
 use crate::ui::visualization::spectrogram::{SpectrogramProcessor, SpectrogramState};
+use crate::ui::visualization::spectrum::{SpectrumProcessor, SpectrumState};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use std::borrow::Cow;
 use std::cell::{RefCell, RefMut};
@@ -78,7 +79,7 @@ impl VisualKind {
             },
             VisualKind::Spectrum => VisualMetadata {
                 display_name: "Spectrum analyzer",
-                available: false,
+                available: true,
                 default_enabled: false,
                 preferred_width: 320.0,
                 preferred_height: 180.0,
@@ -161,6 +162,7 @@ pub enum VisualContent {
     LufsMeter { state: LufsMeterState },
     Oscilloscope { state: OscilloscopeState },
     Spectrogram { state: Box<SpectrogramState> },
+    Spectrum { state: SpectrumState },
     Placeholder { message: Cow<'static, str> },
 }
 
@@ -214,6 +216,10 @@ enum VisualRuntime {
         processor: Box<SpectrogramProcessor>,
         state: Box<SpectrogramState>,
     },
+    Spectrum {
+        processor: SpectrumProcessor,
+        state: SpectrumState,
+    },
     Placeholder,
 }
 
@@ -234,6 +240,10 @@ impl VisualRuntime {
                 processor: Box::new(SpectrogramProcessor::new(DEFAULT_SAMPLE_RATE)),
                 state: Box::new(SpectrogramState::new()),
             },
+            VisualKind::Spectrum => VisualRuntime::Spectrum {
+                processor: SpectrumProcessor::new(DEFAULT_SAMPLE_RATE),
+                state: SpectrumState::new(),
+            },
             _ => VisualRuntime::Placeholder,
         }
     }
@@ -253,6 +263,11 @@ impl VisualRuntime {
                     state.apply_update(&update);
                 }
             }
+            VisualRuntime::Spectrum { processor, state } => {
+                if let Some(snapshot) = processor.ingest(samples) {
+                    state.apply_snapshot(&snapshot);
+                }
+            }
             VisualRuntime::Placeholder => {}
         }
     }
@@ -266,6 +281,9 @@ impl VisualRuntime {
                 state: state.clone(),
             },
             VisualRuntime::Spectrogram { state, .. } => VisualContent::Spectrogram {
+                state: state.clone(),
+            },
+            VisualRuntime::Spectrum { state, .. } => VisualContent::Spectrum {
                 state: state.clone(),
             },
             VisualRuntime::Placeholder => VisualContent::Placeholder {

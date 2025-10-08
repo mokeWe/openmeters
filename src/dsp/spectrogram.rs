@@ -1,4 +1,6 @@
 //! Spectrogram DSP implementation built on a short-time Fourier transform.
+//!
+// IMPORTANT TODO: spectrum reassignment method!
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
@@ -48,7 +50,7 @@ pub enum WindowKind {
 }
 
 impl WindowKind {
-    fn coefficients(self, len: usize) -> Vec<f32> {
+    pub(crate) fn coefficients(self, len: usize) -> Vec<f32> {
         match self {
             WindowKind::Rectangular => vec![1.0; len],
             WindowKind::Hann => (0..len)
