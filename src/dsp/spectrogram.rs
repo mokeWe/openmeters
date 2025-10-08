@@ -194,7 +194,9 @@ fn kaiser_coefficients(len: usize, beta: f32) -> Vec<f32> {
 fn modified_bessel_i0(x: f64) -> f64 {
     // Approximation based on the public-domain Cephes library. See
     // https://www.dsprelated.com/freebooks/sasp/Kaiser_Window.html
-    // for background on its use in the Kaiser window definition.
+
+    // Hacky and looks terrible, but works.
+
     let ax = x.abs();
     if ax < 3.75 {
         let y = (x / 3.75).powi(2);
