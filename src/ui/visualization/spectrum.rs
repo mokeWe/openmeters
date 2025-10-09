@@ -245,7 +245,7 @@ impl SpectrumState {
         let normalized_points = self.weighted_points.clone();
         let unweighted_points = self.unweighted_points.clone();
 
-        let grid_lines = self.frequency_grid.iter().cloned().collect();
+        let grid_lines = self.frequency_grid.to_vec();
 
         let primitive = SpectrumParams {
             bounds,
@@ -604,7 +604,7 @@ fn smooth_points(points: &mut Vec<[f32; 2]>, radius: usize, passes: usize) {
             let mut value_sum = 0.0;
 
             for j in start..=end {
-                let distance = if i > j { i - j } else { j - i };
+                let distance = i.abs_diff(j);
                 let weight = (radius - distance + 1) as f32;
                 value_sum += scratch[j] * weight;
                 weight_sum += weight;

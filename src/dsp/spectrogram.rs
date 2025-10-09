@@ -1,6 +1,5 @@
 //! Spectrogram DSP implementation built on a short-time Fourier transform.
 //!
-// IMPORTANT TODO: spectrum reassignment method!
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
@@ -29,16 +28,21 @@ pub struct SpectrogramConfig {
     pub history_length: usize,
 }
 
+// TODO: reassignment
+
 impl Default for SpectrogramConfig {
     fn default() -> Self {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: 8192,
-            hop_size: 1024,
-            // I'm not sure what the "best" beta value is for spectral analysis.
+            hop_size: 512,
+            // I'm not sure what the "best" alpha/beta value is for spectral analysis.
             // going for moderate sidelobe suppression without excessive main lobe widening.
-            window: WindowKind::Kaiser { beta: 4.0 },
-            history_length: 240,
+            window: WindowKind::PlanckBessel {
+                epsilon: 0.1,
+                beta: 4.45,
+            },
+            history_length: 480,
         }
     }
 }
@@ -50,7 +54,7 @@ pub enum WindowKind {
     Hann,
     Hamming,
     Blackman,
-    Kaiser { beta: f32 },
+    PlanckBessel { epsilon: f32, beta: f32 },
 }
 
 impl WindowKind {
@@ -80,7 +84,9 @@ impl WindowKind {
                     })
                     .collect()
             }
-            WindowKind::Kaiser { beta } => kaiser_coefficients(len, beta),
+            WindowKind::PlanckBessel { epsilon, beta } => {
+                planck_bessel_coefficients(len, epsilon, beta)
+            }
         }
     }
 }
@@ -92,8 +98,18 @@ impl PartialEq for WindowKind {
             | (WindowKind::Hann, WindowKind::Hann)
             | (WindowKind::Hamming, WindowKind::Hamming)
             | (WindowKind::Blackman, WindowKind::Blackman) => true,
-            (WindowKind::Kaiser { beta: a }, WindowKind::Kaiser { beta: b }) => {
-                canonical_f32_bits(*a) == canonical_f32_bits(*b)
+            (
+                WindowKind::PlanckBessel {
+                    epsilon: ea,
+                    beta: ba,
+                },
+                WindowKind::PlanckBessel {
+                    epsilon: eb,
+                    beta: bb,
+                },
+            ) => {
+                canonical_f32_bits(*ea) == canonical_f32_bits(*eb)
+                    && canonical_f32_bits(*ba) == canonical_f32_bits(*bb)
             }
             _ => false,
         }
@@ -109,8 +125,9 @@ impl Hash for WindowKind {
             WindowKind::Hann => state.write_u8(1),
             WindowKind::Hamming => state.write_u8(2),
             WindowKind::Blackman => state.write_u8(3),
-            WindowKind::Kaiser { beta } => {
+            WindowKind::PlanckBessel { epsilon, beta } => {
                 state.write_u8(4);
+                state.write_u32(canonical_f32_bits(*epsilon));
                 state.write_u32(canonical_f32_bits(*beta));
             }
         }
@@ -189,6 +206,85 @@ fn kaiser_coefficients(len: usize, beta: f32) -> Vec<f32> {
             (numer / denom) as f32
         })
         .collect()
+}
+
+fn planck_bessel_coefficients(len: usize, epsilon: f32, beta: f32) -> Vec<f32> {
+    if len == 0 {
+        return Vec::new();
+    }
+    if len == 1 {
+        return vec![1.0];
+    }
+
+    let epsilon = if epsilon.is_finite() {
+        epsilon.clamp(1.0e-6, 0.5 - 1.0e-6)
+    } else {
+        0.1
+    };
+
+    let planck = planck_taper_coefficients(len, epsilon);
+    let kaiser = kaiser_coefficients(len, beta);
+    planck
+        .into_iter()
+        .zip(kaiser)
+        .map(|(p, k)| p * k)
+        .collect()
+}
+
+fn planck_taper_coefficients(len: usize, epsilon: f32) -> Vec<f32> {
+    if len == 0 {
+        return Vec::new();
+    }
+    if len == 1 {
+        return vec![1.0];
+    }
+
+    let epsilon = if epsilon.is_finite() {
+        epsilon.clamp(1.0e-6, 0.5 - 1.0e-6)
+    } else {
+        0.1
+    };
+
+    let n_max = (len.saturating_sub(1)) as f32;
+    if n_max <= 0.0 {
+        return vec![1.0; len];
+    }
+
+    let half = n_max * 0.5;
+    let taper_span = (epsilon * n_max).min(half.max(0.0));
+    if taper_span <= 0.0 {
+        return vec![1.0; len];
+    }
+
+    (0..len)
+        .map(|i| {
+            let position = i as f32;
+            let mirrored = if position <= half {
+                position
+            } else {
+                n_max - position
+            };
+            planck_taper_value(mirrored, taper_span)
+        })
+        .collect()
+}
+
+fn planck_taper_value(distance: f32, taper_span: f32) -> f32 {
+    if distance <= 0.0 {
+        return 0.0;
+    }
+    if distance >= taper_span {
+        return 1.0;
+    }
+
+    let term1 = taper_span / distance;
+    let denom = taper_span - distance;
+    if denom <= f32::EPSILON {
+        return 1.0;
+    }
+    let term2 = taper_span / denom;
+    let exponent = term1 - term2;
+    1.0 / (exponent.exp() + 1.0)
 }
 
 fn modified_bessel_i0(x: f64) -> f64 {
@@ -914,23 +1010,26 @@ mod tests {
     }
 
     #[test]
-    fn kaiser_coefficients_reduces_to_rectangular_when_beta_zero() {
-        let coeffs = kaiser_coefficients(8, 0.0);
-        assert_eq!(coeffs.len(), 8);
-        for value in coeffs {
-            assert!((value - 1.0).abs() < f32::EPSILON);
+    fn planck_bessel_reduces_to_planck_when_beta_zero() {
+        let epsilon = 0.1;
+        let coeffs = planck_bessel_coefficients(64, epsilon, 0.0);
+        let reference = planck_taper_coefficients(64, epsilon);
+        assert_eq!(coeffs.len(), reference.len());
+        for (lhs, rhs) in coeffs.iter().zip(reference.iter()) {
+            assert!((lhs - rhs).abs() < 1.0e-6);
         }
     }
 
     #[test]
-    fn kaiser_coefficients_are_even_symmetric() {
-        let coeffs = kaiser_coefficients(17, 6.5);
-        assert_eq!(coeffs.len(), 17);
+    fn planck_taper_is_even_symmetric() {
+        let coeffs = planck_taper_coefficients(257, 0.1);
+        assert_eq!(coeffs.len(), 257);
         for i in 0..coeffs.len() {
             let j = coeffs.len() - 1 - i;
             assert!((coeffs[i] - coeffs[j]).abs() < 1.0e-6);
         }
         assert!(coeffs[0] < coeffs[coeffs.len() / 2]);
+        assert!((coeffs[coeffs.len() / 2] - 1.0).abs() < 1.0e-6);
     }
 
     #[test]
