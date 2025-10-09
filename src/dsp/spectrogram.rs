@@ -6,6 +6,7 @@ use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use realfft::{RealFftPlanner, RealToComplex};
 use rustc_hash::FxHashMap;
 use rustfft::num_complex::Complex32;
+use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
@@ -469,97 +470,63 @@ impl SpectrogramHistory {
 
 #[derive(Debug, Clone)]
 struct SampleBuffer {
-    data: Vec<f32>,
-    read: usize,
-    len: usize,
+    data: VecDeque<f32>,
 }
 
 impl SampleBuffer {
     fn with_capacity(capacity: usize) -> Self {
-        let capacity = capacity.max(1);
         Self {
-            data: vec![0.0; capacity],
-            read: 0,
-            len: 0,
+            data: VecDeque::with_capacity(capacity.max(1)),
         }
     }
 
     fn len(&self) -> usize {
-        self.len
+        self.data.len()
     }
 
     fn push(&mut self, sample: f32) {
-        if self.len == self.data.len() {
-            let new_cap = (self.data.len() * 2).max(1);
-            self.grow_to(new_cap);
-        }
-
-        let write = (self.read + self.len) % self.data.len();
-        self.data[write] = sample;
-        self.len += 1;
+        self.data.push_back(sample);
     }
 
     fn reserve_additional(&mut self, additional: usize) {
-        let required = self.len + additional;
-        if required <= self.data.len() {
-            return;
-        }
-
-        let mut new_capacity = self.data.len().max(1);
-        while new_capacity < required {
-            new_capacity *= 2;
-        }
-        self.grow_to(new_capacity);
+        self.data.reserve(additional);
     }
 
     fn consume(&mut self, count: usize) {
-        assert!(count <= self.len);
+        assert!(count <= self.data.len());
         if count == 0 {
             return;
         }
-        self.read = (self.read + count) % self.data.len();
-        self.len -= count;
+        self.data.drain(..count);
     }
 
     fn copy_front_into(&self, target: &mut [f32]) {
-        assert!(target.len() <= self.len);
-        let cap = self.data.len();
-        for (offset, slot) in target.iter_mut().enumerate() {
-            *slot = self.data[(self.read + offset) % cap];
+        assert!(target.len() <= self.data.len());
+        for (slot, sample) in target.iter_mut().zip(self.data.iter()) {
+            *slot = *sample;
         }
     }
 
     fn clear(&mut self) {
-        self.read = 0;
-        self.len = 0;
+        self.data.clear();
     }
 
     fn resize_capacity(&mut self, capacity: usize) {
         if capacity == 0 {
             self.data.clear();
-            self.read = 0;
-            self.len = 0;
+            self.data.shrink_to_fit();
             return;
         }
 
-        if capacity == self.data.len() {
-            return;
+        if capacity < self.data.len() {
+            let drop = self.data.len() - capacity;
+            self.data.drain(..drop);
         }
 
-        if capacity < self.len {
-            self.consume(self.len - capacity);
+        let additional = capacity.saturating_sub(self.data.len());
+        if additional > 0 {
+            self.data.reserve(additional);
         }
-        self.grow_to(capacity);
-    }
-
-    fn grow_to(&mut self, new_capacity: usize) {
-        let mut new_data = vec![0.0; new_capacity];
-        let cap = self.data.len().max(1);
-        for (i, slot) in new_data.iter_mut().enumerate().take(self.len) {
-            *slot = self.data[(self.read + i) % cap];
-        }
-        self.data = new_data;
-        self.read = 0;
     }
 }
 

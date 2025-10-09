@@ -89,6 +89,24 @@ fn bilateral_weight(delta: f32, inv_sigma: f32, spatial_scale: f32) -> f32 {
     return spatial_scale * exp(- ratio * ratio);
 }
 
+fn accumulate(
+    enabled: bool,
+    logical: u32,
+    row: u32,
+    params: MagnitudeParams,
+    inv_sigma: f32,
+    spatial_scale: f32,
+    center: f32,
+    accum: vec3<f32>,
+) -> vec3<f32> {
+    if !enabled {
+        return accum;
+    }
+    let value = sample_magnitude(logical, row, params);
+    let weight = bilateral_weight(abs(center - value), inv_sigma, spatial_scale);
+    return accum + vec3<f32>(value * weight, value * value * weight, weight);
+}
+
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let dims = uniforms.dims_wrap_flags;
@@ -147,76 +165,18 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let has_down = row + 1u < height;
     let down_row = select(row, row + 1u, has_down);
 
-    var weighted_sum = center;
-    var weighted_sq_sum = center * center;
-    var weight_sum = 1.0;
+    var accum = vec3<f32>(center, center * center, 1.0);
+    accum = accumulate(has_left, left_logical, row, params, INV_SIGMA_HORIZONTAL, 1.0, center, accum);
+    accum = accumulate(has_right, right_logical, row, params, INV_SIGMA_HORIZONTAL, 1.0, center, accum);
+    accum = accumulate(has_up, x_index, up_row, params, INV_SIGMA_VERTICAL, 1.0, center, accum);
+    accum = accumulate(has_down, x_index, down_row, params, INV_SIGMA_VERTICAL, 1.0, center, accum);
+    accum = accumulate(has_left && has_up, left_logical, up_row, params, INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT, center, accum);
+    accum = accumulate(has_right && has_up, right_logical, up_row, params, INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT, center, accum);
+    accum = accumulate(has_left && has_down, left_logical, down_row, params, INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT, center, accum);
+    accum = accumulate(has_right && has_down, right_logical, down_row, params, INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT, center, accum);
 
-    if has_left {
-        let left = sample_magnitude(left_logical, row, params);
-        let weight = bilateral_weight(abs(center - left), INV_SIGMA_HORIZONTAL, 1.0);
-        weighted_sum = weighted_sum + left * weight;
-        weighted_sq_sum = weighted_sq_sum + left * left * weight;
-        weight_sum = weight_sum + weight;
-    }
-
-    if has_right {
-        let right = sample_magnitude(right_logical, row, params);
-        let weight = bilateral_weight(abs(center - right), INV_SIGMA_HORIZONTAL, 1.0);
-        weighted_sum = weighted_sum + right * weight;
-        weighted_sq_sum = weighted_sq_sum + right * right * weight;
-        weight_sum = weight_sum + weight;
-    }
-
-    if has_up {
-        let up = sample_magnitude(x_index, up_row, params);
-        let weight = bilateral_weight(abs(center - up), INV_SIGMA_VERTICAL, 1.0);
-        weighted_sum = weighted_sum + up * weight;
-        weighted_sq_sum = weighted_sq_sum + up * up * weight;
-        weight_sum = weight_sum + weight;
-    }
-
-    if has_down {
-        let down = sample_magnitude(x_index, down_row, params);
-        let weight = bilateral_weight(abs(center - down), INV_SIGMA_VERTICAL, 1.0);
-        weighted_sum = weighted_sum + down * weight;
-        weighted_sq_sum = weighted_sq_sum + down * down * weight;
-        weight_sum = weight_sum + weight;
-    }
-
-    if has_left && has_up {
-        let value = sample_magnitude(left_logical, up_row, params);
-        let weight = bilateral_weight(abs(center - value), INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT);
-        weighted_sum = weighted_sum + value * weight;
-        weighted_sq_sum = weighted_sq_sum + value * value * weight;
-        weight_sum = weight_sum + weight;
-    }
-
-    if has_right && has_up {
-        let value = sample_magnitude(right_logical, up_row, params);
-        let weight = bilateral_weight(abs(center - value), INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT);
-        weighted_sum = weighted_sum + value * weight;
-        weighted_sq_sum = weighted_sq_sum + value * value * weight;
-        weight_sum = weight_sum + weight;
-    }
-
-    if has_left && has_down {
-        let value = sample_magnitude(left_logical, down_row, params);
-        let weight = bilateral_weight(abs(center - value), INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT);
-        weighted_sum = weighted_sum + value * weight;
-        weighted_sq_sum = weighted_sq_sum + value * value * weight;
-        weight_sum = weight_sum + weight;
-    }
-
-    if has_right && has_down {
-        let value = sample_magnitude(right_logical, down_row, params);
-        let weight = bilateral_weight(abs(center - value), INV_SIGMA_DIAGONAL, DIAGONAL_SPATIAL_WEIGHT);
-        weighted_sum = weighted_sum + value * weight;
-        weighted_sq_sum = weighted_sq_sum + value * value * weight;
-        weight_sum = weight_sum + weight;
-    }
-
-    let mean = weighted_sum / weight_sum;
-    let variance = max(weighted_sq_sum / weight_sum - mean * mean, 0.0);
+    let mean = accum.x / accum.z;
+    let variance = max(accum.y / accum.z - mean * mean, 0.0);
     let detail = center - mean;
     let attenuation = clamp((VARIANCE_CLAMP - variance) * INV_VARIANCE_CLAMP, 0.0, 1.0);
     let sharpened = clamp(center + detail * SHARPEN_STRENGTH * attenuation, 0.0, 1.0);

@@ -530,10 +530,7 @@ impl SpectrogramBuffer {
             let start = (physical_index as usize) * (self.height as usize);
             let mut buffer = self.update_buffer_pool.acquire(self.height as usize);
             buffer.copy_from_slice(&self.values[start..start + self.height as usize]);
-            let values = Arc::new(ColumnBuffer::new(
-                buffer.into_boxed_slice(),
-                self.update_buffer_pool.clone(),
-            ));
+            let values = Arc::new(ColumnBuffer::new(buffer, self.update_buffer_pool.clone()));
             self.pending_updates.push(SpectrogramColumnUpdate {
                 column_index: physical_index,
                 values,

@@ -32,25 +32,18 @@ pub struct SpectrogramColumnUpdate {
 
 #[derive(Clone, Debug)]
 pub struct ColumnBufferPool {
-    inner: Arc<ColumnBufferPoolInner>,
-}
-
-#[derive(Debug)]
-struct ColumnBufferPoolInner {
-    buffers: Mutex<Vec<Vec<f32>>>,
+    buffers: Arc<Mutex<Vec<Vec<f32>>>>,
 }
 
 impl ColumnBufferPool {
     pub fn new() -> Self {
         Self {
-            inner: Arc::new(ColumnBufferPoolInner {
-                buffers: Mutex::new(Vec::new()),
-            }),
+            buffers: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
     pub fn acquire(&self, len: usize) -> Vec<f32> {
-        let mut buffers = self.inner.buffers.lock().unwrap();
+        let mut buffers = self.buffers.lock().unwrap();
         let mut buffer = buffers.pop().unwrap_or_else(|| Vec::with_capacity(len));
         if buffer.capacity() < len {
             buffer.reserve(len - buffer.capacity());
@@ -61,18 +54,18 @@ impl ColumnBufferPool {
 
     pub fn release(&self, mut buffer: Vec<f32>) {
         buffer.clear();
-        self.inner.buffers.lock().unwrap().push(buffer);
+        self.buffers.lock().unwrap().push(buffer);
     }
 }
 
 #[derive(Debug)]
 pub struct ColumnBuffer {
     pool: ColumnBufferPool,
-    data: Option<Box<[f32]>>, // owned column data reused via pool
+    data: Option<Vec<f32>>, // owned column data reused via pool
 }
 
 impl ColumnBuffer {
-    pub fn new(data: Box<[f32]>, pool: ColumnBufferPool) -> Self {
+    pub fn new(data: Vec<f32>, pool: ColumnBufferPool) -> Self {
         Self {
             pool,
             data: Some(data),
@@ -82,17 +75,12 @@ impl ColumnBuffer {
     pub fn as_slice(&self) -> &[f32] {
         self.data.as_deref().unwrap_or(&[])
     }
-
-    pub fn is_empty(&self) -> bool {
-        self.data.as_ref().is_none_or(|d| d.is_empty())
-    }
 }
 
 impl Drop for ColumnBuffer {
     fn drop(&mut self) {
         if let Some(data) = self.data.take() {
-            let buffer = Vec::from(data);
-            self.pool.release(buffer);
+            self.pool.release(data);
         }
     }
 }
@@ -112,9 +100,12 @@ impl SpectrogramPrimitive {
     }
 
     fn build_vertices(&self, viewport: &Viewport) -> [Vertex; 6] {
-        let width = viewport.logical_size().width.max(1.0);
-        let height = viewport.logical_size().height.max(1.0);
-        let clip = ClipTransform::new(width, height);
+        let logical_size = viewport.logical_size();
+        let width = logical_size.width.max(1.0);
+        let height = logical_size.height.max(1.0);
+        let scale_x = 2.0 / width;
+        let scale_y = 2.0 / height;
+        let to_clip = |x: f32, y: f32| [x * scale_x - 1.0, 1.0 - y * scale_y];
         let bounds = self.params.bounds;
 
         let left = bounds.x;
@@ -124,27 +115,27 @@ impl SpectrogramPrimitive {
 
         [
             Vertex {
-                position: clip.to_clip(left, top),
+                position: to_clip(left, top),
                 tex_coords: [0.0, 0.0],
             },
             Vertex {
-                position: clip.to_clip(right, top),
+                position: to_clip(right, top),
                 tex_coords: [1.0, 0.0],
             },
             Vertex {
-                position: clip.to_clip(right, bottom),
+                position: to_clip(right, bottom),
                 tex_coords: [1.0, 1.0],
             },
             Vertex {
-                position: clip.to_clip(left, top),
+                position: to_clip(left, top),
                 tex_coords: [0.0, 0.0],
             },
             Vertex {
-                position: clip.to_clip(right, bottom),
+                position: to_clip(right, bottom),
                 tex_coords: [1.0, 1.0],
             },
             Vertex {
-                position: clip.to_clip(left, bottom),
+                position: to_clip(left, bottom),
                 tex_coords: [0.0, 1.0],
             },
         ]
@@ -270,25 +261,6 @@ impl SpectrogramUniforms {
             style: [params.contrast.max(0.01), 0.0, 0.0, 0.0],
             background: params.background,
         }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ClipTransform {
-    scale_x: f32,
-    scale_y: f32,
-}
-
-impl ClipTransform {
-    fn new(width: f32, height: f32) -> Self {
-        Self {
-            scale_x: 2.0 / width,
-            scale_y: 2.0 / height,
-        }
-    }
-
-    fn to_clip(self, x: f32, y: f32) -> [f32; 2] {
-        [x * self.scale_x - 1.0, 1.0 - y * self.scale_y]
     }
 }
 
@@ -704,7 +676,7 @@ impl GpuResources {
         }
 
         for update in &params.column_updates {
-            if update.values.is_empty() {
+            if update.values.as_slice().is_empty() {
                 continue;
             }
 
