@@ -41,8 +41,10 @@ impl std::fmt::Debug for SpectrumProcessor {
 
 impl SpectrumProcessor {
     pub fn new(sample_rate: f32) -> Self {
-        let mut config = SpectrumConfig::default();
-        config.sample_rate = sample_rate;
+        let config = SpectrumConfig {
+            sample_rate,
+            ..Default::default()
+        };
         Self {
             inner: CoreSpectrumProcessor::new(config),
             channels: 2,
@@ -584,7 +586,7 @@ fn format_frequency_label(frequency_hz: f32) -> String {
     }
 }
 
-fn smooth_points(points: &mut Vec<[f32; 2]>, radius: usize, passes: usize) {
+fn smooth_points(points: &mut [[f32; 2]], radius: usize, passes: usize) {
     if radius == 0 || passes == 0 || points.len() < 3 {
         return;
     }
@@ -597,21 +599,21 @@ fn smooth_points(points: &mut Vec<[f32; 2]>, radius: usize, passes: usize) {
             *dst = point[1];
         }
 
-        for i in 0..len {
+        for (i, point) in points.iter_mut().enumerate().take(len) {
             let start = i.saturating_sub(radius);
             let end = (i + radius).min(len - 1);
             let mut weight_sum = 0.0;
             let mut value_sum = 0.0;
 
-            for j in start..=end {
+            for (j, &scratch_value) in scratch.iter().enumerate().take(end + 1).skip(start) {
                 let distance = i.abs_diff(j);
                 let weight = (radius - distance + 1) as f32;
-                value_sum += scratch[j] * weight;
+                value_sum += scratch_value * weight;
                 weight_sum += weight;
             }
 
             if weight_sum > 0.0 {
-                points[i][1] = value_sum / weight_sum;
+                point[1] = value_sum / weight_sum;
             }
         }
     }

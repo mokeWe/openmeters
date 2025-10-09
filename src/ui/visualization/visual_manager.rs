@@ -217,8 +217,8 @@ enum VisualRuntime {
         state: Box<SpectrogramState>,
     },
     Spectrum {
-        processor: SpectrumProcessor,
-        state: SpectrumState,
+        processor: Box<SpectrumProcessor>,
+        state: Box<SpectrumState>,
     },
     Placeholder,
 }
@@ -241,8 +241,8 @@ impl VisualRuntime {
                 state: Box::new(SpectrogramState::new()),
             },
             VisualKind::Spectrum => VisualRuntime::Spectrum {
-                processor: SpectrumProcessor::new(DEFAULT_SAMPLE_RATE),
-                state: SpectrumState::new(),
+                processor: Box::new(SpectrumProcessor::new(DEFAULT_SAMPLE_RATE)),
+                state: Box::new(SpectrumState::new()),
             },
             _ => VisualRuntime::Placeholder,
         }
@@ -284,7 +284,7 @@ impl VisualRuntime {
                 state: state.clone(),
             },
             VisualRuntime::Spectrum { state, .. } => VisualContent::Spectrum {
-                state: state.clone(),
+                state: (**state).clone(),
             },
             VisualRuntime::Placeholder => VisualContent::Placeholder {
                 message: Cow::Borrowed(PLACEHOLDER_MESSAGE),
