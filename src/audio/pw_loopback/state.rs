@@ -140,18 +140,20 @@ impl LoopbackState {
     }
 
     fn refresh_links(&mut self) {
-        let Some(plan) = self.compute_route_plan() else {
+        let Some((source_id, target_id, pairs)) = self.compute_route_pairs() else {
             return;
         };
 
-        let desired_keys = plan.desired_keys();
+        let desired_keys: HashSet<LinkKey> = pairs
+            .iter()
+            .map(|(out_port, in_port)| LinkKey {
+                output_node: source_id,
+                output_port: out_port.port_id,
+                input_node: target_id,
+                input_port: in_port.port_id,
+            })
+            .collect();
         self.prune_stale_links(&desired_keys);
-
-        let RoutePlan {
-            source_id,
-            target_id,
-            pairs,
-        } = plan;
 
         for (output_port, input_port) in pairs {
             let key = LinkKey {
@@ -190,7 +192,7 @@ impl LoopbackState {
         }
     }
 
-    fn compute_route_plan(&mut self) -> Option<RoutePlan> {
+    fn compute_route_pairs(&mut self) -> Option<(u32, u32, Vec<(GraphPort, GraphPort)>)> {
         let Some(source_id) = self.openmeters_node_id else {
             self.clear_links();
             return None;
@@ -211,30 +213,21 @@ impl LoopbackState {
 
         let pairs = pair_ports_by_channel(source_ports, target_ports);
 
-        Some(RoutePlan {
-            source_id,
-            target_id,
-            pairs,
-        })
+        Some((source_id, target_id, pairs))
     }
 
     fn prune_stale_links(&mut self, desired_keys: &HashSet<LinkKey>) {
-        let obsolete: Vec<LinkKey> = self
-            .active_links
-            .keys()
-            .filter(|key| !desired_keys.contains(key))
-            .copied()
-            .collect();
-
-        for key in obsolete {
-            if let Some(link) = self.active_links.remove(&key) {
-                drop(link);
+        self.active_links.retain(|key, _| {
+            if desired_keys.contains(key) {
+                true
+            } else {
+                info!(
+                    "[loopback] removed link {}:{} -> {}:{}",
+                    key.output_node, key.output_port, key.input_node, key.input_port
+                );
+                false
             }
-            info!(
-                "[loopback] removed link {}:{} -> {}:{}",
-                key.output_node, key.output_port, key.input_node, key.input_port
-            );
-        }
+        });
     }
 
     fn select_ports<F>(
@@ -258,12 +251,16 @@ impl LoopbackState {
                 return None;
             }
         };
-
         let ports = selector(node);
         if ports.is_empty() {
-            let snapshot = node.clone_ports();
+            let snapshot: Vec<GraphPort> = self
+                .nodes
+                .get(&node_id)
+                .into_iter()
+                .flat_map(|node| node.ports.values().cloned())
+                .collect();
             self.clear_links();
-            Self::log_ports_snapshot(label, node_id, &snapshot);
+            Self::log_ports_snapshot(label, node_id, snapshot.iter());
             warn!(
                 "[loopback] no {port_role} ports available on node {} for loopback",
                 node_id
@@ -283,7 +280,12 @@ impl LoopbackState {
         info!("[loopback] cleared all active links");
     }
 
-    fn log_ports_snapshot(label: &str, node_id: u32, ports: &[GraphPort]) {
+    fn log_ports_snapshot<'a>(
+        label: &str,
+        node_id: u32,
+        ports: impl IntoIterator<Item = &'a GraphPort>,
+    ) {
+        let ports: Vec<&GraphPort> = ports.into_iter().collect();
         if ports.is_empty() {
             info!("[loopback] {label} node {} has no known ports", node_id);
             return;
@@ -335,26 +337,6 @@ impl LoopbackState {
     }
 }
 
-struct RoutePlan {
-    source_id: u32,
-    target_id: u32,
-    pairs: Vec<(GraphPort, GraphPort)>,
-}
-
-impl RoutePlan {
-    fn desired_keys(&self) -> HashSet<LinkKey> {
-        self.pairs
-            .iter()
-            .map(|(out_port, in_port)| LinkKey {
-                output_node: self.source_id,
-                output_port: out_port.port_id,
-                input_node: self.target_id,
-                input_port: in_port.port_id,
-            })
-            .collect()
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 struct LinkKey {
     output_node: u32,
@@ -393,56 +375,44 @@ impl TrackedNode {
     }
 
     fn output_ports_for_loopback(&self) -> Vec<GraphPort> {
-        let monitor_ports: Vec<_> = self
-            .ports
-            .values()
-            .filter(|port| port.direction == PortDirection::Output && port.is_monitor)
-            .cloned()
-            .collect();
-
-        if !monitor_ports.is_empty() {
-            return monitor_ports;
-        }
-
-        let output_ports: Vec<_> = self
-            .ports
-            .values()
-            .filter(|port| port.direction == PortDirection::Output)
-            .cloned()
-            .collect();
-        if !output_ports.is_empty() {
-            return output_ports;
-        }
-
-        self.ports.values().cloned().collect()
+        self.ports_for_loopback(
+            |port| port.direction == PortDirection::Output && port.is_monitor,
+            |port| port.direction == PortDirection::Output,
+        )
     }
 
     fn input_ports_for_loopback(&self) -> Vec<GraphPort> {
-        let playback_ports: Vec<_> = self
-            .ports
-            .values()
-            .filter(|port| port.direction == PortDirection::Input && !port.is_monitor)
-            .cloned()
-            .collect();
+        self.ports_for_loopback(
+            |port| port.direction == PortDirection::Input && !port.is_monitor,
+            |port| port.direction == PortDirection::Input,
+        )
+    }
 
-        if !playback_ports.is_empty() {
-            return playback_ports;
+    fn ports_for_loopback<F, G>(&self, primary: F, secondary: G) -> Vec<GraphPort>
+    where
+        F: Fn(&GraphPort) -> bool,
+        G: Fn(&GraphPort) -> bool,
+    {
+        if let Some(ports) = self.collect_if(&primary) {
+            return ports;
         }
-
-        let input_ports: Vec<_> = self
-            .ports
-            .values()
-            .filter(|port| port.direction == PortDirection::Input)
-            .cloned()
-            .collect();
-        if !input_ports.is_empty() {
-            return input_ports;
+        if let Some(ports) = self.collect_if(&secondary) {
+            return ports;
         }
-
         self.ports.values().cloned().collect()
     }
 
-    fn clone_ports(&self) -> Vec<GraphPort> {
-        self.ports.values().cloned().collect()
+    fn collect_if<F>(&self, predicate: &F) -> Option<Vec<GraphPort>>
+    where
+        F: Fn(&GraphPort) -> bool,
+    {
+        let ports: Vec<GraphPort> = self
+            .ports
+            .values()
+            .filter(|port| predicate(port))
+            .cloned()
+            .collect();
+
+        (!ports.is_empty()).then_some(ports)
     }
 }

@@ -74,10 +74,6 @@ fn run_loopback() -> Result<()> {
     mainloop.run();
     info!("[loopback] PipeWire loopback loop exited");
 
-    drop(runtime);
-    drop(registry);
-    drop(context);
-
     Ok(())
 }
 
@@ -85,7 +81,7 @@ fn run_loopback() -> Result<()> {
 struct LoopbackRuntime {
     registry: RegistryRc,
     state: Rc<RefCell<LoopbackState>>,
-    metadata_bindings: Rc<RefCell<HashMap<u32, MetadataBinding>>>,
+    metadata_bindings: Rc<RefCell<HashMap<u32, (Metadata, MetadataListener)>>>,
 }
 
 impl LoopbackRuntime {
@@ -117,11 +113,11 @@ impl LoopbackRuntime {
     }
 
     fn handle_global_removed(&self, id: u32) {
-        {
+        if {
             let mut state = self.state.borrow_mut();
-            if state.remove_port_by_global(id) || state.remove_node(id) {
-                return;
-            }
+            state.remove_port_by_global(id) || state.remove_node(id)
+        } {
+            return;
         }
 
         if self.metadata_bindings.borrow_mut().remove(&id).is_some() {
@@ -131,7 +127,8 @@ impl LoopbackRuntime {
 
     fn process_metadata_added(&self, global: &GlobalObject<&DictRef>) {
         let metadata_id = global.id;
-        if self.metadata_bindings.borrow().contains_key(&metadata_id) {
+        let mut bindings = self.metadata_bindings.borrow_mut();
+        if bindings.contains_key(&metadata_id) {
             return;
         }
 
@@ -152,13 +149,7 @@ impl LoopbackRuntime {
             })
             .register();
 
-        self.metadata_bindings.borrow_mut().insert(
-            metadata_id,
-            MetadataBinding {
-                _proxy: metadata,
-                _listener: metadata_listener,
-            },
-        );
+        bindings.insert(metadata_id, (metadata, metadata_listener));
     }
 
     fn handle_metadata_property(
@@ -177,9 +168,4 @@ impl LoopbackRuntime {
             .borrow_mut()
             .update_default_sink(metadata_id, subject, type_hint, value);
     }
-}
-
-struct MetadataBinding {
-    _proxy: Metadata,
-    _listener: MetadataListener,
 }
