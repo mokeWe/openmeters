@@ -224,11 +224,7 @@ fn planck_bessel_coefficients(len: usize, epsilon: f32, beta: f32) -> Vec<f32> {
 
     let planck = planck_taper_coefficients(len, epsilon);
     let kaiser = kaiser_coefficients(len, beta);
-    planck
-        .into_iter()
-        .zip(kaiser)
-        .map(|(p, k)| p * k)
-        .collect()
+    planck.into_iter().zip(kaiser).map(|(p, k)| p * k).collect()
 }
 
 fn planck_taper_coefficients(len: usize, epsilon: f32) -> Vec<f32> {

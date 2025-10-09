@@ -14,6 +14,8 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hasher as _;
 use std::sync::{Arc, mpsc};
 
+const GRID_COLUMNS: usize = 4;
+
 #[derive(Debug, Clone)]
 pub enum RoutingCommand {
     SetApplicationEnabled { node_id: u32, enabled: bool },
@@ -58,19 +60,14 @@ impl ConfigPage {
     }
 
     pub fn subscription(&self) -> Subscription<ConfigMessage> {
-        let mut subscriptions = Vec::new();
-
-        if let Some(receiver) = &self.registry_updates {
-            subscriptions.push(from_recipe(RegistrySubscription {
-                receiver: Arc::clone(receiver),
-            }));
-        }
-
-        match subscriptions.len() {
-            0 => Subscription::none(),
-            1 => subscriptions.into_iter().next().unwrap(),
-            _ => Subscription::batch(subscriptions),
-        }
+        self.registry_updates
+            .as_ref()
+            .map(|receiver| {
+                from_recipe(RegistrySubscription {
+                    receiver: Arc::clone(receiver),
+                })
+            })
+            .unwrap_or_else(Subscription::none)
     }
 
     pub fn update(&mut self, message: ConfigMessage) -> Task<ConfigMessage> {
@@ -114,141 +111,7 @@ impl ConfigPage {
         let visuals_snapshot = self.visual_manager.snapshot();
         let sink_label = format!("Hardware sink: {}", self.hardware_sink.label());
 
-        let mut list = Column::new().spacing(12);
-
-        if self.applications.is_empty() {
-            let message = if self.registry_updates.is_some() {
-                if self.registry_ready {
-                    "No audio applications detected. Launch something to see it here."
-                } else {
-                    "Waiting for PipeWire registry snapshots..."
-                }
-            } else {
-                "Registry unavailable; routing controls disabled."
-            };
-
-            list = list.push(text(message));
-        } else {
-            const GRID_COLUMNS: usize = 2;
-
-            for chunk in self.applications.chunks(GRID_COLUMNS) {
-                let mut row = Row::new().spacing(12);
-
-                for entry in chunk {
-                    let node_id = entry.node_id;
-                    let toggled = !entry.enabled;
-                    let label = entry.display_label();
-                    let label = if entry.enabled {
-                        format!("{label} (enabled)")
-                    } else {
-                        format!("{label} (disabled)")
-                    };
-                    let button = button(text(label).width(Length::Fill))
-                        .padding(12)
-                        .width(Length::FillPortion(1))
-                        .style(move |_theme, status| {
-                            let base_background = if entry.enabled {
-                                theme::surface_color()
-                            } else {
-                                theme::elevated_color()
-                            };
-                            let text_color = if entry.enabled {
-                                theme::text_color()
-                            } else {
-                                theme::text_secondary()
-                            };
-                            let mut style = iced::widget::button::Style {
-                                background: Some(iced::Background::Color(base_background)),
-                                text_color,
-                                border: theme::sharp_border(),
-                                ..Default::default()
-                            };
-
-                            match status {
-                                iced::widget::button::Status::Hovered => {
-                                    style.background =
-                                        Some(iced::Background::Color(theme::hover_color()));
-                                }
-                                iced::widget::button::Status::Pressed => {
-                                    style.border = theme::focus_border();
-                                }
-                                _ => {}
-                            }
-
-                            style
-                        })
-                        .on_press(ConfigMessage::ToggleChanged {
-                            node_id,
-                            enabled: toggled,
-                        });
-                    row = row.push(button);
-                }
-
-                for _ in chunk.len()..GRID_COLUMNS {
-                    row = row.push(Space::new(Length::FillPortion(1), Length::Shrink));
-                }
-
-                list = list.push(row);
-            }
-        }
-
-        let summary_status = if self.applications.is_empty() {
-            if self.registry_updates.is_some() {
-                if self.registry_ready {
-                    " - none detected".to_string()
-                } else {
-                    " - waiting...".to_string()
-                }
-            } else {
-                " - unavailable".to_string()
-            }
-        } else {
-            format!(" - {} total", self.applications.len())
-        };
-
-        let indicator = if self.applications_expanded {
-            "▾"
-        } else {
-            "▸"
-        };
-        let summary_label = format!("{indicator} Applications{summary_status}");
-
-        let summary_button = button(
-            text(summary_label)
-                .width(Length::Fill)
-                .align_x(alignment::Horizontal::Left),
-        )
-        .padding(8)
-        .width(Length::Fill)
-        .style(|_theme, status| {
-            let mut style = iced::widget::button::Style {
-                background: Some(iced::Background::Color(theme::surface_color())),
-                text_color: theme::text_color(),
-                border: theme::sharp_border(),
-                ..Default::default()
-            };
-
-            match status {
-                iced::widget::button::Status::Hovered => {
-                    style.background = Some(iced::Background::Color(theme::hover_color()));
-                }
-                iced::widget::button::Status::Pressed => {
-                    style.border = theme::focus_border();
-                }
-                _ => {}
-            }
-
-            style
-        })
-        .on_press(ConfigMessage::ToggleApplicationsVisibility);
-
-        let mut applications_section = Column::new().spacing(8).push(summary_button);
-
-        if self.applications_expanded {
-            applications_section =
-                applications_section.push(scrollable(list).height(Length::Shrink));
-        }
-
+        let applications_section = self.render_applications_section();
         let visuals_section = self.render_visuals_section(&visuals_snapshot);
 
         let content = Column::new()
@@ -263,89 +126,110 @@ impl ConfigPage {
             .into()
     }
 
+    fn render_applications_section(&self) -> Column<'_, ConfigMessage> {
+        let status_suffix = if self.applications.is_empty() {
+            if self.registry_updates.is_some() {
+                if self.registry_ready {
+                    " - none detected"
+                } else {
+                    " - waiting..."
+                }
+            } else {
+                " - unavailable"
+            }
+        } else {
+            &format!(" - {} total", self.applications.len())
+        };
+
+        let indicator = if self.applications_expanded {
+            "▾"
+        } else {
+            "▸"
+        };
+        let summary_label = format!("{indicator} Applications{status_suffix}");
+
+        let summary_button = button(
+            text(summary_label)
+                .width(Length::Fill)
+                .align_x(alignment::Horizontal::Left),
+        )
+        .padding(8)
+        .width(Length::Fill)
+        .style(header_button_style)
+        .on_press(ConfigMessage::ToggleApplicationsVisibility);
+
+        let mut section = Column::new().spacing(8).push(summary_button);
+
+        if self.applications_expanded {
+            let content = if self.applications.is_empty() {
+                text(self.applications_empty_message()).into()
+            } else {
+                self.render_applications_grid()
+            };
+            section = section.push(scrollable(content).height(Length::Shrink));
+        }
+
+        section
+    }
+
+    fn applications_empty_message(&self) -> &'static str {
+        if self.registry_updates.is_some() {
+            if self.registry_ready {
+                "No audio applications detected. Launch something to see it here."
+            } else {
+                "Waiting for PipeWire registry snapshots..."
+            }
+        } else {
+            "Registry unavailable; routing controls disabled."
+        }
+    }
+
+    fn render_applications_grid(&self) -> Element<'_, ConfigMessage> {
+        render_toggle_grid(&self.applications, |entry| {
+            (
+                format!(
+                    "{} ({})",
+                    entry.display_label(),
+                    if entry.enabled { "enabled" } else { "disabled" }
+                ),
+                entry.enabled,
+                ConfigMessage::ToggleChanged {
+                    node_id: entry.node_id,
+                    enabled: !entry.enabled,
+                },
+            )
+        })
+        .into()
+    }
+
     fn render_visuals_section(
         &self,
         snapshot: &crate::ui::visualization::visual_manager::VisualSnapshot,
     ) -> Column<'_, ConfigMessage> {
-        let mut section = Column::new().spacing(8);
         let total = snapshot.slots.len();
         let enabled = snapshot.slots.iter().filter(|slot| slot.enabled).count();
+        let header = text(format!("Visual modules – {enabled}/{total} enabled")).size(14);
 
-        section =
-            section.push(text(format!("Visual modules – {enabled}/{total} enabled")).size(14));
+        let section = Column::new().spacing(8).push(header);
 
         if snapshot.slots.is_empty() {
-            return section
-                .push(text("No visual modules available."))
-                .spacing(8);
+            return section.push(text("No visual modules available."));
         }
 
-        let mut grid = Column::new().spacing(12);
-        const GRID_COLUMNS: usize = 2;
-
-        for chunk in snapshot.slots.chunks(GRID_COLUMNS) {
-            let mut row = Row::new().spacing(12);
-
-            for slot in chunk {
-                let kind = slot.kind;
-                let enabled = slot.enabled;
-                let toggled = !enabled;
-                let display_name = slot.metadata.display_name;
-
-                let label = if enabled {
-                    format!("{display_name} (enabled)")
-                } else {
-                    format!("{display_name} (disabled)")
-                };
-
-                let button = button(text(label).width(Length::Fill))
-                    .padding(12)
-                    .width(Length::FillPortion(1))
-                    .style(move |_theme, status| {
-                        let base_background = if enabled {
-                            theme::surface_color()
-                        } else {
-                            theme::elevated_color()
-                        };
-                        let text_color = if enabled {
-                            theme::text_color()
-                        } else {
-                            theme::text_secondary()
-                        };
-                        let mut style = iced::widget::button::Style {
-                            background: Some(iced::Background::Color(base_background)),
-                            text_color,
-                            border: theme::sharp_border(),
-                            ..Default::default()
-                        };
-
-                        match status {
-                            iced::widget::button::Status::Hovered => {
-                                style.background =
-                                    Some(iced::Background::Color(theme::hover_color()));
-                            }
-                            iced::widget::button::Status::Pressed => {
-                                style.border = theme::focus_border();
-                            }
-                            _ => {}
-                        }
-
-                        style
-                    })
-                    .on_press(ConfigMessage::VisualToggled {
-                        kind,
-                        enabled: toggled,
-                    });
-
-                row = row.push(button);
-            }
-
-            for _ in chunk.len()..GRID_COLUMNS {
-                row = row.push(Space::new(Length::FillPortion(1), Length::Shrink));
-            }
-
-            grid = grid.push(row);
-        }
+        let grid = render_toggle_grid(&snapshot.slots, |slot| {
+            (
+                format!(
+                    "{} ({})",
+                    slot.metadata.display_name,
+                    if slot.enabled { "enabled" } else { "disabled" }
+                ),
+                slot.enabled,
+                ConfigMessage::VisualToggled {
+                    kind: slot.kind,
+                    enabled: !slot.enabled,
+                },
+            )
+        });
 
         section.push(grid)
     }
@@ -370,6 +254,96 @@ impl ConfigPage {
         self.applications = entries;
     }
 }
+
+fn render_toggle_grid<'a, T, F>(items: &[T], mut project: F) -> Column<'a, ConfigMessage>
+where
+    F: FnMut(&T) -> (String, bool, ConfigMessage),
+{
+    let mut grid = Column::new().spacing(12);
+
+    for chunk in items.chunks(GRID_COLUMNS) {
+        let mut row = Row::new().spacing(12);
+
+        for item in chunk {
+            let (label, enabled, message) = project(item);
+            row = row.push(toggle_button(label, enabled, message));
+        }
+
+        for _ in chunk.len()..GRID_COLUMNS {
+            row = row.push(Space::new(Length::FillPortion(1), Length::Shrink));
+        }
+
+        grid = grid.push(row);
+    }
+
+    grid
+}
+
+fn toggle_button<'a>(
+    label: String,
+    enabled: bool,
+    message: ConfigMessage,
+) -> iced::widget::Button<'a, ConfigMessage> {
+    button(text(label).width(Length::Fill))
+        .padding(12)
+        .width(Length::FillPortion(1))
+        .style(move |_theme, status| {
+            let base_background = if enabled {
+                theme::surface_color()
+            } else {
+                theme::elevated_color()
+            };
+            let text_color = if enabled {
+                theme::text_color()
+            } else {
+                theme::text_secondary()
+            };
+            let mut style = iced::widget::button::Style {
+                background: Some(iced::Background::Color(base_background)),
+                text_color,
+                border: theme::sharp_border(),
+                ..Default::default()
+            };
+
+            match status {
+                iced::widget::button::Status::Hovered => {
+                    style.background = Some(iced::Background::Color(theme::hover_color()));
+                }
+                iced::widget::button::Status::Pressed => {
+                    style.border = theme::focus_border();
+                }
+                _ => {}
+            }
+
+            style
+        })
+        .on_press(message)
+}
+
+fn header_button_style(
+    _theme: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let mut style = iced::widget::button::Style {
+        background: Some(iced::Background::Color(theme::surface_color())),
+        text_color: theme::text_color(),
+        border: theme::sharp_border(),
+        ..Default::default()
+    };
+
+    match status {
+        iced::widget::button::Status::Hovered => {
+            style.background = Some(iced::Background::Color(theme::hover_color()));
+        }
+        iced::widget::button::Status::Pressed => {
+            style.border = theme::focus_border();
+        }
+        _ => {}
+    }
+
+    style
+}
+
 struct RegistrySubscription {
     receiver: Arc<AsyncReceiver<RegistrySnapshot>>,
 }
