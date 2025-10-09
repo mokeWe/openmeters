@@ -223,29 +223,28 @@ impl SpectrumProcessor {
                 self.scratch_magnitudes[idx] = weighted;
             }
 
-            let update_weighted = averaging_update(
+            let peak_index = averaging_update(
                 &self.config.averaging,
                 &mut self.averaged_db,
                 &mut self.peak_hold_db,
+                &mut self.snapshot.magnitudes_db,
                 &self.scratch_magnitudes,
                 self.last_update_at,
                 timestamp,
             );
 
-            let update_unweighted = averaging_update(
+            averaging_update(
                 &self.config.averaging,
                 &mut self.averaged_unweighted_db,
                 &mut self.peak_hold_unweighted_db,
+                &mut self.snapshot.magnitudes_unweighted_db,
                 &self.scratch_unweighted,
                 self.last_update_at,
                 timestamp,
             );
 
-            self.snapshot.magnitudes_db = update_weighted.magnitudes;
-            self.snapshot.magnitudes_unweighted_db = update_unweighted.magnitudes;
-            self.snapshot.peak_frequency_hz = update_weighted
-                .peak_index
-                .and_then(|idx| self.snapshot.frequency_bins.get(idx).copied());
+            self.snapshot.peak_frequency_hz =
+                peak_index.and_then(|idx| self.snapshot.frequency_bins.get(idx).copied());
             self.last_update_at = Some(timestamp);
 
             for _ in 0..hop {
@@ -309,19 +308,15 @@ impl Reconfigurable<SpectrumConfig> for SpectrumProcessor {
     }
 }
 
-struct AveragingUpdate {
-    magnitudes: Vec<f32>,
-    peak_index: Option<usize>,
-}
-
 fn averaging_update(
     mode: &AveragingMode,
     averaged_db: &mut Vec<f32>,
     peak_hold_db: &mut Vec<f32>,
+    output: &mut Vec<f32>,
     input: &[f32],
     last_timestamp: Option<Instant>,
     current_timestamp: Instant,
-) -> AveragingUpdate {
+) -> Option<usize> {
     let bins = input.len();
     if averaged_db.len() != bins {
         averaged_db.resize(bins, DB_FLOOR);
@@ -330,7 +325,10 @@ fn averaging_update(
         peak_hold_db.resize(bins, DB_FLOOR);
     }
 
-    let mut output = vec![DB_FLOOR; bins];
+    if output.len() != bins {
+        output.resize(bins, DB_FLOOR);
+    }
+
     let dt = last_timestamp
         .map(|last| current_timestamp.saturating_duration_since(last))
         .unwrap_or_default();
@@ -382,10 +380,7 @@ fn averaging_update(
         }
     }
 
-    AveragingUpdate {
-        magnitudes: output,
-        peak_index,
-    }
+    peak_index
 }
 
 fn apply_window(buffer: &mut [f32], window: &[f32]) {

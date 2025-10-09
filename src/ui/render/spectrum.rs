@@ -42,13 +42,11 @@ impl SpectrumPrimitive {
         );
 
         let mut positions = Vec::with_capacity(self.params.normalized_points.len());
-        let mut amplitudes = Vec::with_capacity(self.params.normalized_points.len());
         for point in &self.params.normalized_points {
             let amp = point[1].clamp(0.0, 1.0);
             let x = bounds.x + bounds.width * point[0].clamp(0.0, 1.0);
             let y = bounds.y + bounds.height * (1.0 - amp);
             positions.push((x, y));
-            amplitudes.push(amp);
         }
 
         if positions.len() < 2 {
@@ -63,8 +61,13 @@ impl SpectrumPrimitive {
         let highlight_threshold = self.params.highlight_threshold.clamp(0.0, 1.0);
         if highlight_color[3] > 0.0 && highlight_threshold < 1.0 {
             let denom = (1.0 - highlight_threshold).max(1.0e-6);
-            for (segment, amp_segment) in positions.windows(2).zip(amplitudes.windows(2)) {
-                let amp_max = amp_segment[0].max(amp_segment[1]);
+            for (segment, points) in positions
+                .windows(2)
+                .zip(self.params.normalized_points.windows(2))
+            {
+                let amp_max = points[0][1]
+                    .clamp(0.0, 1.0)
+                    .max(points[1][1].clamp(0.0, 1.0));
                 if amp_max < highlight_threshold {
                     continue;
                 }
@@ -89,20 +92,16 @@ impl SpectrumPrimitive {
                     alpha,
                 ];
 
-                vertices.extend_from_slice(&triangle_vertices_with_colors(
+                vertices.extend_from_slice(&triangle_vertices(
                     bottom_left,
                     top_left,
                     top_right,
                     column_color,
-                    column_color,
-                    column_color,
                 ));
-                vertices.extend_from_slice(&triangle_vertices_with_colors(
+                vertices.extend_from_slice(&triangle_vertices(
                     bottom_left,
                     top_right,
                     bottom_right,
-                    column_color,
-                    column_color,
                     column_color,
                 ));
             }
@@ -111,22 +110,21 @@ impl SpectrumPrimitive {
         // Build polyline with thickness.
         let normals = compute_normals(&positions);
         let half = self.params.line_width.max(0.1) * 0.5;
-        let mut strip: Vec<([f32; 2], [f32; 2])> = Vec::with_capacity(positions.len());
-
+        let line_color = self.params.line_color;
+        let mut prev_pair: Option<([f32; 2], [f32; 2])> = None;
         for ((x, y), normal) in positions.iter().zip(normals.iter()) {
             let offset_x = normal.0 * half;
             let offset_y = normal.1 * half;
-            let left = clip.to_clip(x - offset_x, y - offset_y);
-            let right = clip.to_clip(x + offset_x, y + offset_y);
-            strip.push((left, right));
-        }
-
-        let line_color = self.params.line_color;
-        for window in strip.windows(2) {
-            let (left0, right0) = window[0];
-            let (left1, right1) = window[1];
-            vertices.extend_from_slice(&triangle_vertices(left0, right0, right1, line_color));
-            vertices.extend_from_slice(&triangle_vertices(left0, right1, left1, line_color));
+            let current = (
+                clip.to_clip(x - offset_x, y - offset_y),
+                clip.to_clip(x + offset_x, y + offset_y),
+            );
+            if let Some((left0, right0)) = prev_pair {
+                let (left1, right1) = current;
+                vertices.extend_from_slice(&triangle_vertices(left0, right0, right1, line_color));
+                vertices.extend_from_slice(&triangle_vertices(left0, right1, left1, line_color));
+            }
+            prev_pair = Some(current);
         }
 
         if !self.params.secondary_points.is_empty() {
@@ -140,33 +138,31 @@ impl SpectrumPrimitive {
             if overlay_positions.len() >= 2 {
                 let overlay_normals = compute_normals(&overlay_positions);
                 let half_overlay = self.params.secondary_line_width.max(0.1) * 0.5;
-                let mut overlay_strip: Vec<([f32; 2], [f32; 2])> =
-                    Vec::with_capacity(overlay_positions.len());
-
+                let overlay_color = self.params.secondary_line_color;
+                let mut prev_overlay: Option<([f32; 2], [f32; 2])> = None;
                 for ((x, y), normal) in overlay_positions.iter().zip(overlay_normals.iter()) {
                     let offset_x = normal.0 * half_overlay;
                     let offset_y = normal.1 * half_overlay;
-                    let left = clip.to_clip(x - offset_x, y - offset_y);
-                    let right = clip.to_clip(x + offset_x, y + offset_y);
-                    overlay_strip.push((left, right));
-                }
-
-                let overlay_color = self.params.secondary_line_color;
-                for window in overlay_strip.windows(2) {
-                    let (left0, right0) = window[0];
-                    let (left1, right1) = window[1];
-                    vertices.extend_from_slice(&triangle_vertices(
-                        left0,
-                        right0,
-                        right1,
-                        overlay_color,
-                    ));
-                    vertices.extend_from_slice(&triangle_vertices(
-                        left0,
-                        right1,
-                        left1,
-                        overlay_color,
-                    ));
+                    let current = (
+                        clip.to_clip(x - offset_x, y - offset_y),
+                        clip.to_clip(x + offset_x, y + offset_y),
+                    );
+                    if let Some((left0, right0)) = prev_overlay {
+                        let (left1, right1) = current;
+                        vertices.extend_from_slice(&triangle_vertices(
+                            left0,
+                            right0,
+                            right1,
+                            overlay_color,
+                        ));
+                        vertices.extend_from_slice(&triangle_vertices(
+                            left0,
+                            right1,
+                            left1,
+                            overlay_color,
+                        ));
+                    }
+                    prev_overlay = Some(current);
                 }
             }
         }
@@ -246,30 +242,6 @@ fn triangle_vertices(a: [f32; 2], b: [f32; 2], c: [f32; 2], color: [f32; 4]) -> 
         Vertex { position: a, color },
         Vertex { position: b, color },
         Vertex { position: c, color },
-    ]
-}
-
-fn triangle_vertices_with_colors(
-    a: [f32; 2],
-    b: [f32; 2],
-    c: [f32; 2],
-    color_a: [f32; 4],
-    color_b: [f32; 4],
-    color_c: [f32; 4],
-) -> [Vertex; 3] {
-    [
-        Vertex {
-            position: a,
-            color: color_a,
-        },
-        Vertex {
-            position: b,
-            color: color_b,
-        },
-        Vertex {
-            position: c,
-            color: color_c,
-        },
     ]
 }
 

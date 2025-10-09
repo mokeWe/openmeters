@@ -368,8 +368,9 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> 
             height: GRID_LABEL_HEIGHT + GRID_LABEL_PADDING * 2.0,
         };
 
-        let mut draw_commands: Vec<(usize, Point)> = Vec::with_capacity(visual.grid_lines.len());
-        let mut active_labels: Vec<String> = Vec::with_capacity(visual.grid_lines.len());
+        for entry in cache_entries.iter_mut() {
+            entry.in_use = false;
+        }
 
         for line in &visual.grid_lines {
             let label = format_frequency_label(line.frequency_hz);
@@ -395,17 +396,10 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> 
             }
             let y = bounds.y + GRID_LABEL_PADDING;
             let position = Point::new(x, y);
-            draw_commands.push((index, position));
-            active_labels.push(label);
+            renderer.fill_paragraph(paragraph, position, label_color, clip_bounds);
         }
 
-        for (index, position) in draw_commands {
-            if let Some(entry) = cache_entries.get(index) {
-                renderer.fill_paragraph(&entry.paragraph, position, label_color, clip_bounds);
-            }
-        }
-
-        prune_grid_labels(&mut cache_entries, &active_labels);
+        cache_entries.retain(|entry| entry.in_use);
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -502,18 +496,11 @@ fn ensure_grid_label(entries: &mut Vec<GridLabelParagraph>, label: &str, bounds:
         .find(|(_, entry)| entry.label == label)
     {
         entry.ensure(label, bounds);
+        entry.in_use = true;
         index
     } else {
         entries.push(GridLabelParagraph::new(label, bounds));
         entries.len() - 1
-    }
-}
-
-fn prune_grid_labels(entries: &mut Vec<GridLabelParagraph>, active: &[String]) {
-    if active.is_empty() {
-        entries.clear();
-    } else {
-        entries.retain(|entry| active.iter().any(|label| label == &entry.label));
     }
 }
 
@@ -526,6 +513,7 @@ struct GridLabelParagraph {
     label: String,
     bounds: Size,
     paragraph: RenderParagraph,
+    in_use: bool,
 }
 
 impl GridLabelParagraph {
@@ -534,6 +522,7 @@ impl GridLabelParagraph {
             label: label.to_owned(),
             bounds,
             paragraph: build_grid_label_paragraph(label, bounds),
+            in_use: true,
         }
     }
 
@@ -546,6 +535,7 @@ impl GridLabelParagraph {
             self.paragraph.resize(bounds);
             self.bounds = bounds;
         }
+        self.in_use = true;
     }
 }
 
