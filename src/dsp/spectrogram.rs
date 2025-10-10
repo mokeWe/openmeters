@@ -5,7 +5,7 @@ use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use realfft::{RealFftPlanner, RealToComplex};
 use rustc_hash::FxHashMap;
-use rustfft::num_complex::{Complex32, ComplexFloat};
+use rustfft::num_complex::Complex32;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -412,6 +412,7 @@ pub struct ReassignedSample {
 }
 
 /// One column of log-power magnitudes, with optional reassigned samples.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct SpectrogramColumn {
     pub timestamp: Instant,
@@ -421,6 +422,7 @@ pub struct SpectrogramColumn {
 }
 
 /// Incremental update emitted by the spectrogram processor.
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug, Clone)]
 pub struct SpectrogramUpdate {
     pub fft_size: usize,
@@ -435,23 +437,15 @@ pub struct SpectrogramUpdate {
 
 #[derive(Debug)]
 struct SpectrogramHistory {
-    slots: Vec<Option<SpectrogramColumn>>,
+    slots: VecDeque<SpectrogramColumn>,
     capacity: usize,
-    head: usize,
-    len: usize,
 }
 
 impl SpectrogramHistory {
     fn new(capacity: usize) -> Self {
-        let mut slots = Vec::with_capacity(capacity);
-        if capacity > 0 {
-            slots.resize(capacity, None);
-        }
         Self {
-            slots,
+            slots: VecDeque::with_capacity(capacity),
             capacity,
-            head: 0,
-            len: 0,
         }
     }
 
@@ -461,32 +455,26 @@ impl SpectrogramHistory {
             return;
         }
 
-        self.clear_into(evicted);
+        let mut drained = Vec::new();
+        self.clear_into(&mut drained);
+        evicted.clear();
         self.capacity = capacity;
-        self.head = 0;
-        self.len = 0;
-        self.ensure_slot_count();
 
         if capacity == 0 {
+            evicted.extend(drained);
             return;
         }
 
-        let retain_start = evicted.len().saturating_sub(capacity);
-        if retain_start > 0 {
-            evicted.drain(..retain_start);
-        }
-        for column in evicted.drain(..) {
+        let retain_start = drained.len().saturating_sub(capacity);
+        evicted.extend(drained.drain(..retain_start));
+        for column in drained.drain(..) {
             debug_assert!(self.push(column).is_none());
         }
     }
 
     fn clear_into(&mut self, out: &mut Vec<SpectrogramColumn>) {
         out.clear();
-        out.reserve(self.len);
-        while let Some(column) = self.pop_front_internal() {
-            out.push(column);
-        }
-        self.head = 0;
+        out.extend(self.slots.drain(..));
     }
 
     fn push(&mut self, column: SpectrogramColumn) -> Option<SpectrogramColumn> {
@@ -494,52 +482,19 @@ impl SpectrogramHistory {
             return Some(column);
         }
 
-        if self.slots.len() != self.capacity {
-            self.ensure_slot_count();
-        }
-
-        let insert_idx = (self.head + self.len) % self.capacity;
-        if self.len == self.capacity {
-            let evicted = self.slots[insert_idx]
-                .replace(column)
-                .expect("occupied slot");
-            self.head = (self.head + 1) % self.capacity;
-            Some(evicted)
+        if self.slots.len() == self.capacity {
+            let evicted = self.slots.pop_front();
+            self.slots.push_back(column);
+            evicted
         } else {
-            debug_assert!(self.slots[insert_idx].is_none());
-            self.slots[insert_idx] = Some(column);
-            self.len += 1;
+            self.slots.push_back(column);
             None
         }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn len(&self) -> usize {
-        self.len
-    }
-
-    fn ensure_slot_count(&mut self) {
-        if self.capacity == 0 {
-            self.slots.clear();
-        } else {
-            self.slots.resize(self.capacity, None);
-        }
-    }
-
-    fn pop_front_internal(&mut self) -> Option<SpectrogramColumn> {
-        if self.len == 0 {
-            return None;
-        }
-
-        let idx = self.head;
-        let column = self.slots[idx].take().expect("occupied slot");
-        if self.len == 1 {
-            self.head = 0;
-        } else {
-            self.head = (self.head + 1) % self.capacity;
-        }
-        self.len -= 1;
-        Some(column)
+        self.slots.len()
     }
 }
 
@@ -561,6 +516,10 @@ impl SampleBuffer {
 
     fn push(&mut self, sample: f32) {
         self.data.push_back(sample);
+    }
+
+    fn extend_from_slice(&mut self, samples: &[f32]) {
+        self.data.extend(samples.iter().copied());
     }
 
     fn reserve_additional(&mut self, additional: usize) {
@@ -605,6 +564,191 @@ impl SampleBuffer {
     }
 }
 
+#[derive(Default)]
+struct SynchroState {
+    enabled: bool,
+    bin_frequencies: Arc<[f32]>,
+    power_buffer: Vec<f32>,
+    magnitude_buffer: Vec<f32>,
+    temporal_buffer: Vec<f32>,
+    min_hz: f32,
+    max_hz: f32,
+    log_min: f64,
+    log_range: f64,
+}
+
+impl SynchroState {
+    fn new(config: &SpectrogramConfig, fft_size: usize, sample_rate: f32) -> Self {
+        let mut state = Self::default();
+        state.reconfigure(config, fft_size, sample_rate);
+        state
+    }
+
+    fn reconfigure(&mut self, config: &SpectrogramConfig, fft_size: usize, sample_rate: f32) {
+        *self = Self::default();
+
+        let enabled = config.use_synchrosqueezing
+            && config.use_reassignment
+            && config.synchrosqueezing_bin_count > 0
+            && sample_rate > 0.0
+            && fft_size > 0;
+
+        if !enabled {
+            return;
+        }
+
+        let min_hz = config
+            .synchrosqueezing_min_hz
+            .max(1.0)
+            .min(sample_rate * 0.5);
+        let nyquist = (sample_rate * 0.5).max(min_hz * 1.001);
+        let bin_count = config.synchrosqueezing_bin_count.max(2);
+        let log_min = (min_hz as f64).ln();
+        let log_max = (nyquist as f64).ln();
+        let log_range = (log_max - log_min).max(1.0e-9);
+
+        let mut freqs = Vec::with_capacity(bin_count);
+        if bin_count == 1 {
+            freqs.push(min_hz);
+        } else {
+            for idx in 0..bin_count {
+                let t = idx as f64 / (bin_count as f64 - 1.0);
+                let freq = (log_min + log_range * t).exp() as f32;
+                freqs.push(freq);
+            }
+            freqs.reverse();
+        }
+
+        self.enabled = true;
+        self.bin_frequencies = Arc::from(freqs.into_boxed_slice());
+        self.power_buffer = vec![0.0; bin_count];
+        self.magnitude_buffer = vec![DB_FLOOR; bin_count];
+        self.temporal_buffer = vec![DB_FLOOR; bin_count];
+        self.min_hz = min_hz;
+        self.max_hz = nyquist;
+        self.log_min = log_min;
+        self.log_range = log_range;
+    }
+
+    fn is_active(&self) -> bool {
+        self.enabled
+            && !self.power_buffer.is_empty()
+            && self.log_range.is_finite()
+            && self.log_range > 0.0
+    }
+
+    fn bins_arc(&self) -> Option<Arc<[f32]>> {
+        if self.enabled && !self.bin_frequencies.is_empty() {
+            Some(Arc::clone(&self.bin_frequencies))
+        } else {
+            None
+        }
+    }
+
+    fn reset_power(&mut self) {
+        for slot in &mut self.power_buffer {
+            *slot = 0.0;
+        }
+    }
+
+    fn accumulate(&mut self, freq_hz: f64, display_power: f32) {
+        if !self.is_active() {
+            return;
+        }
+
+        let freq_f32 = freq_hz as f32;
+        if !freq_f32.is_finite() || freq_f32 < self.min_hz || freq_f32 > self.max_hz {
+            return;
+        }
+
+        let clamped = freq_hz
+            .max(f64::from(self.min_hz))
+            .min(f64::from(self.max_hz));
+        let log_freq = clamped.ln();
+        let mut normalized = (log_freq - self.log_min) / self.log_range;
+        if !normalized.is_finite() {
+            normalized = 0.0;
+        }
+        normalized = normalized.clamp(0.0, 1.0);
+
+        let bin_count = self.power_buffer.len();
+        if bin_count == 0 {
+            return;
+        }
+        if bin_count == 1 {
+            self.power_buffer[0] += display_power;
+            return;
+        }
+
+        let position = (1.0 - normalized) * (bin_count as f64 - 1.0);
+        let lower = position.floor().clamp(0.0, (bin_count - 1) as f64) as usize;
+        let upper = position.ceil().clamp(0.0, (bin_count - 1) as f64) as usize;
+        let frac = (position - lower as f64) as f32;
+        let lower_weight = 1.0 - frac;
+
+        self.power_buffer[lower] += display_power * lower_weight;
+        if upper != lower {
+            self.power_buffer[upper] += display_power * frac;
+        }
+    }
+
+    fn finalize_magnitudes(&mut self) {
+        if !self.enabled {
+            return;
+        }
+
+        for (magnitude, &power) in self
+            .magnitude_buffer
+            .iter_mut()
+            .zip(self.power_buffer.iter())
+        {
+            let value = power.max(POWER_EPSILON);
+            *magnitude = (value.ln() * LOG_FACTOR).max(DB_FLOOR);
+        }
+    }
+
+    fn apply_temporal_smoothing(&mut self, smoothing: f32, max_hz: f32, blend_hz: f32) {
+        if !self.enabled {
+            return;
+        }
+        if self.magnitude_buffer.is_empty() {
+            self.temporal_buffer.clear();
+            return;
+        }
+
+        apply_temporal_smoothing_with_weights(
+            self.magnitude_buffer.as_mut_slice(),
+            &mut self.temporal_buffer,
+            smoothing,
+            |idx| {
+                let freq = self.bin_frequencies.get(idx).copied().unwrap_or_default();
+                smoothing_weight(freq, max_hz, blend_hz)
+            },
+        );
+    }
+
+    fn magnitudes(&self) -> &[f32] {
+        &self.magnitude_buffer
+    }
+
+    fn reset_temporal(&mut self) {
+        if self.enabled {
+            self.temporal_buffer
+                .resize(self.magnitude_buffer.len(), DB_FLOOR);
+            for slot in &mut self.temporal_buffer {
+                *slot = DB_FLOOR;
+            }
+        } else {
+            self.temporal_buffer.clear();
+        }
+    }
+
+    fn align_pool(&self, pool: &mut Vec<Arc<[f32]>>) {
+        let target_len = self.magnitude_buffer.len();
+        pool.retain(|buffer| buffer.len() == target_len);
+    }
+}
+
 pub struct SpectrogramProcessor {
     config: SpectrogramConfig,
     planner: RealFftPlanner<f32>,
@@ -624,15 +768,7 @@ pub struct SpectrogramProcessor {
     scratch_buffer: Vec<Complex32>,
     magnitude_buffer: Vec<f32>,
     reassigned_power_buffer: Vec<f32>,
-    synchro_enabled: bool,
-    synchro_bin_frequencies: Arc<[f32]>,
-    synchro_power_buffer: Vec<f32>,
-    synchro_magnitude_buffer: Vec<f32>,
-    synchro_temporal_buffer: Vec<f32>,
-    synchro_min_hz: f32,
-    synchro_max_hz: f32,
-    synchro_log_min: f64,
-    synchro_log_range: f64,
+    synchro: SynchroState,
     bin_normalization: Vec<f32>,
     energy_normalization: Vec<f32>,
     pcm_buffer: SampleBuffer,
@@ -683,23 +819,9 @@ impl SpectrogramProcessor {
         let reassignment_power_floor_linear =
             power_db_to_linear(config.reassignment_power_floor_db);
 
-        let (
-            synchro_enabled,
-            synchro_bin_frequencies,
-            synchro_power_buffer,
-            synchro_magnitude_buffer,
-            synchro_min_hz,
-            synchro_max_hz,
-            synchro_log_min,
-            synchro_log_range,
-        ) = Self::initialize_synchro_state(&config, fft_size, config.sample_rate);
+        let synchro = SynchroState::new(&config, fft_size, config.sample_rate);
         let temporal_smoothing_buffer = vec![DB_FLOOR; bins];
         let frequency_scratch_buffer = vec![0.0; bins];
-        let synchro_temporal_buffer = if synchro_enabled {
-            vec![DB_FLOOR; synchro_magnitude_buffer.len()]
-        } else {
-            Vec::new()
-        };
 
         Self {
             config,
@@ -720,15 +842,7 @@ impl SpectrogramProcessor {
             scratch_buffer,
             magnitude_buffer,
             reassigned_power_buffer,
-            synchro_enabled,
-            synchro_bin_frequencies,
-            synchro_power_buffer,
-            synchro_magnitude_buffer,
-            synchro_temporal_buffer,
-            synchro_min_hz,
-            synchro_max_hz,
-            synchro_log_min,
-            synchro_log_range,
+            synchro,
             bin_normalization,
             energy_normalization,
             pcm_buffer,
@@ -795,35 +909,11 @@ impl SpectrogramProcessor {
             *slot = 0.0;
         }
 
-        let (
-            synchro_enabled,
-            synchro_bin_frequencies,
-            synchro_power_buffer,
-            synchro_magnitude_buffer,
-            synchro_min_hz,
-            synchro_max_hz,
-            synchro_log_min,
-            synchro_log_range,
-        ) = Self::initialize_synchro_state(&self.config, fft_size, self.config.sample_rate);
-        self.synchro_enabled = synchro_enabled;
-        self.synchro_bin_frequencies = synchro_bin_frequencies;
-        self.synchro_power_buffer = synchro_power_buffer;
-        self.synchro_magnitude_buffer = synchro_magnitude_buffer;
-        if self.synchro_enabled {
-            self.synchro_temporal_buffer
-                .resize(self.synchro_magnitude_buffer.len(), DB_FLOOR);
-            for slot in &mut self.synchro_temporal_buffer {
-                *slot = DB_FLOOR;
-            }
-        } else {
-            self.synchro_temporal_buffer.clear();
-        }
-        self.synchro_min_hz = synchro_min_hz;
-        self.synchro_max_hz = synchro_max_hz;
-        self.synchro_log_min = synchro_log_min;
-        self.synchro_log_range = synchro_log_range;
-        self.synchro_pool
-            .retain(|buffer| buffer.len() == self.synchro_magnitude_buffer.len());
+        self.synchro
+            .reconfigure(&self.config, fft_size, self.config.sample_rate);
+        self.synchro.align_pool(&mut self.synchro_pool);
+        self.synchro.reset_temporal();
+        self.synchro.reset_power();
 
         self.reassignment_power_floor_linear =
             power_db_to_linear(self.config.reassignment_power_floor_db);
@@ -887,11 +977,7 @@ impl SpectrogramProcessor {
         } else {
             self.config.reassignment_low_bin_limit.min(bins)
         };
-        let synchro_enabled = self.synchro_enabled
-            && reassignment_enabled
-            && !self.synchro_power_buffer.is_empty()
-            && self.synchro_log_range.is_finite()
-            && self.synchro_log_range > 0.0;
+        let synchro_active = reassignment_enabled && self.synchro.is_active();
 
         let Some(start_instant) = self.start_instant else {
             return new_columns;
@@ -952,170 +1038,23 @@ impl SpectrogramProcessor {
             let timestamp = start_instant + self.accumulated_offset + center_offset;
 
             let reassigned = if reassignment_enabled {
-                let mut samples = Vec::new();
-                samples.reserve(reassignment_bin_limit);
-                let power_floor = self.reassignment_power_floor_linear;
-                let sample_rate_f64 = sample_rate as f64;
-                let fft_size_f64 = fft_size as f64;
-                let nyquist = sample_rate_f64 * 0.5;
-                let bin_hz = if fft_size > 0 {
-                    sample_rate / fft_size as f32
-                } else {
-                    0.0
-                };
-
-                for slot in self.reassigned_power_buffer.iter_mut() {
-                    *slot = 0.0;
-                }
-                if synchro_enabled {
-                    for slot in self.synchro_power_buffer.iter_mut() {
-                        *slot = 0.0;
-                    }
-                }
-
-                for k in 0..reassignment_bin_limit {
-                    let base = self.spectrum_buffer[k];
-                    let power = base.norm_sqr();
-                    if power <= POWER_EPSILON {
-                        continue;
-                    }
-
-                    let display_power = power * self.bin_normalization[k];
-                    if display_power < power_floor {
-                        continue;
-                    }
-
-                    let energy_scale = self.energy_normalization[k];
-                    if energy_scale <= 0.0 {
-                        continue;
-                    }
-                    let energy_power = power * energy_scale;
-
-                    let base_conj = base.conj();
-                    let cross_time = self.time_spectrum_buffer[k] * base_conj;
-                    let cross_freq = self.derivative_spectrum_buffer[k] * base_conj;
-
-                    let denom = f64::from(power.max(POWER_EPSILON));
-
-                    let mut delta_n = -f64::from(cross_time.re()) / denom;
-                    if !delta_n.is_finite() {
-                        continue;
-                    }
-                    delta_n = delta_n.clamp(-(self.window_size as f64), self.window_size as f64);
-
-                    let mut delta_omega = -f64::from(cross_freq.im()) / denom;
-                    if !delta_omega.is_finite() {
-                        continue;
-                    }
-                    delta_omega = delta_omega.clamp(-std::f64::consts::PI, std::f64::consts::PI);
-
-                    if sample_rate_f64 <= f64::EPSILON {
-                        continue;
-                    }
-
-                    let freq_base = (k as f64) * sample_rate_f64 / fft_size_f64;
-                    let freq_offset = delta_omega * sample_rate_f64 / (2.0 * std::f64::consts::PI);
-                    let freq_hz = freq_base + freq_offset;
-                    if !(freq_hz.is_finite() && freq_hz >= 0.0 && freq_hz <= nyquist) {
-                        continue;
-                    }
-
-                    let magnitude_db = if display_power > 0.0 {
-                        (display_power.max(POWER_EPSILON).ln() * LOG_FACTOR).max(DB_FLOOR)
-                    } else {
-                        DB_FLOOR
-                    };
-
-                    if bin_hz > 0.0 {
-                        let max_index = (reassignment_bin_limit.saturating_sub(1)) as f32;
-                        let freq_position = (freq_hz as f32 / bin_hz).clamp(0.0, max_index);
-                        let lower = freq_position.floor() as usize;
-                        let upper = freq_position.ceil() as usize;
-                        let frac = freq_position - lower as f32;
-                        let lower_weight = 1.0 - frac;
-                        self.reassigned_power_buffer[lower] += energy_power * lower_weight;
-                        if upper != lower && upper < reassignment_bin_limit {
-                            self.reassigned_power_buffer[upper] += energy_power * frac;
-                        }
-                    }
-
-                    if synchro_enabled && !self.synchro_power_buffer.is_empty() {
-                        let freq_f32 = freq_hz as f32;
-                        if freq_f32.is_finite()
-                            && freq_f32 >= self.synchro_min_hz
-                            && freq_f32 <= self.synchro_max_hz
-                        {
-                            let clamped = freq_hz
-                                .max(f64::from(self.synchro_min_hz))
-                                .min(f64::from(self.synchro_max_hz));
-                            let log_freq = clamped.ln();
-                            let mut normalized =
-                                (log_freq - self.synchro_log_min) / self.synchro_log_range;
-                            if !normalized.is_finite() {
-                                normalized = 0.0;
-                            }
-                            normalized = normalized.clamp(0.0, 1.0);
-
-                            let bin_count = self.synchro_power_buffer.len();
-                            if bin_count == 1 {
-                                self.synchro_power_buffer[0] += display_power;
-                            } else if bin_count > 1 {
-                                let position = (1.0 - normalized) * (bin_count as f64 - 1.0);
-                                let lower = position.floor().max(0.0) as usize;
-                                let upper = position.ceil().max(0.0) as usize;
-                                let frac = (position - lower as f64) as f32;
-                                let lower_weight = 1.0 - frac;
-                                self.synchro_power_buffer[lower] += display_power * lower_weight;
-                                if upper != lower && upper < bin_count {
-                                    self.synchro_power_buffer[upper] += display_power * frac;
-                                }
-                            }
-                        }
-                    }
-
-                    let time_offset_sec = (delta_n / sample_rate_f64) as f32;
-                    samples.push(ReassignedSample {
-                        time_offset_sec,
-                        frequency_hz: freq_hz as f32,
-                        magnitude_db,
-                    });
-                }
-
-                if reassignment_bin_limit > 0 {
-                    for idx in 0..reassignment_bin_limit {
-                        let energy_power = self.reassigned_power_buffer[idx];
-                        let energy_scale = self.energy_normalization[idx];
-                        let display_scale = self.bin_normalization[idx];
-                        let display_power = if energy_power > 0.0 && energy_scale > 0.0 {
-                            energy_power * (display_scale / energy_scale.max(f32::EPSILON))
-                        } else {
-                            0.0
-                        };
-                        let power = display_power.max(POWER_EPSILON);
-                        self.magnitude_buffer[idx] = (power.ln() * LOG_FACTOR).max(DB_FLOOR);
-                    }
-                }
-
-                if synchro_enabled {
-                    for (idx, &power) in self.synchro_power_buffer.iter().enumerate() {
-                        let magnitude = power.max(POWER_EPSILON);
-                        self.synchro_magnitude_buffer[idx] =
-                            (magnitude.ln() * LOG_FACTOR).max(DB_FLOOR);
-                    }
-                }
-
-                if samples.is_empty() {
-                    None
-                } else {
-                    Some(Arc::<[ReassignedSample]>::from(samples.into_boxed_slice()))
-                }
+                self.compute_reassigned_samples(
+                    sample_rate,
+                    fft_size,
+                    reassignment_bin_limit,
+                    synchro_active,
+                )
             } else {
                 None
             };
 
             self.apply_magnitude_post_processing(bins);
-            if synchro_enabled {
-                self.apply_synchro_post_processing();
+            if synchro_active {
+                self.synchro.apply_temporal_smoothing(
+                    self.config.temporal_smoothing,
+                    self.config.temporal_smoothing_max_hz,
+                    self.config.temporal_smoothing_blend_hz,
+                );
             }
 
             let mut magnitudes = self.acquire_magnitude_storage(bins);
@@ -1123,15 +1062,16 @@ impl SpectrogramProcessor {
                 .expect("pooled magnitude storage should be unique")
                 .copy_from_slice(&self.magnitude_buffer[..bins]);
 
-            let synchro_magnitudes = if synchro_enabled {
-                let count = self.synchro_magnitude_buffer.len();
+            let synchro_magnitudes = if synchro_active {
+                let count = self.synchro.magnitudes().len();
                 if count == 0 {
                     None
                 } else {
                     let mut storage = self.acquire_synchro_storage(count);
+                    let data = self.synchro.magnitudes();
                     Arc::get_mut(&mut storage)
                         .expect("pooled synchro storage should be unique")
-                        .copy_from_slice(&self.synchro_magnitude_buffer);
+                        .copy_from_slice(data);
                     Some(storage)
                 }
             } else {
@@ -1163,13 +1103,139 @@ impl SpectrogramProcessor {
         new_columns
     }
 
+    fn compute_reassigned_samples(
+        &mut self,
+        sample_rate: f32,
+        fft_size: usize,
+        reassignment_bin_limit: usize,
+        synchro_active: bool,
+    ) -> Option<Arc<[ReassignedSample]>> {
+        let mut samples = Vec::new();
+        samples.reserve(reassignment_bin_limit);
+        let power_floor = self.reassignment_power_floor_linear;
+        let sample_rate_f64 = sample_rate as f64;
+        let fft_size_f64 = fft_size as f64;
+        let nyquist = sample_rate_f64 * 0.5;
+        let bin_hz = if fft_size > 0 {
+            sample_rate / fft_size as f32
+        } else {
+            0.0
+        };
+
+        for slot in self.reassigned_power_buffer.iter_mut() {
+            *slot = 0.0;
+        }
+        if synchro_active {
+            self.synchro.reset_power();
+        }
+
+        for k in 0..reassignment_bin_limit {
+            let base = self.spectrum_buffer[k];
+            let power = base.norm_sqr();
+            if power <= POWER_EPSILON {
+                continue;
+            }
+
+            let display_power = power * self.bin_normalization[k];
+            if display_power < power_floor {
+                continue;
+            }
+
+            let energy_scale = self.energy_normalization[k];
+            if energy_scale <= 0.0 {
+                continue;
+            }
+            let energy_power = power * energy_scale;
+
+            let base_conj = base.conj();
+            let cross_time = self.time_spectrum_buffer[k] * base_conj;
+            let cross_freq = self.derivative_spectrum_buffer[k] * base_conj;
+
+            let denom = f64::from(power.max(POWER_EPSILON));
+
+            let mut delta_n = -f64::from(cross_time.re) / denom;
+            if !delta_n.is_finite() {
+                continue;
+            }
+            delta_n = delta_n.clamp(-(self.window_size as f64), self.window_size as f64);
+
+            let mut delta_omega = -f64::from(cross_freq.im) / denom;
+            if !delta_omega.is_finite() {
+                continue;
+            }
+            delta_omega = delta_omega.clamp(-std::f64::consts::PI, std::f64::consts::PI);
+
+            if sample_rate_f64 <= f64::EPSILON {
+                continue;
+            }
+
+            let freq_base = (k as f64) * sample_rate_f64 / fft_size_f64;
+            let freq_offset = delta_omega * sample_rate_f64 / (2.0 * std::f64::consts::PI);
+            let freq_hz = freq_base + freq_offset;
+            if !(freq_hz.is_finite() && freq_hz >= 0.0 && freq_hz <= nyquist) {
+                continue;
+            }
+
+            let magnitude_db = if display_power > 0.0 {
+                (display_power.max(POWER_EPSILON).ln() * LOG_FACTOR).max(DB_FLOOR)
+            } else {
+                DB_FLOOR
+            };
+
+            if bin_hz > 0.0 {
+                let max_index = (reassignment_bin_limit.saturating_sub(1)) as f32;
+                let freq_position = (freq_hz as f32 / bin_hz).clamp(0.0, max_index);
+                let lower = freq_position.floor() as usize;
+                let upper = freq_position.ceil() as usize;
+                let frac = freq_position - lower as f32;
+                let lower_weight = 1.0 - frac;
+                self.reassigned_power_buffer[lower] += energy_power * lower_weight;
+                if upper != lower && upper < reassignment_bin_limit {
+                    self.reassigned_power_buffer[upper] += energy_power * frac;
+                }
+            }
+
+            if synchro_active {
+                self.synchro.accumulate(freq_hz, display_power);
+            }
+
+            let time_offset_sec = (delta_n / sample_rate_f64) as f32;
+            samples.push(ReassignedSample {
+                time_offset_sec,
+                frequency_hz: freq_hz as f32,
+                magnitude_db,
+            });
+        }
+
+        if reassignment_bin_limit > 0 {
+            for idx in 0..reassignment_bin_limit {
+                let energy_power = self.reassigned_power_buffer[idx];
+                let energy_scale = self.energy_normalization[idx];
+                let display_scale = self.bin_normalization[idx];
+                let display_power = if energy_power > 0.0 && energy_scale > 0.0 {
+                    energy_power * (display_scale / energy_scale.max(f32::EPSILON))
+                } else {
+                    0.0
+                };
+                let power = display_power.max(POWER_EPSILON);
+                self.magnitude_buffer[idx] = (power.ln() * LOG_FACTOR).max(DB_FLOOR);
+            }
+        }
+
+        if synchro_active {
+            self.synchro.finalize_magnitudes();
+        }
+
+        if samples.is_empty() {
+            None
+        } else {
+            Some(Arc::from(samples.into_boxed_slice()))
+        }
+    }
+
     fn apply_magnitude_post_processing(&mut self, bins: usize) {
         if bins == 0 {
             return;
-        }
-
-        if self.temporal_smoothing_buffer.len() != bins {
-            self.temporal_smoothing_buffer.resize(bins, DB_FLOOR);
         }
 
         let bin_hz = if self.config.sample_rate > 0.0 && self.fft_size > 0 {
@@ -1178,37 +1244,18 @@ impl SpectrogramProcessor {
             None
         };
 
-        let smoothing = self.config.temporal_smoothing.clamp(0.0, 0.999);
-        if smoothing > 0.0 {
-            let max_hz = self.config.temporal_smoothing_max_hz;
-            let blend_hz = self.config.temporal_smoothing_blend_hz;
-
-            for idx in 0..bins {
-                let weight = bin_hz
+        let max_hz = self.config.temporal_smoothing_max_hz;
+        let blend_hz = self.config.temporal_smoothing_blend_hz;
+        apply_temporal_smoothing_with_weights(
+            &mut self.magnitude_buffer[..bins],
+            &mut self.temporal_smoothing_buffer,
+            self.config.temporal_smoothing,
+            |idx| {
+                bin_hz
                     .map(|hz| smoothing_weight(idx as f32 * hz, max_hz, blend_hz))
-                    .unwrap_or(1.0);
-                let alpha = (smoothing * weight).clamp(0.0, 0.999);
-                let retain = 1.0 - alpha;
-
-                let prev = self.temporal_smoothing_buffer[idx];
-                let current = self.magnitude_buffer[idx];
-                let updated = if alpha > 0.0 && prev > DB_FLOOR {
-                    alpha * prev + retain * current
-                } else {
-                    current
-                };
-                self.temporal_smoothing_buffer[idx] = updated;
-                self.magnitude_buffer[idx] = updated;
-            }
-        } else {
-            for (slot, &value) in self
-                .temporal_smoothing_buffer
-                .iter_mut()
-                .zip(self.magnitude_buffer.iter().take(bins))
-            {
-                *slot = value;
-            }
-        }
+                    .unwrap_or(1.0)
+            },
+        );
 
         if self.config.frequency_smoothing_radius > 0 {
             let radius = self
@@ -1242,52 +1289,6 @@ impl SpectrogramProcessor {
                     self.magnitude_buffer[idx] = smoothed * weight + original * (1.0 - weight);
                 }
             }
-        }
-    }
-
-    fn apply_synchro_post_processing(&mut self) {
-        if !self.synchro_enabled {
-            return;
-        }
-
-        let bins = self.synchro_magnitude_buffer.len();
-        if bins == 0 {
-            return;
-        }
-
-        if self.synchro_temporal_buffer.len() != bins {
-            self.synchro_temporal_buffer
-                .resize(self.synchro_magnitude_buffer.len(), DB_FLOOR);
-        }
-
-        let smoothing = self.config.temporal_smoothing.clamp(0.0, 0.999);
-        if smoothing > 0.0 {
-            let max_hz = self.config.temporal_smoothing_max_hz;
-            let blend_hz = self.config.temporal_smoothing_blend_hz;
-
-            for idx in 0..bins {
-                let freq = self
-                    .synchro_bin_frequencies
-                    .get(idx)
-                    .copied()
-                    .unwrap_or_default();
-                let weight = smoothing_weight(freq, max_hz, blend_hz);
-                let alpha = (smoothing * weight).clamp(0.0, 0.999);
-                let retain = 1.0 - alpha;
-
-                let prev = self.synchro_temporal_buffer[idx];
-                let current = self.synchro_magnitude_buffer[idx];
-                let updated = if alpha > 0.0 && prev > DB_FLOOR {
-                    alpha * prev + retain * current
-                } else {
-                    current
-                };
-                self.synchro_temporal_buffer[idx] = updated;
-                self.synchro_magnitude_buffer[idx] = updated;
-            }
-        } else if !self.synchro_temporal_buffer.is_empty() {
-            self.synchro_temporal_buffer[..bins]
-                .copy_from_slice(&self.synchro_magnitude_buffer[..bins]);
         }
     }
 }
@@ -1334,12 +1335,7 @@ impl AudioProcessor for SpectrogramProcessor {
                 history_length: self.config.history_length,
                 reset,
                 reassignment_enabled: self.config.use_reassignment,
-                synchro_bins_hz: if self.synchro_enabled && !self.synchro_bin_frequencies.is_empty()
-                {
-                    Some(Arc::clone(&self.synchro_bin_frequencies))
-                } else {
-                    None
-                },
+                synchro_bins_hz: self.synchro.bins_arc(),
                 new_columns,
             })
         }
@@ -1366,15 +1362,8 @@ impl AudioProcessor for SpectrogramProcessor {
         for slot in &mut self.frequency_scratch_buffer {
             *slot = 0.0;
         }
-        if self.synchro_enabled {
-            self.synchro_temporal_buffer
-                .resize(self.synchro_magnitude_buffer.len(), DB_FLOOR);
-            for slot in &mut self.synchro_temporal_buffer {
-                *slot = DB_FLOOR;
-            }
-        } else {
-            self.synchro_temporal_buffer.clear();
-        }
+        self.synchro.reset_temporal();
+        self.synchro.reset_power();
     }
 }
 
@@ -1390,9 +1379,7 @@ impl SpectrogramProcessor {
 
     #[inline(always)]
     fn push_all(buffer: &mut SampleBuffer, samples: &[f32]) {
-        for &sample in samples {
-            buffer.push(sample);
-        }
+        buffer.extend_from_slice(samples);
     }
 
     #[inline]
@@ -1488,67 +1475,6 @@ impl SpectrogramProcessor {
         norms
     }
 
-    fn initialize_synchro_state(
-        config: &SpectrogramConfig,
-        fft_size: usize,
-        sample_rate: f32,
-    ) -> (bool, Arc<[f32]>, Vec<f32>, Vec<f32>, f32, f32, f64, f64) {
-        let enabled = config.use_synchrosqueezing
-            && config.use_reassignment
-            && config.synchrosqueezing_bin_count > 0
-            && sample_rate > 0.0
-            && fft_size > 0;
-
-        if !enabled {
-            return (
-                false,
-                Arc::from([]),
-                Vec::new(),
-                Vec::new(),
-                0.0,
-                0.0,
-                0.0,
-                1.0,
-            );
-        }
-
-        let min_hz = config
-            .synchrosqueezing_min_hz
-            .max(1.0)
-            .min(sample_rate * 0.5);
-        let nyquist = (sample_rate * 0.5).max(min_hz * 1.001);
-        let bin_count = config.synchrosqueezing_bin_count.max(2);
-        let log_min = (min_hz as f64).ln();
-        let log_max = (nyquist as f64).ln();
-        let log_range = (log_max - log_min).max(1.0e-9);
-
-        let mut freqs = Vec::with_capacity(bin_count);
-        if bin_count == 1 {
-            freqs.push(min_hz);
-        } else {
-            for idx in 0..bin_count {
-                let t = idx as f64 / (bin_count as f64 - 1.0);
-                let freq = (log_min + log_range * t).exp() as f32;
-                freqs.push(freq);
-            }
-            freqs.reverse();
-        }
-
-        let power_buffer = vec![0.0f32; bin_count];
-        let magnitude_buffer = vec![DB_FLOOR; bin_count];
-
-        (
-            true,
-            Arc::from(freqs.into_boxed_slice()),
-            power_buffer,
-            magnitude_buffer,
-            min_hz,
-            nyquist,
-            log_min,
-            log_range,
-        )
-    }
-
     fn acquire_magnitude_storage(&mut self, bins: usize) -> Arc<[f32]> {
         if bins == 0 {
             return Arc::from([]);
@@ -1592,10 +1518,11 @@ impl SpectrogramProcessor {
             self.magnitude_pool.push(magnitudes_db);
         }
 
-        if let Some(synchro) = synchro_magnitudes_db {
-            if Arc::strong_count(&synchro) == 1 && Arc::weak_count(&synchro) == 0 {
-                self.synchro_pool.push(synchro);
-            }
+        if let Some(synchro) = synchro_magnitudes_db
+            && Arc::strong_count(&synchro) == 1
+            && Arc::weak_count(&synchro) == 0
+        {
+            self.synchro_pool.push(synchro);
         }
     }
 }
@@ -1782,6 +1709,42 @@ fn smoothing_weight(freq_hz: f32, max_hz: f32, blend_hz: f32) -> f32 {
     }
     let t = 1.0 - (freq_hz - max_hz) / blend_hz;
     t.clamp(0.0, 1.0)
+}
+
+fn apply_temporal_smoothing_with_weights(
+    buffer: &mut [f32],
+    history: &mut Vec<f32>,
+    smoothing: f32,
+    mut weight_for_bin: impl FnMut(usize) -> f32,
+) {
+    if buffer.is_empty() {
+        history.clear();
+        return;
+    }
+
+    let smoothing = smoothing.clamp(0.0, 0.999);
+    if history.len() != buffer.len() {
+        history.resize(buffer.len(), DB_FLOOR);
+    }
+
+    if smoothing <= 0.0 {
+        history.as_mut_slice().clone_from_slice(buffer);
+        return;
+    }
+
+    for (idx, value) in buffer.iter_mut().enumerate() {
+        let alpha = (smoothing * weight_for_bin(idx)).clamp(0.0, 0.999);
+        let retain = 1.0 - alpha;
+        let prev = history[idx];
+        let current = *value;
+        let updated = if alpha > 0.0 && prev > DB_FLOOR {
+            alpha * prev + retain * current
+        } else {
+            current
+        };
+        history[idx] = updated;
+        *value = updated;
+    }
 }
 
 impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {

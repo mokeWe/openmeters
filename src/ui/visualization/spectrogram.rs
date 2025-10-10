@@ -459,7 +459,7 @@ impl SpectrogramBuffer {
         self.using_synchro
     }
 
-    fn column_values<'a>(column: &'a SpectrogramColumn, use_synchro: bool) -> Option<&'a [f32]> {
+    fn column_values(column: &SpectrogramColumn, use_synchro: bool) -> Option<&[f32]> {
         if use_synchro {
             column
                 .synchro_magnitudes_db
@@ -566,11 +566,9 @@ impl SpectrogramBuffer {
             .unwrap_or(0);
         self.height = height;
 
-        if use_synchro {
-            if let Some(freqs) = synchro_bins_hz {
-                let limit = height.min(freqs.len() as u32) as usize;
-                self.grid_bin_frequencies.extend_from_slice(&freqs[..limit]);
-            }
+        if use_synchro && let Some(freqs) = synchro_bins_hz {
+            let limit = height.min(freqs.len() as u32) as usize;
+            self.grid_bin_frequencies.extend_from_slice(&freqs[..limit]);
         }
 
         if self.capacity == 0 || self.height == 0 {
@@ -633,13 +631,12 @@ impl SpectrogramBuffer {
             self.rebuild_row_positions();
         }
 
-        if use_synchro {
-            if let Some(freqs) = synchro_bins_hz {
-                if self.grid_bin_frequencies.len() != freqs.len() {
-                    self.grid_bin_frequencies.clear();
-                    self.grid_bin_frequencies.extend_from_slice(freqs);
-                }
-            }
+        if use_synchro
+            && let Some(freqs) = synchro_bins_hz
+            && self.grid_bin_frequencies.len() != freqs.len()
+        {
+            self.grid_bin_frequencies.clear();
+            self.grid_bin_frequencies.extend_from_slice(freqs);
         }
 
         for column in columns {
