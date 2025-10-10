@@ -113,10 +113,11 @@ impl LoopbackRuntime {
     }
 
     fn handle_global_removed(&self, id: u32) {
-        if {
+        let res = {
             let mut state = self.state.borrow_mut();
             state.remove_port_by_global(id) || state.remove_node(id)
-        } {
+        };
+        if res {
             return;
         }
 

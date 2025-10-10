@@ -85,6 +85,10 @@ impl SpectrogramProcessor {
     pub fn update_config(&mut self, config: SpectrogramConfig) {
         self.inner.update_config(config);
     }
+
+    pub fn config(&self) -> SpectrogramConfig {
+        self.inner.config()
+    }
 }
 
 /// Captures all UI-facing spectrogram state, including cached columns,

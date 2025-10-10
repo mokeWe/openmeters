@@ -2,6 +2,7 @@ use crate::audio::VIRTUAL_SINK_NAME;
 use crate::audio::pw_registry::RegistrySnapshot;
 use crate::ui::application_row::ApplicationRow;
 use crate::ui::hardware_sink::HardwareSinkCache;
+use crate::ui::settings::SettingsHandle;
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;
@@ -34,6 +35,7 @@ pub struct ConfigPage {
     routing_sender: mpsc::Sender<RoutingCommand>,
     registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
     visual_manager: VisualManagerHandle,
+    settings: SettingsHandle,
     preferences: HashMap<u32, bool>,
     applications: Vec<ApplicationRow>,
     hardware_sink: HardwareSinkCache,
@@ -46,11 +48,13 @@ impl ConfigPage {
         routing_sender: mpsc::Sender<RoutingCommand>,
         registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
         visual_manager: VisualManagerHandle,
+        settings: SettingsHandle,
     ) -> Self {
         Self {
             routing_sender,
             registry_updates,
             visual_manager,
+            settings,
             preferences: HashMap::new(),
             applications: Vec::new(),
             hardware_sink: HardwareSinkCache::new(),
@@ -101,6 +105,8 @@ impl ConfigPage {
                 self.visual_manager
                     .borrow_mut()
                     .set_enabled_by_kind(kind, enabled);
+                self.settings
+                    .update(|settings| settings.set_visual_enabled(kind, enabled));
             }
         }
 

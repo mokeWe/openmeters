@@ -1,11 +1,16 @@
 use crate::dsp::ProcessorUpdate;
+use crate::dsp::oscilloscope::OscilloscopeConfig;
+use crate::dsp::spectrogram::SpectrogramConfig;
+use crate::dsp::spectrum::SpectrumConfig;
+use crate::ui::settings::VisualSettings;
 use crate::ui::visualization::lufs_meter::{LufsMeterState, LufsProcessor};
 use crate::ui::visualization::oscilloscope::{OscilloscopeProcessor, OscilloscopeState};
 use crate::ui::visualization::spectrogram::{SpectrogramProcessor, SpectrogramState};
 use crate::ui::visualization::spectrum::{SpectrumProcessor, SpectrumState};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
+use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
-use std::cell::{RefCell, RefMut};
+use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -22,7 +27,8 @@ impl VisualId {
 }
 
 /// Enumeration of the visual modules recognised by the UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum VisualKind {
     LufsMeter,
     Oscilloscope,
@@ -226,6 +232,57 @@ enum VisualRuntime {
 const PLACEHOLDER_MESSAGE: &str = "Module not yet implemented.";
 
 impl VisualRuntime {
+    fn oscilloscope_config(&self) -> Option<OscilloscopeConfig> {
+        match self {
+            VisualRuntime::Oscilloscope { processor, .. } => Some(processor.config()),
+            _ => None,
+        }
+    }
+
+    fn set_oscilloscope_config(&mut self, config: OscilloscopeConfig) -> bool {
+        match self {
+            VisualRuntime::Oscilloscope { processor, .. } => {
+                processor.update_config(config);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn spectrum_config(&self) -> Option<SpectrumConfig> {
+        match self {
+            VisualRuntime::Spectrum { processor, .. } => Some(processor.config()),
+            _ => None,
+        }
+    }
+
+    fn set_spectrum_config(&mut self, config: SpectrumConfig) -> bool {
+        match self {
+            VisualRuntime::Spectrum { processor, .. } => {
+                processor.update_config(config);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    fn spectrogram_config(&self) -> Option<SpectrogramConfig> {
+        match self {
+            VisualRuntime::Spectrogram { processor, .. } => Some(processor.config()),
+            _ => None,
+        }
+    }
+
+    fn set_spectrogram_config(&mut self, config: SpectrogramConfig) -> bool {
+        match self {
+            VisualRuntime::Spectrogram { processor, .. } => {
+                processor.update_config(config);
+                true
+            }
+            _ => false,
+        }
+    }
+
     fn new(kind: VisualKind) -> Self {
         match kind {
             VisualKind::LufsMeter => VisualRuntime::LufsMeter {
@@ -333,6 +390,16 @@ impl VisualManager {
         self.entries.push(VisualEntry { slot, runtime });
     }
 
+    fn entry_mut_by_kind(&mut self, kind: VisualKind) -> Option<&mut VisualEntry> {
+        self.entries
+            .iter_mut()
+            .find(|entry| entry.slot.kind == kind)
+    }
+
+    fn entry_by_kind(&self, kind: VisualKind) -> Option<&VisualEntry> {
+        self.entries.iter().find(|entry| entry.slot.kind == kind)
+    }
+
     pub fn snapshot(&self) -> VisualSnapshot {
         let mut slots = Vec::with_capacity(self.entries.len());
         for entry in &self.entries {
@@ -357,6 +424,86 @@ impl VisualManager {
             && entry.slot.enabled != enabled
         {
             entry.slot.enabled = enabled;
+        }
+    }
+
+    pub fn oscilloscope_config(&self) -> Option<OscilloscopeConfig> {
+        self.entry_by_kind(VisualKind::Oscilloscope)
+            .and_then(|entry| entry.runtime.oscilloscope_config())
+    }
+
+    pub fn set_oscilloscope_config(&mut self, config: OscilloscopeConfig) -> bool {
+        self.entry_mut_by_kind(VisualKind::Oscilloscope)
+            .map(|entry| entry.runtime.set_oscilloscope_config(config))
+            .unwrap_or(false)
+    }
+
+    pub fn spectrum_config(&self) -> Option<SpectrumConfig> {
+        self.entry_by_kind(VisualKind::Spectrum)
+            .and_then(|entry| entry.runtime.spectrum_config())
+    }
+
+    pub fn set_spectrum_config(&mut self, config: SpectrumConfig) -> bool {
+        self.entry_mut_by_kind(VisualKind::Spectrum)
+            .map(|entry| entry.runtime.set_spectrum_config(config))
+            .unwrap_or(false)
+    }
+
+    pub fn spectrogram_config(&self) -> Option<SpectrogramConfig> {
+        self.entry_by_kind(VisualKind::Spectrogram)
+            .and_then(|entry| entry.runtime.spectrogram_config())
+    }
+
+    pub fn set_spectrogram_config(&mut self, config: SpectrogramConfig) -> bool {
+        self.entry_mut_by_kind(VisualKind::Spectrogram)
+            .map(|entry| entry.runtime.set_spectrogram_config(config))
+            .unwrap_or(false)
+    }
+
+    pub fn apply_visual_settings(&mut self, settings: &VisualSettings) {
+        for entry in &mut self.entries {
+            if let Some(module) = settings.modules.get(&entry.slot.kind) {
+                if let Some(enabled) = module.enabled {
+                    entry.slot.enabled = enabled;
+                }
+
+                if let Some(stored) = &module.oscilloscope
+                    && let Some(config) = entry.runtime.oscilloscope_config()
+                {
+                    let mut updated = config;
+                    stored.apply_to(&mut updated);
+                    entry.runtime.set_oscilloscope_config(updated);
+                }
+
+                if let Some(stored) = &module.spectrum
+                    && let Some(config) = entry.runtime.spectrum_config()
+                {
+                    let mut updated = config;
+                    stored.apply_to(&mut updated);
+                    entry.runtime.set_spectrum_config(updated);
+                }
+
+                if let Some(stored) = &module.spectrogram
+                    && let Some(config) = entry.runtime.spectrogram_config()
+                {
+                    let mut updated = config;
+                    stored.apply_to(&mut updated);
+                    entry.runtime.set_spectrogram_config(updated);
+                }
+            }
+        }
+
+        if !settings.order.is_empty() {
+            let mut ordered_ids = Vec::with_capacity(settings.order.len());
+            for kind in &settings.order {
+                if let Some(entry) = self.entry_by_kind(*kind) {
+                    ordered_ids.push(entry.slot.id);
+                }
+            }
+
+            if !ordered_ids.is_empty() {
+                self.reorder(&ordered_ids);
+            }
         }
     }
 
@@ -407,6 +554,10 @@ impl VisualManagerHandle {
         Self {
             inner: Rc::new(RefCell::new(manager)),
         }
+    }
+
+    pub fn borrow(&self) -> Ref<'_, VisualManager> {
+        self.inner.borrow()
     }
 
     pub fn borrow_mut(&self) -> RefMut<'_, VisualManager> {

@@ -1,4 +1,5 @@
 //! Real-time waveform DSP scaffolding.
+#![allow(dead_code)]
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;

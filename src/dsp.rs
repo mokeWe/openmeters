@@ -8,7 +8,6 @@ pub mod loudness;
 pub mod oscilloscope;
 pub mod spectrogram;
 pub mod spectrum;
-pub mod stereometer;
 pub mod waveform;
 
 use std::time::Instant;
@@ -49,15 +48,6 @@ pub enum ProcessorUpdate<T> {
     None,
     /// A fresh snapshot is available.
     Snapshot(T),
-}
-
-impl<T> ProcessorUpdate<T> {
-    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> ProcessorUpdate<U> {
-        match self {
-            ProcessorUpdate::None => ProcessorUpdate::None,
-            ProcessorUpdate::Snapshot(value) => ProcessorUpdate::Snapshot(f(value)),
-        }
-    }
 }
 
 /// Shared contract implemented by all DSP modules.

@@ -1,7 +1,7 @@
 use crate::dsp::spectrum::{
     SpectrumConfig, SpectrumProcessor as CoreSpectrumProcessor, SpectrumSnapshot,
 };
-use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate};
+use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::spectrum::{SpectrumParams, SpectrumPrimitive};
 use crate::ui::theme;
 use iced::advanced::Renderer as _;
@@ -67,6 +67,14 @@ impl SpectrumProcessor {
             ProcessorUpdate::Snapshot(snapshot) => Some(snapshot),
             ProcessorUpdate::None => None,
         }
+    }
+
+    pub fn update_config(&mut self, config: SpectrumConfig) {
+        self.inner.update_config(config);
+    }
+
+    pub fn config(&self) -> SpectrumConfig {
+        self.inner.config()
     }
 }
 

@@ -62,6 +62,10 @@ impl OscilloscopeProcessor {
     pub fn update_config(&mut self, config: OscilloscopeConfig) {
         self.inner.update_config(config);
     }
+
+    pub fn config(&self) -> OscilloscopeConfig {
+        self.inner.config()
+    }
 }
 
 #[derive(Debug, Clone)]

@@ -2,6 +2,7 @@ pub mod config;
 pub mod visuals;
 
 use crate::audio::pw_registry::RegistrySnapshot;
+use crate::ui::settings::SettingsHandle;
 use crate::ui::theme;
 use crate::ui::visualization::audio_stream::AudioStreamSubscription;
 use crate::ui::visualization::visual_manager::{VisualManager, VisualManagerHandle};
@@ -94,14 +95,23 @@ impl UiApp {
             audio_frames,
         } = config;
 
-        let visual_manager = VisualManagerHandle::new(VisualManager::new());
+        let settings = SettingsHandle::load_or_default();
+        let visual_settings = {
+            let guard = settings.borrow();
+            guard.settings().visuals.clone()
+        };
+
+        let mut manager = VisualManager::new();
+        manager.apply_visual_settings(&visual_settings);
+        let visual_manager = VisualManagerHandle::new(manager);
 
         let config_page = ConfigPage::new(
             routing_sender.clone(),
             registry_updates.clone(),
             visual_manager.clone(),
+            settings.clone(),
         );
-        let visuals_page = VisualsPage::new(visual_manager.clone());
+        let visuals_page = VisualsPage::new(visual_manager.clone(), settings.clone());
 
         (
             Self {

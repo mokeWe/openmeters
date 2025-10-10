@@ -54,6 +54,7 @@ where
     height: Length,
     spacing: f32,
     on_drag: Option<Box<dyn Fn(DragEvent) -> Message + 'a>>,
+    on_context: Option<Box<dyn Fn(Pane) -> Message + 'a>>,
 }
 
 impl<'a, Message, Theme, Renderer> PaneGrid<'a, Message, Theme, Renderer>
@@ -77,6 +78,7 @@ where
             height: Length::Fill,
             spacing: 0.0,
             on_drag: None,
+            on_context: None,
         }
     }
 
@@ -97,6 +99,11 @@ where
 
     pub fn on_drag(mut self, callback: impl Fn(DragEvent) -> Message + 'a) -> Self {
         self.on_drag = Some(Box::new(callback));
+        self
+    }
+
+    pub fn on_context_request(mut self, callback: impl Fn(Pane) -> Message + 'a) -> Self {
+        self.on_context = Some(Box::new(callback));
         self
     }
 
@@ -364,6 +371,15 @@ where
                         interaction.dragging = Some(pane);
                         interaction.hovered = Some(pane);
                         shell.publish(on_drag(DragEvent::Picked { pane }));
+                        return event::Status::Captured;
+                    }
+                }
+                mouse::Event::ButtonPressed(Button::Right) => {
+                    if let Some(on_context) = &self.on_context
+                        && let Some(cursor_position) = cursor.position()
+                        && let Some(pane) = self.pane_at(layout, cursor_position)
+                    {
+                        shell.publish(on_context(pane));
                         return event::Status::Captured;
                     }
                 }

@@ -1057,22 +1057,22 @@ impl SpectrogramProcessor {
                 );
             }
 
-            let mut magnitudes = self.acquire_magnitude_storage(bins);
-            Arc::get_mut(&mut magnitudes)
-                .expect("pooled magnitude storage should be unique")
-                .copy_from_slice(&self.magnitude_buffer[..bins]);
+            let magnitudes = Self::fill_arc(
+                self.acquire_magnitude_storage(bins),
+                &self.magnitude_buffer[..bins],
+            );
 
             let synchro_magnitudes = if synchro_active {
-                let count = self.synchro.magnitudes().len();
+                let count = {
+                    let data = self.synchro.magnitudes();
+                    data.len()
+                };
                 if count == 0 {
                     None
                 } else {
-                    let mut storage = self.acquire_synchro_storage(count);
+                    let storage = self.acquire_synchro_storage(count);
                     let data = self.synchro.magnitudes();
-                    Arc::get_mut(&mut storage)
-                        .expect("pooled synchro storage should be unique")
-                        .copy_from_slice(data);
-                    Some(storage)
+                    Some(Self::fill_arc(storage, data))
                 }
             } else {
                 None
@@ -1506,6 +1506,19 @@ impl SpectrogramProcessor {
         }
     }
 
+    fn fill_arc(mut storage: Arc<[f32]>, data: &[f32]) -> Arc<[f32]> {
+        if storage.len() != data.len() {
+            return Arc::<[f32]>::from(data.to_vec());
+        }
+
+        if let Some(buffer) = Arc::get_mut(&mut storage) {
+            buffer.copy_from_slice(data);
+            storage
+        } else {
+            Arc::<[f32]>::from(data.to_vec())
+        }
+    }
+
     fn recycle_column(&mut self, column: SpectrogramColumn) {
         let SpectrogramColumn {
             magnitudes_db,
@@ -1765,6 +1778,7 @@ fn duration_from_samples(sample_index: u64, sample_rate: f32) -> Duration {
 mod tests {
     use super::*;
     use crate::dsp::{AudioBlock, ProcessorUpdate};
+    use std::sync::Arc;
     use std::time::Instant;
 
     fn make_block(samples: Vec<f32>, channels: usize, sample_rate: f32) -> AudioBlock<'static> {
@@ -1900,6 +1914,26 @@ mod tests {
             .map(|samples| samples.len())
             .unwrap_or(0);
         assert!(sample_count > 0);
+    }
+
+    #[test]
+    fn fill_arc_reuses_unique_storage() {
+        let data = [1.0f32, 2.0];
+        let storage = Arc::<[f32]>::from(vec![0.0; data.len()]);
+        let filled = SpectrogramProcessor::fill_arc(storage, &data);
+        assert_eq!(&*filled, &data);
+        assert_eq!(Arc::strong_count(&filled), 1);
+    }
+
+    #[test]
+    fn fill_arc_allocates_when_storage_shared() {
+        let data = [3.0f32, 4.0];
+        let storage = Arc::<[f32]>::from(vec![0.0; data.len()]);
+        let alias = Arc::clone(&storage);
+        let filled = SpectrogramProcessor::fill_arc(storage, &data);
+        assert_eq!(&*filled, &data);
+        assert!(!Arc::ptr_eq(&filled, &alias));
+        assert_eq!(&*alias, &[0.0, 0.0]);
     }
 
     #[test]

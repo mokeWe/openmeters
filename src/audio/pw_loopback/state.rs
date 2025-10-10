@@ -7,6 +7,8 @@ use pipewire as pw;
 use std::collections::{HashMap, HashSet};
 use tracing::{debug, error, info, warn};
 
+type RoutePlan = (u32, u32, Vec<(GraphPort, GraphPort)>);
+
 pub(super) struct LoopbackState {
     core: pw::core::CoreRc,
     nodes: HashMap<u32, TrackedNode>,
@@ -192,7 +194,7 @@ impl LoopbackState {
         }
     }
 
-    fn compute_route_pairs(&mut self) -> Option<(u32, u32, Vec<(GraphPort, GraphPort)>)> {
+    fn compute_route_pairs(&mut self) -> Option<RoutePlan> {
         let Some(source_id) = self.openmeters_node_id else {
             self.clear_links();
             return None;
