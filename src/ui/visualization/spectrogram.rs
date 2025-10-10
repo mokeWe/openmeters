@@ -55,6 +55,7 @@ impl SpectrogramProcessor {
     pub fn new(sample_rate: f32) -> Self {
         let config = SpectrogramConfig {
             sample_rate,
+            use_reassignment: true,
             ..Default::default()
         };
         Self {
@@ -96,6 +97,7 @@ pub struct SpectrogramState {
     hop_size: usize,
     sample_rate: f32,
     history_length: usize,
+    synchro_bins_hz: Option<Arc<[f32]>>,
     instance_id: u64,
 }
 
@@ -117,6 +119,7 @@ impl SpectrogramState {
             hop_size: default_cfg.hop_size,
             sample_rate: default_cfg.sample_rate,
             history_length: default_cfg.history_length,
+            synchro_bins_hz: None,
             instance_id: next_instance_id(),
         }
     }
@@ -135,12 +138,23 @@ impl SpectrogramState {
         self.palette_cache.borrow_mut().dirty = true;
 
         if floor_changed || ceiling_changed {
+            let use_synchro = {
+                let buffer = self.buffer.borrow();
+                buffer.using_synchro()
+            };
+            let synchro_bins = if use_synchro {
+                self.synchro_bins_hz.as_deref()
+            } else {
+                None
+            };
             self.buffer.borrow_mut().rebuild_from_history(
                 &self.history,
                 &self.style,
                 self.history_length,
                 self.sample_rate,
                 self.fft_size,
+                use_synchro,
+                synchro_bins,
             );
         } else {
             self.buffer.borrow_mut().mark_dirty();
@@ -183,16 +197,42 @@ impl SpectrogramState {
             self.last_timestamp = None;
         }
 
+        let new_synchro_bins = update.synchro_bins_hz.clone();
+        let mut use_synchro = new_synchro_bins
+            .as_ref()
+            .map(|bins| !bins.is_empty())
+            .unwrap_or(false);
+        let synchro_len = new_synchro_bins
+            .as_ref()
+            .map(|bins| bins.len())
+            .unwrap_or(0);
+
+        if use_synchro {
+            let has_new_synchro = update.new_columns.is_empty()
+                || update.new_columns.iter().all(|column| {
+                    column
+                        .synchro_magnitudes_db
+                        .as_ref()
+                        .map(|values| values.len() == synchro_len)
+                        .unwrap_or(false)
+                });
+            if !has_new_synchro {
+                use_synchro = false;
+            }
+        }
+
         let incoming_height = update
             .new_columns
             .first()
-            .map(|column| column.magnitudes_db.len());
+            .and_then(|column| SpectrogramBuffer::column_values(column, use_synchro))
+            .map(|values| values.len());
 
         if let (Some(incoming), Some(existing)) = (
             incoming_height,
             self.history
                 .front()
-                .map(|column| column.magnitudes_db.len()),
+                .and_then(|column| SpectrogramBuffer::column_values(column, use_synchro))
+                .map(|values| values.len()),
         ) && incoming != existing
         {
             needs_rebuild = true;
@@ -205,16 +245,26 @@ impl SpectrogramState {
             }
         }
 
+        self.synchro_bins_hz = if use_synchro {
+            new_synchro_bins.clone()
+        } else {
+            None
+        };
+
         while self.history.len() > self.history_length {
             self.history.pop_front();
         }
 
         {
             let buffer = self.buffer.borrow();
+            if buffer.using_synchro() != use_synchro {
+                needs_rebuild = true;
+            }
             let desired_height = self
                 .history
                 .front()
-                .map(|column| column.magnitudes_db.len() as u32)
+                .and_then(|column| SpectrogramBuffer::column_values(column, use_synchro))
+                .map(|values| values.len() as u32)
                 .unwrap_or(0);
 
             if desired_height > 0 && buffer.texture_height() != desired_height {
@@ -243,9 +293,16 @@ impl SpectrogramState {
                 self.history_length,
                 update.sample_rate,
                 update.fft_size,
+                use_synchro,
+                self.synchro_bins_hz.as_deref(),
             );
         } else if !update.new_columns.is_empty() {
-            buffer.append_columns(&update.new_columns, &self.style);
+            buffer.append_columns(
+                &update.new_columns,
+                &self.style,
+                use_synchro,
+                self.synchro_bins_hz.as_deref(),
+            );
         }
 
         self.fft_size = update.fft_size;
@@ -263,6 +320,7 @@ impl SpectrogramState {
         let (palette, background) = self.cached_palette_and_background();
 
         let mut buffer = self.buffer.borrow_mut();
+
         let width = buffer.texture_width();
         let height = buffer.texture_height();
         let column_count = buffer.column_count();
@@ -333,6 +391,8 @@ struct SpectrogramBuffer {
     row_lower_bins: Vec<usize>,
     row_upper_bins: Vec<usize>,
     row_interp_weights: Vec<f32>,
+    using_synchro: bool,
+    grid_bin_frequencies: Vec<f32>,
     update_buffer_pool: ColumnBufferPool,
 }
 
@@ -353,6 +413,8 @@ impl Clone for SpectrogramBuffer {
             row_lower_bins: self.row_lower_bins.clone(),
             row_upper_bins: self.row_upper_bins.clone(),
             row_interp_weights: self.row_interp_weights.clone(),
+            using_synchro: self.using_synchro,
+            grid_bin_frequencies: self.grid_bin_frequencies.clone(),
             update_buffer_pool: self.update_buffer_pool.clone(),
         }
     }
@@ -375,6 +437,8 @@ impl SpectrogramBuffer {
             row_lower_bins: Vec::new(),
             row_upper_bins: Vec::new(),
             row_interp_weights: Vec::new(),
+            using_synchro: false,
+            grid_bin_frequencies: Vec::new(),
             update_buffer_pool: ColumnBufferPool::new(),
         }
     }
@@ -389,6 +453,21 @@ impl SpectrogramBuffer {
 
     fn column_count(&self) -> u32 {
         self.column_count
+    }
+
+    fn using_synchro(&self) -> bool {
+        self.using_synchro
+    }
+
+    fn column_values<'a>(column: &'a SpectrogramColumn, use_synchro: bool) -> Option<&'a [f32]> {
+        if use_synchro {
+            column
+                .synchro_magnitudes_db
+                .as_ref()
+                .map(|values| values.as_ref())
+        } else {
+            Some(column.magnitudes_db.as_ref())
+        }
     }
 
     fn latest_column(&self) -> u32 {
@@ -451,6 +530,8 @@ impl SpectrogramBuffer {
         self.row_lower_bins.clear();
         self.row_upper_bins.clear();
         self.row_interp_weights.clear();
+        self.using_synchro = false;
+        self.grid_bin_frequencies.clear();
         self.update_buffer_pool = ColumnBufferPool::new();
     }
 
@@ -461,6 +542,8 @@ impl SpectrogramBuffer {
         history_length: usize,
         sample_rate: f32,
         fft_size: usize,
+        use_synchro: bool,
+        synchro_bins_hz: Option<&[f32]>,
     ) {
         self.clear_pending();
 
@@ -471,12 +554,24 @@ impl SpectrogramBuffer {
             sample_rate
         };
         self.fft_size = fft_size.max(1);
+        self.using_synchro = use_synchro;
+        self.grid_bin_frequencies.clear();
 
         let height = history
-            .front()
-            .map(|column| column.magnitudes_db.len() as u32)
+            .iter()
+            .find_map(|column| {
+                SpectrogramBuffer::column_values(column, use_synchro)
+                    .map(|values| values.len() as u32)
+            })
             .unwrap_or(0);
         self.height = height;
+
+        if use_synchro {
+            if let Some(freqs) = synchro_bins_hz {
+                let limit = height.min(freqs.len() as u32) as usize;
+                self.grid_bin_frequencies.extend_from_slice(&freqs[..limit]);
+            }
+        }
 
         if self.capacity == 0 || self.height == 0 {
             self.values.clear();
@@ -487,6 +582,8 @@ impl SpectrogramBuffer {
             self.row_lower_bins.clear();
             self.row_upper_bins.clear();
             self.row_interp_weights.clear();
+            self.using_synchro = false;
+            self.grid_bin_frequencies.clear();
             self.pending_base = None;
             self.pending_updates.clear();
             return;
@@ -500,7 +597,13 @@ impl SpectrogramBuffer {
         self.rebuild_row_positions();
 
         for column in history.iter() {
-            self.push_column(column.magnitudes_db.as_ref(), style);
+            let Some(values) = SpectrogramBuffer::column_values(column, use_synchro) else {
+                continue;
+            };
+            if values.len() != self.height as usize {
+                continue;
+            }
+            self.push_column(values, style);
         }
 
         if self.column_count > 0 {
@@ -512,21 +615,43 @@ impl SpectrogramBuffer {
         self.last_timestamp = history.back().map(|column| column.timestamp);
     }
 
-    fn append_columns(&mut self, columns: &[SpectrogramColumn], style: &SpectrogramStyle) {
+    fn append_columns(
+        &mut self,
+        columns: &[SpectrogramColumn],
+        style: &SpectrogramStyle,
+        use_synchro: bool,
+        synchro_bins_hz: Option<&[f32]>,
+    ) {
         if self.capacity == 0 || self.height == 0 {
             return;
         }
 
-        if self.needs_row_sampling_refresh() {
+        if self.using_synchro != use_synchro {
+            self.using_synchro = use_synchro;
+            self.rebuild_row_positions();
+        } else if self.needs_row_sampling_refresh() {
             self.rebuild_row_positions();
         }
 
+        if use_synchro {
+            if let Some(freqs) = synchro_bins_hz {
+                if self.grid_bin_frequencies.len() != freqs.len() {
+                    self.grid_bin_frequencies.clear();
+                    self.grid_bin_frequencies.extend_from_slice(freqs);
+                }
+            }
+        }
+
         for column in columns {
-            if column.magnitudes_db.len() != self.height as usize {
+            let Some(values) = SpectrogramBuffer::column_values(column, use_synchro) else {
+                continue;
+            };
+
+            if values.len() != self.height as usize {
                 continue;
             }
 
-            let physical_index = self.push_column(column.magnitudes_db.as_ref(), style);
+            let physical_index = self.push_column(values, style);
             let start = (physical_index as usize) * (self.height as usize);
             let mut buffer = self.update_buffer_pool.acquire(self.height as usize);
             buffer.copy_from_slice(&self.values[start..start + self.height as usize]);
@@ -604,11 +729,25 @@ impl SpectrogramBuffer {
         self.row_upper_bins.clear();
         self.row_interp_weights.clear();
 
-        if self.height == 0 || self.fft_size == 0 || self.sample_rate <= 0.0 {
+        if self.height == 0 {
             return;
         }
 
         let height = self.height as usize;
+        if self.using_synchro {
+            for row in 0..height {
+                self.row_bin_positions.push(row as f32);
+                self.row_lower_bins.push(row);
+                self.row_upper_bins.push(row);
+                self.row_interp_weights.push(0.0);
+            }
+            return;
+        }
+
+        if self.fft_size == 0 || self.sample_rate <= 0.0 {
+            return;
+        }
+
         let bin_count = self.fft_size / 2 + 1;
         if bin_count == 0 {
             return;
@@ -694,6 +833,7 @@ fn sample_column(column: &[f32], bin_position: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
 
     #[test]
     fn row_positions_follow_log_profile() {
@@ -730,6 +870,80 @@ mod tests {
 
         let midpoint = sample_column(&column, 1.5);
         assert!((midpoint + 18.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn synchro_columns_use_log_grid_height() {
+        let mut state = SpectrogramState::new();
+        let column = SpectrogramColumn {
+            timestamp: Instant::now(),
+            magnitudes_db: Arc::from(vec![-96.0_f32; 8].into_boxed_slice()),
+            reassigned: None,
+            synchro_magnitudes_db: Some(Arc::from(
+                vec![-30.0, -25.0, -20.0, -15.0].into_boxed_slice(),
+            )),
+        };
+
+        let update = SpectrogramUpdate {
+            fft_size: 1024,
+            hop_size: 256,
+            sample_rate: DEFAULT_SAMPLE_RATE,
+            history_length: 4,
+            reset: true,
+            reassignment_enabled: true,
+            synchro_bins_hz: Some(Arc::from(vec![40.0, 80.0, 160.0, 320.0].into_boxed_slice())),
+            new_columns: vec![column],
+        };
+
+        state.apply_update(&update);
+
+        let buffer = state.buffer.borrow();
+        assert!(buffer.using_synchro());
+        assert_eq!(buffer.texture_height(), 4);
+    }
+
+    #[test]
+    fn synchro_columns_place_high_frequencies_on_top() {
+        let mut state = SpectrogramState::new();
+        let column = SpectrogramColumn {
+            timestamp: Instant::now(),
+            magnitudes_db: Arc::from(vec![-96.0_f32; 8].into_boxed_slice()),
+            reassigned: None,
+            synchro_magnitudes_db: Some(Arc::from(
+                vec![-10.0, -20.0, -30.0, -40.0].into_boxed_slice(),
+            )),
+        };
+
+        let update = SpectrogramUpdate {
+            fft_size: 1024,
+            hop_size: 256,
+            sample_rate: DEFAULT_SAMPLE_RATE,
+            history_length: 4,
+            reset: true,
+            reassignment_enabled: true,
+            synchro_bins_hz: Some(Arc::from(
+                vec![10_000.0, 2_500.0, 625.0, 156.25].into_boxed_slice(),
+            )),
+            new_columns: vec![column],
+        };
+
+        state.apply_update(&update);
+
+        let buffer = state.buffer.borrow();
+        assert!(buffer.using_synchro());
+        assert_eq!(buffer.texture_height(), 4);
+        assert_eq!(buffer.grid_bin_frequencies.len(), 4);
+        let highest = buffer.grid_bin_frequencies.first().copied().unwrap();
+        let lowest = buffer.grid_bin_frequencies.last().copied().unwrap();
+        assert!(highest > lowest);
+
+        let top = buffer.values.first().copied().unwrap_or_default();
+        let bottom_index = buffer.texture_height() as usize - 1;
+        let bottom = buffer.values.get(bottom_index).copied().unwrap_or_default();
+        assert!(
+            top > bottom,
+            "top row should represent higher magnitudes (high frequencies)"
+        );
     }
 }
 
