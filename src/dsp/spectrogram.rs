@@ -59,17 +59,17 @@ impl Default for SpectrogramConfig {
     fn default() -> Self {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
-            fft_size: 8192,
-            hop_size: 1024,
+            fft_size: 4096,
+            hop_size: 512,
             // I'm not sure what the "best" alpha/beta value is for spectral analysis.
             // going for moderate sidelobe suppression without excessive main lobe widening.
             window: WindowKind::PlanckBessel {
                 epsilon: 0.1,
-                beta: 4.5,
+                beta: 5.5,
             },
             history_length: 480,
             use_reassignment: true,
-            reassignment_power_floor_db: -80.0,
+            reassignment_power_floor_db: -90.0,
             reassignment_low_bin_limit: 0,
             zero_padding_factor: 2,
             use_synchrosqueezing: true,
@@ -1110,8 +1110,7 @@ impl SpectrogramProcessor {
         reassignment_bin_limit: usize,
         synchro_active: bool,
     ) -> Option<Arc<[ReassignedSample]>> {
-        let mut samples = Vec::new();
-        samples.reserve(reassignment_bin_limit);
+        let mut samples = Vec::with_capacity(reassignment_bin_limit);
         let power_floor = self.reassignment_power_floor_linear;
         let sample_rate_f64 = sample_rate as f64;
         let fft_size_f64 = fft_size as f64;
