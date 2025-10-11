@@ -124,7 +124,7 @@ pub struct SpectrogramState {
 impl SpectrogramState {
     pub fn new() -> Self {
         let style = SpectrogramStyle::default();
-        let palette = default_palette();
+        let palette = theme::spectrogram_palette();
         let default_cfg = SpectrogramConfig::default();
         let palette_cache = RefCell::new(PaletteCache::new(&style, &palette));
 
@@ -1012,16 +1012,6 @@ mod tests {
             "top row should represent higher magnitudes (high frequencies)"
         );
     }
-}
-
-fn default_palette() -> [Color; PALETTE_STOPS] {
-    [
-        Color::from_rgba(0.05, 0.08, 0.18, 0.0),
-        Color::from_rgba(0.13, 0.20, 0.46, 1.0),
-        Color::from_rgba(0.11, 0.48, 0.63, 1.0),
-        Color::from_rgba(0.94, 0.75, 0.29, 1.0),
-        Color::from_rgba(0.98, 0.93, 0.65, 1.0),
-    ]
 }
 
 fn build_palette_rgba(palette: &[Color; PALETTE_STOPS], opacity: f32) -> [[f32; 4]; PALETTE_STOPS] {
