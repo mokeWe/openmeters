@@ -1,3 +1,4 @@
+use crate::audio::meter_tap::{self, MeterFormat};
 use crate::dsp::ProcessorUpdate;
 use crate::dsp::oscilloscope::OscilloscopeConfig;
 use crate::dsp::spectrogram::SpectrogramConfig;
@@ -305,23 +306,23 @@ impl VisualRuntime {
         }
     }
 
-    fn ingest(&mut self, samples: &[f32]) {
+    fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
         match self {
             VisualRuntime::LufsMeter { processor, state } => {
-                let snapshot = processor.ingest(samples);
+                let snapshot = processor.ingest(samples, format);
                 state.apply_snapshot(&snapshot);
             }
             VisualRuntime::Oscilloscope { processor, state } => {
-                let snapshot = processor.ingest(samples);
+                let snapshot = processor.ingest(samples, format);
                 state.apply_snapshot(&snapshot);
             }
             VisualRuntime::Spectrogram { processor, state } => {
-                if let ProcessorUpdate::Snapshot(update) = processor.ingest(samples) {
+                if let ProcessorUpdate::Snapshot(update) = processor.ingest(samples, format) {
                     state.apply_update(&update);
                 }
             }
             VisualRuntime::Spectrum { processor, state } => {
-                if let Some(snapshot) = processor.ingest(samples) {
+                if let Some(snapshot) = processor.ingest(samples, format) {
                     state.apply_snapshot(&snapshot);
                 }
             }
@@ -535,9 +536,10 @@ impl VisualManager {
             return;
         }
 
+        let format = meter_tap::current_format();
         for entry in &mut self.entries {
             if entry.slot.enabled {
-                entry.runtime.ingest(samples);
+                entry.runtime.ingest(samples, format);
             }
         }
     }

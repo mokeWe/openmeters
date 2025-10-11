@@ -8,6 +8,7 @@ use pw::{properties::properties, spa};
 use spa::pod::Pod;
 use std::error::Error;
 use std::io::Cursor;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::thread;
 use std::time::Duration;
@@ -26,13 +27,22 @@ const DESIRED_LATENCY_FRAMES: u32 = 256;
 static SINK_THREAD: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
 static CAPTURE_BUFFER: OnceLock<Arc<CaptureBuffer>> = OnceLock::new();
 
+/// Audio block captured from PipeWire with associated format metadata.
+#[derive(Debug, Clone)]
+pub struct CapturedAudio {
+    pub samples: Vec<f32>,
+    pub channels: u32,
+    pub sample_rate: u32,
+}
+
 /// Shared audio capture buffer guarded by a mutex and wired to a condition variable so
 /// consumers can efficiently await new audio frames.
 /// fixes an issue where significant amounts of audio data would be dropped when the consumer
 /// thread was not keeping up with the real-time PipeWire callback.
 pub struct CaptureBuffer {
-    inner: Mutex<RingBuffer<Vec<f32>>>,
+    inner: Mutex<RingBuffer<CapturedAudio>>,
     available: Condvar,
+    dropped_frames: AtomicU64,
 }
 
 impl CaptureBuffer {
@@ -40,32 +50,36 @@ impl CaptureBuffer {
         Self {
             inner: Mutex::new(RingBuffer::with_capacity(capacity)),
             available: Condvar::new(),
+            dropped_frames: AtomicU64::new(0),
         }
     }
 
     /// Attempt to enqueue a frame without blocking the caller. Frames are silently dropped when
     /// the buffer is currently locked (e.g. if the consumer thread holds the mutex).
-    pub fn try_push(&self, samples: Vec<f32>) {
+    pub fn try_push(&self, frame: CapturedAudio) {
         match self.inner.try_lock() {
             Ok(mut guard) => {
-                let _ = guard.push(samples);
+                if guard.push(frame).is_some() {
+                    self.dropped_frames.fetch_add(1, Ordering::Relaxed);
+                }
                 self.available.notify_one();
             }
             Err(_) => {
                 // The consumer temporarily holds the lock; drop the frame to avoid stalling the
                 // real-time PipeWire callback.
+                self.dropped_frames.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
 
     /// Wait for the next frame to become available, backing off after `timeout` elapses so the
     /// caller can perform periodic housekeeping (e.g. shutdown checks).
-    pub fn pop_wait_timeout(&self, timeout: Duration) -> Result<Option<Vec<f32>>, ()> {
+    pub fn pop_wait_timeout(&self, timeout: Duration) -> Result<Option<CapturedAudio>, ()> {
         let mut guard = match self.inner.lock() {
             Ok(guard) => guard,
             Err(err) => {
                 error!("[virtual-sink] capture buffer lock poisoned: {err}");
-                return Err(());
+                err.into_inner()
             }
         };
 
@@ -82,6 +96,7 @@ impl CaptureBuffer {
                 Ok(outcome) => outcome,
                 Err(err) => {
                     error!("[virtual-sink] capture buffer wait failed: {err}");
+                    let _ = err.into_inner();
                     return Err(());
                 }
             };
@@ -101,6 +116,10 @@ impl CaptureBuffer {
     #[cfg(test)]
     fn capacity(&self) -> usize {
         self.inner.lock().map(|guard| guard.capacity()).unwrap_or(0)
+    }
+
+    pub fn dropped_frames(&self) -> u64 {
+        self.dropped_frames.load(Ordering::Relaxed)
     }
 }
 
@@ -245,7 +264,11 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
                 }
 
                 if let Some(samples) = captured {
-                    capture_buffer.try_push(samples);
+                    capture_buffer.try_push(CapturedAudio {
+                        samples,
+                        channels: state.channels,
+                        sample_rate: state.sample_rate,
+                    });
                 }
 
                 let chunk_mut = data.chunk_mut();

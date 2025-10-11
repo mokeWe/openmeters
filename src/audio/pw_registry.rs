@@ -348,10 +348,15 @@ struct RegistryState {
 impl RegistryState {
     /// Capture the current registry view into a snapshot suitable for sharing.
     fn snapshot(&self) -> RegistrySnapshot {
+        let mut nodes: Vec<_> = self.nodes.values().cloned().collect();
+        nodes.sort_by_key(|node| node.id);
+        let mut devices: Vec<_> = self.devices.values().cloned().collect();
+        devices.sort_by_key(|device| device.id);
+
         RegistrySnapshot {
             serial: self.serial,
-            nodes: self.nodes.values().cloned().collect(),
-            devices: self.devices.values().cloned().collect(),
+            nodes,
+            devices,
             defaults: self.metadata_defaults.clone(),
         }
     }

@@ -157,20 +157,28 @@ where
         container::draw_background(renderer, &style, bounds);
 
         let mut children = layout.children();
-        let padded = children.next().unwrap();
+        let Some(padded) = children.next() else {
+            return;
+        };
 
         let mut children = padded.children();
-        let title_layout = children.next().unwrap();
+        let Some(title_layout) = children.next() else {
+            return;
+        };
         let mut show_title = true;
 
         if let Some(controls) = &self.controls {
             if show_controls || self.always_show_controls {
-                let controls_layout = children.next().unwrap();
+                let Some(controls_layout) = children.next() else {
+                    return;
+                };
                 if title_layout.bounds().width + controls_layout.bounds().width
                     > padded.bounds().width
                 {
                     if let Some(compact) = controls.compact.as_ref() {
-                        let compact_layout = children.next().unwrap();
+                        let Some(compact_layout) = children.next() else {
+                            return;
+                        };
 
                         compact.as_widget().draw(
                             &tree.children[2],
@@ -228,18 +236,26 @@ where
     pub fn is_over_pick_area(&self, layout: Layout<'_>, cursor_position: Point) -> bool {
         if layout.bounds().contains(cursor_position) {
             let mut children = layout.children();
-            let padded = children.next().unwrap();
+            let Some(padded) = children.next() else {
+                return false;
+            };
             let mut children = padded.children();
-            let title_layout = children.next().unwrap();
+            let Some(title_layout) = children.next() else {
+                return false;
+            };
 
             if let Some(controls) = self.controls.as_ref() {
-                let controls_layout = children.next().unwrap();
+                let Some(controls_layout) = children.next() else {
+                    return false;
+                };
 
                 if title_layout.bounds().width + controls_layout.bounds().width
                     > padded.bounds().width
                 {
                     if controls.compact.is_some() {
-                        let compact_layout = children.next().unwrap();
+                        let Some(compact_layout) = children.next() else {
+                            return false;
+                        };
 
                         !compact_layout.bounds().contains(cursor_position)
                             && !title_layout.bounds().contains(cursor_position)

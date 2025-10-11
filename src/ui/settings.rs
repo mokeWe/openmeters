@@ -281,7 +281,9 @@ impl SettingsManager {
             fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(&self.data)?;
-        fs::write(&self.path, json)
+        let tmp_path = self.path.with_extension("json.tmp");
+        fs::write(&tmp_path, &json)?;
+        fs::rename(&tmp_path, &self.path)
     }
 }
 

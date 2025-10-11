@@ -3,12 +3,13 @@
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
+use parking_lot::RwLock;
 use realfft::{RealFftPlanner, RealToComplex};
 use rustc_hash::FxHashMap;
 use rustfft::num_complex::Complex32;
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
-use std::sync::{Arc, OnceLock, RwLock};
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 const LOG_FACTOR: f32 = 10.0 * core::f32::consts::LOG10_E;
@@ -196,11 +197,11 @@ impl WindowCache {
         }
 
         let key = WindowKey { kind, len };
-        if let Some(existing) = self.entries.read().unwrap().get(&key) {
+        if let Some(existing) = self.entries.read().get(&key) {
             return Arc::clone(existing);
         }
 
-        let mut write = self.entries.write().unwrap();
+        let mut write = self.entries.write();
         Arc::clone(
             write
                 .entry(key)

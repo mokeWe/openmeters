@@ -1,5 +1,6 @@
 //! UI wrapper around the oscilloscope DSP processor and renderer.
 
+use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::oscilloscope::{
     OscilloscopeConfig, OscilloscopeProcessor as CoreOscilloscopeProcessor, OscilloscopeSnapshot,
 };
@@ -40,17 +41,24 @@ impl OscilloscopeProcessor {
         }
     }
 
-    pub fn ingest(&mut self, samples: &[f32]) -> OscilloscopeSnapshot {
+    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> OscilloscopeSnapshot {
         if samples.is_empty() {
             return self.inner.snapshot().clone();
         }
 
-        let block = AudioBlock::new(
-            samples,
-            self.channels,
-            self.inner.config().sample_rate,
-            Instant::now(),
-        );
+        let channels = format.channels.max(1);
+        if self.channels != channels {
+            self.channels = channels;
+        }
+
+        let sample_rate = format.sample_rate.max(1.0);
+        let mut config = self.inner.config();
+        if (config.sample_rate - sample_rate).abs() > f32::EPSILON {
+            config.sample_rate = sample_rate;
+            self.inner.update_config(config);
+        }
+
+        let block = AudioBlock::new(samples, self.channels, sample_rate, Instant::now());
 
         match self.inner.process_block(&block) {
             ProcessorUpdate::Snapshot(snapshot) => snapshot,

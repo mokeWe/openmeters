@@ -1,7 +1,8 @@
+use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::loudness::{
     LoudnessConfig, LoudnessProcessor as CoreLoudnessProcessor, LoudnessSnapshot,
 };
-use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate};
+use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::lufs_meter::{
     ChannelVisual, FillVisual, GuideLine, LufsMeterPrimitive, VisualParams,
 };
@@ -115,17 +116,24 @@ impl LufsProcessor {
         }
     }
 
-    pub fn ingest(&mut self, samples: &[f32]) -> LoudnessSnapshot {
+    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> LoudnessSnapshot {
         if samples.is_empty() {
             return self.inner.snapshot().clone();
         }
 
-        let block = AudioBlock::new(
-            samples,
-            self.channels,
-            self.inner.config().sample_rate,
-            Instant::now(),
-        );
+        let channels = format.channels.max(1);
+        if self.channels != channels {
+            self.channels = channels;
+        }
+
+        let sample_rate = format.sample_rate.max(1.0);
+        let mut config = self.inner.config();
+        if (config.sample_rate - sample_rate).abs() > f32::EPSILON {
+            config.sample_rate = sample_rate;
+            self.inner.update_config(config);
+        }
+
+        let block = AudioBlock::new(samples, self.channels, sample_rate, Instant::now());
 
         match self.inner.process_block(&block) {
             ProcessorUpdate::Snapshot(snapshot) => snapshot,

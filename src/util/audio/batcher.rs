@@ -1,5 +1,7 @@
 use std::mem;
 
+const MAX_RECYCLED_BUFFERS: usize = 4;
+
 /// Batches small PCM chunks into larger buffers to reduce channel overhead
 /// while reusing allocated memory.
 #[derive(Default)]
@@ -27,6 +29,15 @@ impl SampleBatcher {
         self.total_samples >= self.target_samples
     }
 
+    pub fn clear(&mut self) {
+        let mut chunks = mem::take(&mut self.chunks);
+        for chunk in chunks.drain(..) {
+            self.stash_recycle(chunk);
+        }
+        self.chunks = chunks;
+        self.total_samples = 0;
+    }
+
     pub fn take(&mut self) -> Option<Vec<f32>> {
         if self.total_samples == 0 {
             return None;
@@ -37,25 +48,36 @@ impl SampleBatcher {
             return self.chunks.pop();
         }
 
+        let mut chunks = mem::take(&mut self.chunks);
         let total_samples = mem::take(&mut self.total_samples);
         let mut batch = self.reuse_buffer(total_samples);
 
-        for mut chunk in self.chunks.drain(..) {
+        for mut chunk in chunks.drain(..) {
             batch.append(&mut chunk);
-            self.recycle.push(chunk);
+            self.stash_recycle(chunk);
         }
 
+        self.chunks = chunks;
+        self.total_samples = 0;
         Some(batch)
     }
 
     fn reuse_buffer(&mut self, needed: usize) -> Vec<f32> {
         if let Some(mut recycled) = self.recycle.pop() {
+            recycled.clear();
             if recycled.capacity() < needed {
                 recycled.reserve(needed - recycled.capacity());
             }
             recycled
         } else {
             Vec::with_capacity(needed)
+        }
+    }
+
+    fn stash_recycle(&mut self, mut chunk: Vec<f32>) {
+        if self.recycle.len() < MAX_RECYCLED_BUFFERS {
+            chunk.clear();
+            self.recycle.push(chunk);
         }
     }
 }

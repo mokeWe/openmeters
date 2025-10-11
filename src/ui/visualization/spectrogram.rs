@@ -1,5 +1,6 @@
 //! UI wrapper for the spectrogram DSP processor and renderer.
 
+use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::spectrogram::{
     SpectrogramColumn, SpectrogramConfig, SpectrogramProcessor as CoreSpectrogramProcessor,
     SpectrogramUpdate,
@@ -66,17 +67,28 @@ impl SpectrogramProcessor {
         }
     }
 
-    pub fn ingest(&mut self, samples: &[f32]) -> ProcessorUpdate<SpectrogramUpdate> {
+    pub fn ingest(
+        &mut self,
+        samples: &[f32],
+        format: MeterFormat,
+    ) -> ProcessorUpdate<SpectrogramUpdate> {
         if samples.is_empty() {
             return ProcessorUpdate::None;
         }
 
-        let block = AudioBlock::new(
-            samples,
-            self.channels,
-            self.inner.config().sample_rate,
-            Instant::now(),
-        );
+        let channels = format.channels.max(1);
+        if self.channels != channels {
+            self.channels = channels;
+        }
+
+        let sample_rate = format.sample_rate.max(1.0);
+        let mut config = self.inner.config();
+        if (config.sample_rate - sample_rate).abs() > f32::EPSILON {
+            config.sample_rate = sample_rate;
+            self.inner.update_config(config);
+        }
+
+        let block = AudioBlock::new(samples, self.channels, sample_rate, Instant::now());
 
         self.inner.process_block(&block)
     }

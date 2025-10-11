@@ -1,3 +1,4 @@
+use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::spectrum::{
     SpectrumConfig, SpectrumProcessor as CoreSpectrumProcessor, SpectrumSnapshot,
 };
@@ -51,17 +52,24 @@ impl SpectrumProcessor {
         }
     }
 
-    pub fn ingest(&mut self, samples: &[f32]) -> Option<SpectrumSnapshot> {
+    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> Option<SpectrumSnapshot> {
         if samples.is_empty() {
             return None;
         }
 
-        let block = AudioBlock::new(
-            samples,
-            self.channels,
-            self.inner.config().sample_rate,
-            Instant::now(),
-        );
+        let channels = format.channels.max(1);
+        if self.channels != channels {
+            self.channels = channels;
+        }
+
+        let sample_rate = format.sample_rate.max(1.0);
+        let mut config = self.inner.config();
+        if (config.sample_rate - sample_rate).abs() > f32::EPSILON {
+            config.sample_rate = sample_rate;
+            self.inner.update_config(config);
+        }
+
+        let block = AudioBlock::new(samples, self.channels, sample_rate, Instant::now());
 
         match self.inner.process_block(&block) {
             ProcessorUpdate::Snapshot(snapshot) => Some(snapshot),
@@ -432,6 +440,8 @@ fn normalize_db(value: f32, min_db: f32, max_db: f32) -> f32 {
 }
 
 fn interpolate_magnitude(bins: &[f32], magnitudes: &[f32], target: f32) -> f32 {
+    use std::cmp::Ordering;
+
     if bins.is_empty() || magnitudes.is_empty() {
         return 0.0;
     }
@@ -439,18 +449,23 @@ fn interpolate_magnitude(bins: &[f32], magnitudes: &[f32], target: f32) -> f32 {
     if target <= bins[0] {
         return magnitudes[0];
     }
-    if target >= *bins.last().unwrap() {
-        return *magnitudes.last().unwrap();
+
+    if let Some(&last_bin) = bins.last() {
+        if target >= last_bin {
+            return magnitudes.last().copied().unwrap_or(0.0);
+        }
     }
 
-    match bins.binary_search_by(|probe| probe.partial_cmp(&target).unwrap()) {
-        Ok(index) => magnitudes[index],
+    match bins.binary_search_by(|probe| probe.partial_cmp(&target).unwrap_or(Ordering::Less)) {
+        Ok(index) => magnitudes.get(index).copied().unwrap_or(0.0),
         Err(index) => {
             let upper = index.min(bins.len() - 1);
             let lower = upper.saturating_sub(1);
             let span = (bins[upper] - bins[lower]).max(EPSILON);
             let t = (target - bins[lower]) / span;
-            magnitudes[lower] + (magnitudes[upper] - magnitudes[lower]) * t
+            let lower_mag = magnitudes.get(lower).copied().unwrap_or(0.0);
+            let upper_mag = magnitudes.get(upper).copied().unwrap_or(lower_mag);
+            lower_mag + (upper_mag - lower_mag) * t
         }
     }
 }
