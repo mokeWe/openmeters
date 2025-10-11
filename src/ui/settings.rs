@@ -2,7 +2,10 @@ use crate::dsp::oscilloscope::OscilloscopeConfig;
 use crate::dsp::spectrogram::{SpectrogramConfig, WindowKind};
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
 use crate::ui::visualization::visual_manager::VisualKind;
+use serde::de::{self, Deserializer};
+use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::fs;
@@ -29,33 +32,146 @@ pub struct VisualSettings {
     pub order: Vec<VisualKind>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ModuleConfig {
-    Spectrogram(SpectrogramSettings),
-    Spectrum(SpectrumSettings),
-    Oscilloscope(OscilloscopeSettings),
-    Empty {},
-}
-
-impl Default for ModuleConfig {
-    fn default() -> Self {
-        ModuleConfig::Empty {}
+impl VisualSettings {
+    pub fn sanitize(&mut self) {
+        for (kind, module) in &mut self.modules {
+            module.retain_only(*kind);
+        }
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Debug, Clone, Default)]
 pub struct ModuleSettings {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    #[serde(flatten)]
-    pub config: ModuleConfig,
+    config: Option<StoredConfig>,
 }
 
 impl ModuleSettings {
-    pub fn set_config(&mut self, config: ModuleConfig) {
-        self.config = config;
+    pub fn set_spectrogram(&mut self, config: SpectrogramSettings) {
+        self.config = Some(StoredConfig::Spectrogram(config));
+    }
+
+    pub fn set_spectrum(&mut self, config: SpectrumSettings) {
+        self.config = Some(StoredConfig::Spectrum(config));
+    }
+
+    pub fn set_oscilloscope(&mut self, config: OscilloscopeSettings) {
+        self.config = Some(StoredConfig::Oscilloscope(config));
+    }
+
+    pub fn spectrogram(&self) -> Option<&SpectrogramSettings> {
+        match &self.config {
+            Some(StoredConfig::Spectrogram(cfg)) => Some(cfg),
+            _ => None,
+        }
+    }
+
+    pub fn spectrum(&self) -> Option<&SpectrumSettings> {
+        match &self.config {
+            Some(StoredConfig::Spectrum(cfg)) => Some(cfg),
+            _ => None,
+        }
+    }
+
+    pub fn oscilloscope(&self) -> Option<&OscilloscopeSettings> {
+        match &self.config {
+            Some(StoredConfig::Oscilloscope(cfg)) => Some(cfg),
+            _ => None,
+        }
+    }
+
+    pub fn retain_only(&mut self, kind: VisualKind) {
+        match kind {
+            VisualKind::Spectrogram | VisualKind::Spectrum | VisualKind::Oscilloscope => {
+                if self
+                    .config
+                    .as_ref()
+                    .map_or(false, |config| config.kind() != kind)
+                {
+                    self.clear_config();
+                }
+            }
+            _ => self.clear_config(),
+        }
+    }
+
+    fn clear_config(&mut self) {
+        self.config = None;
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+enum StoredConfig {
+    Spectrogram(SpectrogramSettings),
+    Spectrum(SpectrumSettings),
+    Oscilloscope(OscilloscopeSettings),
+}
+
+impl StoredConfig {
+    fn kind(&self) -> VisualKind {
+        match self {
+            StoredConfig::Spectrogram(_) => VisualKind::Spectrogram,
+            StoredConfig::Spectrum(_) => VisualKind::Spectrum,
+            StoredConfig::Oscilloscope(_) => VisualKind::Oscilloscope,
+        }
+    }
+
+    fn from_value(value: Value) -> Option<Self> {
+        serde_json::from_value(value).ok()
+    }
+}
+
+#[derive(Serialize)]
+struct ModuleSettingsSer<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enabled: &'a Option<bool>,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    config: Option<&'a StoredConfig>,
+}
+
+impl Serialize for ModuleSettings {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        ModuleSettingsSer {
+            enabled: &self.enabled,
+            config: self.config.as_ref(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for ModuleSettings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Value::deserialize(deserializer)?;
+        let Value::Object(mut object) = value else {
+            return Err(de::Error::custom("module settings must be an object"));
+        };
+
+        let enabled = object
+            .remove("enabled")
+            .map(|value| bool::deserialize(value).map_err(de::Error::custom))
+            .transpose()?;
+
+        let mut module = ModuleSettings {
+            enabled,
+            config: None,
+        };
+
+        if let Some(config_value) = object.remove("config") {
+            module.config = StoredConfig::from_value(config_value);
+        }
+
+        if module.config.is_none() && !object.is_empty() {
+            module.config = StoredConfig::from_value(Value::Object(object.clone()));
+        }
+
+        Ok(module)
     }
 }
 
@@ -141,7 +257,7 @@ impl SpectrumSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, default)]
 pub struct SpectrogramSettings {
     pub fft_size: usize,
     pub hop_size: usize,
@@ -149,10 +265,17 @@ pub struct SpectrogramSettings {
     pub window: WindowKind,
     pub use_reassignment: bool,
     pub reassignment_power_floor_db: f32,
+    pub reassignment_low_bin_limit: usize,
     pub zero_padding_factor: usize,
     pub use_synchrosqueezing: bool,
+    pub synchrosqueezing_bin_count: usize,
+    pub synchrosqueezing_min_hz: f32,
     pub temporal_smoothing: f32,
+    pub temporal_smoothing_max_hz: f32,
+    pub temporal_smoothing_blend_hz: f32,
     pub frequency_smoothing_radius: usize,
+    pub frequency_smoothing_max_hz: f32,
+    pub frequency_smoothing_blend_hz: f32,
 }
 
 impl Default for SpectrogramSettings {
@@ -170,10 +293,17 @@ impl SpectrogramSettings {
             window: config.window,
             use_reassignment: config.use_reassignment,
             reassignment_power_floor_db: config.reassignment_power_floor_db,
+            reassignment_low_bin_limit: config.reassignment_low_bin_limit,
             zero_padding_factor: config.zero_padding_factor,
             use_synchrosqueezing: config.use_synchrosqueezing,
+            synchrosqueezing_bin_count: config.synchrosqueezing_bin_count,
+            synchrosqueezing_min_hz: config.synchrosqueezing_min_hz,
             temporal_smoothing: config.temporal_smoothing,
+            temporal_smoothing_max_hz: config.temporal_smoothing_max_hz,
+            temporal_smoothing_blend_hz: config.temporal_smoothing_blend_hz,
             frequency_smoothing_radius: config.frequency_smoothing_radius,
+            frequency_smoothing_max_hz: config.frequency_smoothing_max_hz,
+            frequency_smoothing_blend_hz: config.frequency_smoothing_blend_hz,
         }
     }
 
@@ -184,10 +314,17 @@ impl SpectrogramSettings {
         config.window = self.window;
         config.use_reassignment = self.use_reassignment;
         config.reassignment_power_floor_db = self.reassignment_power_floor_db.clamp(-160.0, 0.0);
+        config.reassignment_low_bin_limit = self.reassignment_low_bin_limit;
         config.zero_padding_factor = self.zero_padding_factor.max(1);
         config.use_synchrosqueezing = self.use_synchrosqueezing;
+        config.synchrosqueezing_bin_count = self.synchrosqueezing_bin_count.max(1);
+        config.synchrosqueezing_min_hz = self.synchrosqueezing_min_hz.max(1.0);
         config.temporal_smoothing = self.temporal_smoothing.clamp(0.0, 0.9999);
+        config.temporal_smoothing_max_hz = self.temporal_smoothing_max_hz.max(0.0);
+        config.temporal_smoothing_blend_hz = self.temporal_smoothing_blend_hz.max(0.0);
         config.frequency_smoothing_radius = self.frequency_smoothing_radius;
+        config.frequency_smoothing_max_hz = self.frequency_smoothing_max_hz.max(0.0);
+        config.frequency_smoothing_blend_hz = self.frequency_smoothing_blend_hz.max(0.0);
     }
 }
 
@@ -210,7 +347,8 @@ pub struct SettingsManager {
 impl SettingsManager {
     pub fn load_or_default() -> Self {
         let path = config_dir().join(SETTINGS_FILE_NAME);
-        let data = Self::load_from_disk(&path).unwrap_or_default();
+        let mut data = Self::load_from_disk(&path).unwrap_or_default();
+        data.visuals.sanitize();
         Self { path, data }
     }
 
@@ -236,23 +374,17 @@ impl SettingsManager {
 
     pub fn set_oscilloscope_settings(&mut self, kind: VisualKind, config: &OscilloscopeConfig) {
         let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.set_config(ModuleConfig::Oscilloscope(
-            OscilloscopeSettings::from_config(config),
-        ));
+        entry.set_oscilloscope(OscilloscopeSettings::from_config(config));
     }
 
     pub fn set_spectrogram_settings(&mut self, kind: VisualKind, config: &SpectrogramConfig) {
         let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.set_config(ModuleConfig::Spectrogram(SpectrogramSettings::from_config(
-            config,
-        )));
+        entry.set_spectrogram(SpectrogramSettings::from_config(config));
     }
 
     pub fn set_spectrum_settings(&mut self, kind: VisualKind, config: &SpectrumConfig) {
         let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.set_config(ModuleConfig::Spectrum(SpectrumSettings::from_config(
-            config,
-        )));
+        entry.set_spectrum(SpectrumSettings::from_config(config));
     }
 
     pub fn set_visual_order(&mut self, order: &[VisualKind]) {
@@ -263,7 +395,9 @@ impl SettingsManager {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let json = serde_json::to_string_pretty(&self.data)?;
+        let mut data = self.data.clone();
+        data.visuals.sanitize();
+        let json = serde_json::to_string_pretty(&data)?;
         let tmp_path = self.path.with_extension("json.tmp");
         fs::write(&tmp_path, &json)?;
         fs::rename(&tmp_path, &self.path)
@@ -292,6 +426,7 @@ impl SettingsHandle {
     {
         let mut manager = self.inner.borrow_mut();
         let result = mutator(&mut manager);
+        manager.data.visuals.sanitize();
         if let Err(err) = manager.save() {
             error!("[settings] failed to persist UI settings: {err}");
         }
