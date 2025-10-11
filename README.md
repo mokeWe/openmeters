@@ -23,6 +23,12 @@ Checked features are implemented, unchecked features are planned.
   - [x] persisted to disk
   - [ ] themes/color schemes
 
+## usage
+
+Upon launch you'll see a configuration page where you can select which applications to monitor, along with a list of available modules to display. By default, all applications are selected, and the LUFS meter is enabled.
+
+Switch to the "visuals" tab to view the selected modules. Show/hide the top bar by pressing `ctrl+shift+h`. Rearrange modules by dragging and dropping them. Right click on a module to access its settings.
+
 ## build and run
 
 1. Ensure you have a working Rust toolchain. The recommended way is via [rustup](https://rustup.rs/).
