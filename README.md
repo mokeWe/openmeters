@@ -1,5 +1,7 @@
 # OpenMeters
 
+![preview](screenshots/preview.png)
+
 OpenMeters is an audio metering program for Linux, written in Rust for PipeWire systems.
 
 ## roadmap
@@ -37,7 +39,14 @@ Checked features are implemented, unchecked features are planned.
    cd openmeters
    ```
 
-4. Build and run the application using Cargo:
+4. Build and run the application:
+
+   ```bash
+   cargo build -r
+   ./target/release/openmeters
+   ```
+
+   or run it directly with Cargo:
 
    ```bash
    cargo run
