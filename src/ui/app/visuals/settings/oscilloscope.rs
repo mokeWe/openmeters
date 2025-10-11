@@ -43,10 +43,6 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
         self.visual_id
     }
 
-    fn kind(&self) -> VisualKind {
-        VisualKind::Oscilloscope
-    }
-
     fn view(&self) -> Element<'_, SettingsMessage> {
         let segment = column![
             row![

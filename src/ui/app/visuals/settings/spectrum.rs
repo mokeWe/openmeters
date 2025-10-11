@@ -45,10 +45,6 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
         self.visual_id
     }
 
-    fn kind(&self) -> VisualKind {
-        VisualKind::Spectrum
-    }
-
     fn view(&self) -> Element<'_, SettingsMessage> {
         let fft_pick = pick_list(FFT_OPTIONS.to_vec(), Some(self.config.fft_size), |size| {
             SettingsMessage::Spectrum(Message::FftSize(size))

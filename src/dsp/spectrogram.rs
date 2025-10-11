@@ -7,6 +7,7 @@ use parking_lot::RwLock;
 use realfft::{RealFftPlanner, RealToComplex};
 use rustc_hash::FxHashMap;
 use rustfft::num_complex::Complex32;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
@@ -87,7 +88,8 @@ impl Default for SpectrogramConfig {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum WindowKind {
     Rectangular,
     Hann,

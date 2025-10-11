@@ -1,6 +1,5 @@
 use crate::ui::pane_grid::{self, Content as PaneContent, Pane};
 use crate::ui::settings::SettingsHandle;
-use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{
     VisualContent, VisualId, VisualKind, VisualLayoutHint, VisualManagerHandle, VisualMetadata,
     VisualSlotSnapshot, VisualSnapshot,
@@ -8,19 +7,22 @@ use crate::ui::visualization::visual_manager::{
 use crate::ui::visualization::{lufs_meter, oscilloscope, spectrogram, spectrum};
 mod settings;
 
-use settings::{ActiveSettings, SettingsMessage};
+pub use settings::{ActiveSettings, SettingsMessage, create_panel as create_settings_panel};
 
 use iced::alignment::{Horizontal, Vertical};
-use iced::widget::{button, column, container, row, text};
-use iced::{Background, Element, Length, Subscription, Task};
+use iced::widget::{column, container, text};
+use iced::{Element, Length, Subscription, Task};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub enum VisualsMessage {
     PaneDragged(pane_grid::DragEvent),
     PaneContextRequested(Pane),
-    CloseSettings,
-    Settings(SettingsMessage),
+    SettingsRequested {
+        title: String,
+        visual_id: VisualId,
+        kind: VisualKind,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -136,7 +138,6 @@ pub struct VisualsPage {
     settings: SettingsHandle,
     panes: Option<pane_grid::State<VisualPane>>,
     order: Vec<VisualId>,
-    active_settings: Option<ActiveSettings>,
 }
 
 impl VisualsPage {
@@ -146,7 +147,6 @@ impl VisualsPage {
             settings,
             panes: None,
             order: Vec::new(),
-            active_settings: None,
         };
         page.sync_with_manager();
         page
@@ -177,18 +177,17 @@ impl VisualsPage {
                 }
             }
             VisualsMessage::PaneContextRequested(pane) => {
-                self.open_settings_for_pane(pane);
-            }
-            VisualsMessage::CloseSettings => {
-                self.active_settings = None;
-            }
-            VisualsMessage::Settings(message) => {
-                if let Some(active) = self.active_settings.as_mut()
-                    && active.kind() == message.kind()
+                if let Some(panes) = self.panes.as_ref()
+                    && let Some(pane_state) = panes.get(pane)
                 {
-                    active.handle_message(&message, &self.visual_manager, &self.settings);
+                    return Task::done(VisualsMessage::SettingsRequested {
+                        title: pane_state.metadata.display_name.to_string(),
+                        visual_id: pane_state.id,
+                        kind: pane_state.kind,
+                    });
                 }
             }
+            VisualsMessage::SettingsRequested { .. } => {}
         }
 
         Task::none()
@@ -216,13 +215,7 @@ impl VisualsPage {
                 .into()
         };
 
-        let mut layout = column![body].spacing(16).width(Length::Fill);
-
-        if let Some(active) = &self.active_settings {
-            layout = layout.push(self.render_settings_panel(active));
-        }
-
-        container(layout)
+        container(column![body].spacing(16).width(Length::Fill))
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
@@ -237,32 +230,15 @@ impl VisualsPage {
         let enabled_slots: Vec<_> = snapshot.slots.iter().filter(|slot| slot.enabled).collect();
         let new_order: Vec<_> = enabled_slots.iter().map(|slot| slot.id).collect();
 
-        if let Some(active) = &self.active_settings {
-            let still_visible = enabled_slots
-                .iter()
-                .any(|slot| slot.id == active.visual_id());
-            if !still_visible {
-                self.active_settings = None;
-            }
-        }
-
         if enabled_slots.is_empty() {
             self.order.clear();
             self.panes = None;
-            self.active_settings = None;
             return;
         }
 
         if self.panes.is_none() || new_order != self.order {
             self.order = new_order.clone();
             self.panes = Self::build_panes(&enabled_slots);
-            if let Some(active) = self.active_settings.as_mut()
-                && let Some(slot) = enabled_slots
-                    .iter()
-                    .find(|slot| slot.id == active.visual_id())
-            {
-                active.set_title(slot.metadata.display_name.to_string());
-            }
             return;
         }
 
@@ -276,15 +252,6 @@ impl VisualsPage {
                     pane_state.layout_hint = slot.layout_hint;
                 }
             });
-        }
-
-        if let Some(active) = self.active_settings.as_mut()
-            && let Some(slot) = snapshot
-                .slots
-                .iter()
-                .find(|slot| slot.id == active.visual_id())
-        {
-            active.set_title(slot.metadata.display_name.to_string());
         }
     }
 
@@ -301,78 +268,5 @@ impl VisualsPage {
         }
 
         Some(state)
-    }
-
-    fn open_settings_for_pane(&mut self, pane: Pane) {
-        let Some(panes) = self.panes.as_ref() else {
-            return;
-        };
-
-        let Some(pane_state) = panes.get(pane) else {
-            return;
-        };
-
-        let title = pane_state.metadata.display_name.to_string();
-        let panel =
-            settings::create_panel(title, pane_state.id, pane_state.kind, &self.visual_manager);
-        self.active_settings = Some(panel);
-    }
-
-    fn render_settings_panel<'a>(
-        &'a self,
-        active: &'a ActiveSettings,
-    ) -> Element<'a, VisualsMessage> {
-        let header = row![
-            text(format!("{} settings", active.title()))
-                .size(16)
-                .width(Length::Fill),
-            button(text("Close"))
-                .padding([8, 12])
-                .style(settings_button_style)
-                .on_press(VisualsMessage::CloseSettings)
-        ]
-        .spacing(12);
-
-        let body: Element<'a, VisualsMessage> = active.view().map(VisualsMessage::Settings);
-
-        container(column![header, body].spacing(16))
-            .width(Length::Fill)
-            .padding(16)
-            .style(settings_panel_style)
-            .into()
-    }
-}
-
-fn settings_button_style(
-    _theme: &iced::Theme,
-    status: iced::widget::button::Status,
-) -> iced::widget::button::Style {
-    let mut style = iced::widget::button::Style {
-        background: Some(Background::Color(theme::surface_color())),
-        text_color: theme::text_color(),
-        border: theme::sharp_border(),
-        ..Default::default()
-    };
-
-    match status {
-        iced::widget::button::Status::Hovered => {
-            style.background = Some(Background::Color(theme::hover_color()));
-        }
-        iced::widget::button::Status::Pressed => {
-            style.border = theme::focus_border();
-        }
-        _ => {}
-    }
-
-    style
-}
-
-fn settings_panel_style(_theme: &iced::Theme) -> iced::widget::container::Style {
-    let border = theme::sharp_border();
-    iced::widget::container::Style {
-        background: Some(Background::Color(theme::surface_color())),
-        text_color: Some(theme::text_color()),
-        border,
-        ..Default::default()
     }
 }

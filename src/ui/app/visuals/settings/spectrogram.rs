@@ -65,10 +65,6 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
         self.visual_id
     }
 
-    fn kind(&self) -> VisualKind {
-        VisualKind::Spectrogram
-    }
-
     fn view(&self) -> Element<'_, SettingsMessage> {
         let fft_pick = pick_list(FFT_OPTIONS.to_vec(), Some(self.config.fft_size), |size| {
             SettingsMessage::Spectrogram(Message::FftSize(size))

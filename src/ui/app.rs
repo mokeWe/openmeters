@@ -5,22 +5,35 @@ use crate::audio::pw_registry::RegistrySnapshot;
 use crate::ui::settings::SettingsHandle;
 use crate::ui::theme;
 use crate::ui::visualization::audio_stream::AudioStreamSubscription;
-use crate::ui::visualization::visual_manager::{VisualManager, VisualManagerHandle};
+use crate::ui::visualization::visual_manager::{
+    VisualId, VisualKind, VisualManager, VisualManagerHandle, VisualSnapshot,
+};
 use async_channel::Receiver as AsyncReceiver;
 use config::{ConfigMessage, ConfigPage};
-use visuals::{VisualsMessage, VisualsPage};
+use visuals::{
+    ActiveSettings, SettingsMessage, VisualsMessage, VisualsPage, create_settings_panel,
+};
 
 use iced::advanced::subscription::from_recipe;
 use iced::alignment::Horizontal;
 use iced::keyboard::{self, Key};
-use iced::widget::{button, column, container, row, text};
-use iced::{Element, Length, Result, Settings, Size, Subscription, Task, application};
+use iced::widget::{button, column, container, horizontal_space, row, scrollable, text};
+use iced::{
+    Background, Element, Length, Result, Settings, Size, Subscription, Task, daemon, exit, window,
+};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 pub use config::RoutingCommand;
 
 const APP_PADDING: f32 = 16.0;
+const SETTINGS_WINDOW_PADDING: f32 = 16.0;
+const SETTINGS_WINDOW_CONTENT_SPACING: f32 = 16.0;
+const SETTINGS_WINDOW_HEADER_HEIGHT: f32 = 32.0;
+const SETTINGS_WINDOW_MAX_SIZE: Size = Size {
+    width: 560.0,
+    height: 680.0,
+};
 
 pub struct UiConfig {
     routing_sender: mpsc::Sender<RoutingCommand>,
@@ -51,13 +64,10 @@ pub fn run(config: UiConfig) -> Result {
         id: Some(String::from("openmeters-ui")),
         ..Settings::default()
     };
-
-    application("OpenMeters", update, view)
+    daemon(UiApp::title, update, view)
         .settings(settings)
-        .window_size(Size::new(420.0, 520.0))
-        .resizable(true)
-        .theme(|_| theme::theme())
         .subscription(|state: &UiApp| state.subscription())
+        .theme(|state, window| state.theme(window))
         .run_with(move || UiApp::new(config))
 }
 
@@ -67,9 +77,12 @@ struct UiApp {
     config_page: ConfigPage,
     visuals_page: VisualsPage,
     visual_manager: VisualManagerHandle,
+    settings_handle: SettingsHandle,
     audio_frames: Option<Arc<AsyncReceiver<Vec<f32>>>>,
     ui_visible: bool,
     overlay_until: Option<Instant>,
+    main_window_id: window::Id,
+    settings_window: Option<SettingsWindow>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +98,94 @@ enum Message {
     Visuals(VisualsMessage),
     AudioFrame(Vec<f32>),
     ToggleChrome,
+    WindowOpened,
+    WindowClosed(window::Id),
+    SettingsWindow(window::Id, SettingsWindowMessage),
+}
+
+#[derive(Debug, Clone)]
+enum SettingsWindowMessage {
+    Close,
+    Settings(SettingsMessage),
+}
+
+#[derive(Debug)]
+struct SettingsWindow {
+    id: window::Id,
+    panel: ActiveSettings,
+}
+
+impl SettingsWindow {
+    fn new(id: window::Id, panel: ActiveSettings) -> Self {
+        Self { id, panel }
+    }
+
+    fn id(&self) -> window::Id {
+        self.id
+    }
+
+    fn visual_id(&self) -> VisualId {
+        self.panel.visual_id()
+    }
+
+    fn title(&self) -> &str {
+        self.panel.title()
+    }
+
+    fn preferred_size(&self) -> Size {
+        self.panel.preferred_size()
+    }
+
+    fn view(&self) -> Element<'_, SettingsWindowMessage> {
+        let preferred = self.preferred_size();
+        let (target_size, use_scroll) = compute_window_layout(preferred);
+        let width = target_size.width;
+        let height = target_size.height;
+
+        let header_row = row![
+            text(format!("{} settings", self.panel.title())).size(16),
+            horizontal_space().width(Length::Fill),
+            button(text("Close"))
+                .padding([8, 12])
+                .style(settings_button_style)
+                .on_press(SettingsWindowMessage::Close)
+        ]
+        .spacing(12)
+        .width(Length::Fill);
+
+        let header = container(header_row).width(Length::Fill);
+
+        let body_content = self.panel.view().map(SettingsWindowMessage::Settings);
+
+        let body: Element<'_, SettingsWindowMessage> = if use_scroll {
+            scrollable(body_content)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        } else {
+            container(body_content).width(Length::Fill).into()
+        };
+
+        let content = column![header, body]
+            .spacing(SETTINGS_WINDOW_CONTENT_SPACING)
+            .width(Length::Fill)
+            .height(if use_scroll {
+                Length::Fill
+            } else {
+                Length::Shrink
+            });
+
+        container(content)
+            .width(Length::Fixed(width))
+            .height(if use_scroll {
+                Length::Fixed(height)
+            } else {
+                Length::Shrink
+            })
+            .padding(SETTINGS_WINDOW_PADDING)
+            .style(settings_panel_style)
+            .into()
+    }
 }
 
 impl UiApp {
@@ -113,17 +214,26 @@ impl UiApp {
         );
         let visuals_page = VisualsPage::new(visual_manager.clone(), settings.clone());
 
+        let (main_window_id, open_main) = window::open(window::Settings {
+            size: Size::new(420.0, 520.0),
+            resizable: true,
+            ..window::Settings::default()
+        });
+
         (
             Self {
                 current_page: Page::Config,
                 config_page,
                 visuals_page,
                 visual_manager,
+                settings_handle: settings,
                 audio_frames,
                 ui_visible: true,
                 overlay_until: None,
+                main_window_id,
+                settings_window: None,
             },
-            Task::none(),
+            open_main.map(|_| Message::WindowOpened),
         )
     }
 
@@ -141,6 +251,8 @@ impl UiApp {
                     .map(Message::AudioFrame),
             );
         }
+
+        subscriptions.push(window::close_events().map(Message::WindowClosed));
 
         subscriptions.push(keyboard::on_key_press(|key, modifiers| {
             if modifiers.control()
@@ -169,6 +281,174 @@ impl UiApp {
             }
         }
     }
+
+    fn open_settings_window(
+        &mut self,
+        title: String,
+        visual_id: VisualId,
+        kind: VisualKind,
+    ) -> Task<Message> {
+        let panel = create_settings_panel(title, visual_id, kind, &self.visual_manager);
+        let (window_size, _) = compute_window_layout(panel.preferred_size());
+
+        if let Some(mut existing) = self.settings_window.take() {
+            if existing.visual_id() == visual_id {
+                existing.panel = panel;
+                let id = existing.id();
+                self.settings_window = Some(existing);
+                return window::resize::<Message>(id, window_size);
+            }
+
+            let close_task = window::close::<Message>(existing.id());
+            let (id, open_task) = window::open(window::Settings {
+                size: window_size,
+                resizable: false,
+                ..window::Settings::default()
+            });
+
+            self.settings_window = Some(SettingsWindow::new(id, panel));
+
+            return Task::batch([close_task, open_task.map(|_| Message::WindowOpened)]);
+        }
+
+        let (id, open_task) = window::open(window::Settings {
+            size: window_size,
+            resizable: false,
+            ..window::Settings::default()
+        });
+
+        self.settings_window = Some(SettingsWindow::new(id, panel));
+
+        open_task.map(|_| Message::WindowOpened)
+    }
+
+    fn close_settings_window(&mut self, id: window::Id) -> Task<Message> {
+        if self
+            .settings_window
+            .as_ref()
+            .is_some_and(|window| window.id() == id)
+        {
+            self.settings_window = None;
+            window::close::<Message>(id)
+        } else {
+            Task::none()
+        }
+    }
+
+    fn on_window_closed(&mut self, id: window::Id) -> Task<Message> {
+        if id == self.main_window_id {
+            exit()
+        } else if self
+            .settings_window
+            .as_ref()
+            .is_some_and(|window| window.id() == id)
+        {
+            self.settings_window = None;
+            Task::none()
+        } else {
+            Task::none()
+        }
+    }
+
+    fn sync_settings_window_with_snapshot(
+        &mut self,
+        snapshot: &VisualSnapshot,
+    ) -> Option<Task<Message>> {
+        let settings_window = self.settings_window.as_mut()?;
+
+        let visual_id = settings_window.visual_id();
+
+        if let Some(slot) = snapshot
+            .slots
+            .iter()
+            .find(|slot| slot.id == visual_id && slot.enabled)
+        {
+            settings_window
+                .panel
+                .set_title(slot.metadata.display_name.to_string());
+            None
+        } else {
+            let id = settings_window.id();
+            self.settings_window = None;
+            Some(window::close::<Message>(id))
+        }
+    }
+
+    fn title(&self, window: window::Id) -> String {
+        if window == self.main_window_id {
+            "OpenMeters".to_string()
+        } else if let Some(settings_window) = self
+            .settings_window
+            .as_ref()
+            .filter(|window_state| window_state.id() == window)
+        {
+            format!("{} settings — OpenMeters", settings_window.title())
+        } else {
+            "OpenMeters".to_string()
+        }
+    }
+
+    fn theme(&self, _window: window::Id) -> iced::Theme {
+        theme::theme()
+    }
+
+    fn main_window_view(&self) -> Element<'_, Message> {
+        if self.ui_visible {
+            let tabs = row![
+                tab_button("config", Page::Config, self.current_page),
+                tab_button("visuals", Page::Visuals, self.current_page)
+            ]
+            .spacing(8)
+            .width(Length::Fill);
+
+            let page_content = match self.current_page {
+                Page::Config => self.config_page.view().map(Message::Config),
+                Page::Visuals => self.visuals_page.view().map(Message::Visuals),
+            };
+
+            let layout = column![
+                tabs,
+                container(page_content)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+            ]
+            .spacing(12);
+
+            container(layout)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .padding(APP_PADDING)
+                .into()
+        } else {
+            let overlay_active = self
+                .overlay_until
+                .map(|deadline| Instant::now() < deadline)
+                .unwrap_or(false);
+
+            let visuals = self.visuals_page.view().map(Message::Visuals);
+
+            if overlay_active {
+                let toast =
+                    container(text("press ctrl+shift+h to restore controls").size(14)).padding(12);
+
+                column![
+                    container(visuals).width(Length::Fill).height(Length::Fill),
+                    container(toast)
+                        .width(Length::Fill)
+                        .align_x(Horizontal::Center),
+                ]
+                .spacing(12)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+            } else {
+                container(visuals)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
+            }
+        }
+    }
 }
 
 fn update(app: &mut UiApp, message: Message) -> Task<Message> {
@@ -180,8 +460,20 @@ fn update(app: &mut UiApp, message: Message) -> Task<Message> {
         Message::Config(msg) => {
             let task = app.config_page.update(msg).map(Message::Config);
             app.visuals_page.sync_with_manager();
-            task
+
+            if let Some(close_task) =
+                app.sync_settings_window_with_snapshot(&app.visual_manager.snapshot())
+            {
+                Task::batch([task, close_task])
+            } else {
+                task
+            }
         }
+        Message::Visuals(VisualsMessage::SettingsRequested {
+            title,
+            visual_id,
+            kind,
+        }) => app.open_settings_window(title, visual_id, kind),
         Message::Visuals(msg) => app.visuals_page.update(msg).map(Message::Visuals),
         Message::ToggleChrome => {
             app.toggle_ui_visibility();
@@ -194,70 +486,51 @@ fn update(app: &mut UiApp, message: Message) -> Task<Message> {
                 manager.snapshot()
             };
 
+            let maybe_close = app.sync_settings_window_with_snapshot(&snapshot);
             app.visuals_page.apply_snapshot(snapshot);
+
+            maybe_close.unwrap_or_else(Task::none)
+        }
+        Message::WindowOpened => Task::none(),
+        Message::WindowClosed(id) => app.on_window_closed(id),
+        Message::SettingsWindow(id, SettingsWindowMessage::Close) => app.close_settings_window(id),
+        Message::SettingsWindow(id, SettingsWindowMessage::Settings(settings_message)) => {
+            if let Some(window) = app.settings_window.as_mut()
+                && window.id() == id
+            {
+                let before = compute_window_layout(window.preferred_size()).0;
+                window.panel.handle_message(
+                    &settings_message,
+                    &app.visual_manager,
+                    &app.settings_handle,
+                );
+                let after = compute_window_layout(window.preferred_size()).0;
+                if size_changed(before, after) {
+                    return window::resize::<Message>(id, after);
+                }
+            }
             Task::none()
         }
     }
 }
 
-fn view(app: &UiApp) -> Element<'_, Message> {
-    let content: Element<'_, Message> = if app.ui_visible {
-        let tabs = row![
-            tab_button("config", Page::Config, app.current_page),
-            tab_button("visuals", Page::Visuals, app.current_page)
-        ]
-        .spacing(8)
-        .width(Length::Fill);
-
-        let page_content = match app.current_page {
-            Page::Config => app.config_page.view().map(Message::Config),
-            Page::Visuals => app.visuals_page.view().map(Message::Visuals),
-        };
-
-        let layout = column![
-            tabs,
-            container(page_content)
-                .width(Length::Fill)
-                .height(Length::Fill)
-        ]
-        .spacing(12);
-
-        container(layout)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .padding(APP_PADDING)
-            .into()
+fn view(app: &UiApp, window: window::Id) -> Element<'_, Message> {
+    if window == app.main_window_id {
+        app.main_window_view()
+    } else if let Some(settings_window) = app
+        .settings_window
+        .as_ref()
+        .filter(|window_state| window_state.id() == window)
+    {
+        settings_window
+            .view()
+            .map(move |msg| Message::SettingsWindow(window, msg))
     } else {
-        let overlay_active = app
-            .overlay_until
-            .map(|deadline| Instant::now() < deadline)
-            .unwrap_or(false);
-
-        let visuals = app.visuals_page.view().map(Message::Visuals);
-
-        if overlay_active {
-            let toast =
-                container(text("press ctrl+shift+h to restore controls").size(14)).padding(12);
-
-            column![
-                container(visuals).width(Length::Fill).height(Length::Fill),
-                container(toast)
-                    .width(Length::Fill)
-                    .align_x(Horizontal::Center),
-            ]
-            .spacing(12)
+        container(text(""))
             .width(Length::Fill)
             .height(Length::Fill)
             .into()
-        } else {
-            container(visuals)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
-        }
-    };
-
-    content
+    }
 }
 
 fn tab_button(
@@ -285,7 +558,7 @@ fn tab_button_style(
         theme::surface_color()
     };
     let mut style = iced::widget::button::Style {
-        background: Some(iced::Background::Color(base_background)),
+        background: Some(Background::Color(base_background)),
         text_color: theme::text_color(),
         border: theme::sharp_border(),
         ..Default::default()
@@ -293,7 +566,7 @@ fn tab_button_style(
 
     match status {
         iced::widget::button::Status::Hovered => {
-            style.background = Some(iced::Background::Color(theme::hover_color()));
+            style.background = Some(Background::Color(theme::hover_color()));
         }
         iced::widget::button::Status::Pressed => {
             style.border = theme::focus_border();
@@ -302,4 +575,62 @@ fn tab_button_style(
     }
 
     style
+}
+
+fn settings_button_style(
+    _theme: &iced::Theme,
+    status: iced::widget::button::Status,
+) -> iced::widget::button::Style {
+    let mut style = iced::widget::button::Style {
+        background: Some(Background::Color(theme::surface_color())),
+        text_color: theme::text_color(),
+        border: theme::sharp_border(),
+        ..Default::default()
+    };
+
+    match status {
+        iced::widget::button::Status::Hovered => {
+            style.background = Some(Background::Color(theme::hover_color()));
+        }
+        iced::widget::button::Status::Pressed => {
+            style.border = theme::focus_border();
+        }
+        _ => {}
+    }
+
+    style
+}
+
+fn settings_panel_style(_theme: &iced::Theme) -> iced::widget::container::Style {
+    let border = theme::sharp_border();
+    iced::widget::container::Style {
+        background: Some(Background::Color(theme::surface_color())),
+        text_color: Some(theme::text_color()),
+        border,
+        ..Default::default()
+    }
+}
+
+fn compute_window_layout(preferred: Size) -> (Size, bool) {
+    let chrome_width = SETTINGS_WINDOW_PADDING * 2.0;
+    let chrome_height = SETTINGS_WINDOW_PADDING * 2.0
+        + SETTINGS_WINDOW_HEADER_HEIGHT
+        + SETTINGS_WINDOW_CONTENT_SPACING;
+
+    let desired_width = preferred.width + chrome_width;
+    let desired_height = preferred.height + chrome_height;
+
+    let width = desired_width.min(SETTINGS_WINDOW_MAX_SIZE.width);
+    let max_height = SETTINGS_WINDOW_MAX_SIZE.height;
+
+    if desired_height > max_height {
+        (Size::new(width, max_height), true)
+    } else {
+        (Size::new(width, desired_height), false)
+    }
+}
+
+fn size_changed(before: Size, after: Size) -> bool {
+    const EPSILON: f32 = 0.5;
+    (before.width - after.width).abs() > EPSILON || (before.height - after.height).abs() > EPSILON
 }

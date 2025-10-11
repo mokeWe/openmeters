@@ -151,10 +151,9 @@ fn handle_packet(
     let channels = packet.channels.max(1) as usize;
     let sample_rate = packet.sample_rate.max(1) as f32;
 
-    let channel_changed = batch_channels.map_or(false, |current| current != channels);
-    let rate_changed = batch_sample_rate
-        .map(|current| (current - sample_rate).abs() > f32::EPSILON)
-        .unwrap_or(false);
+    let channel_changed = batch_channels.is_some_and(|current| current != channels);
+    let rate_changed =
+        batch_sample_rate.is_some_and(|current| (current - sample_rate).abs() > f32::EPSILON);
 
     if channel_changed || rate_changed {
         if flush_batch(sender, batcher) {

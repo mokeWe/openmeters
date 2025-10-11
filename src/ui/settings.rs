@@ -125,7 +125,7 @@ pub struct SpectrogramSettings {
     pub fft_size: usize,
     pub hop_size: usize,
     pub history_length: usize,
-    pub window: StoredWindowKind,
+    pub window: WindowKind,
     pub use_reassignment: bool,
     pub reassignment_power_floor_db: f32,
     pub zero_padding_factor: usize,
@@ -146,7 +146,7 @@ impl SpectrogramSettings {
             fft_size: config.fft_size,
             hop_size: config.hop_size,
             history_length: config.history_length,
-            window: StoredWindowKind::from(config.window),
+            window: config.window,
             use_reassignment: config.use_reassignment,
             reassignment_power_floor_db: config.reassignment_power_floor_db,
             zero_padding_factor: config.zero_padding_factor,
@@ -160,57 +160,13 @@ impl SpectrogramSettings {
         config.fft_size = self.fft_size.max(128);
         config.hop_size = self.hop_size.max(1);
         config.history_length = self.history_length.max(1);
-        config.window = self.window.to_window_kind();
+        config.window = self.window;
         config.use_reassignment = self.use_reassignment;
         config.reassignment_power_floor_db = self.reassignment_power_floor_db.clamp(-160.0, 0.0);
         config.zero_padding_factor = self.zero_padding_factor.max(1);
         config.use_synchrosqueezing = self.use_synchrosqueezing;
         config.temporal_smoothing = self.temporal_smoothing.clamp(0.0, 0.9999);
         config.frequency_smoothing_radius = self.frequency_smoothing_radius;
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum StoredWindowKind {
-    Rectangular,
-    Hann,
-    Hamming,
-    Blackman,
-    PlanckBessel { epsilon: f32, beta: f32 },
-}
-
-impl StoredWindowKind {
-    fn to_window_kind(&self) -> WindowKind {
-        match *self {
-            StoredWindowKind::Rectangular => WindowKind::Rectangular,
-            StoredWindowKind::Hann => WindowKind::Hann,
-            StoredWindowKind::Hamming => WindowKind::Hamming,
-            StoredWindowKind::Blackman => WindowKind::Blackman,
-            StoredWindowKind::PlanckBessel { epsilon, beta } => {
-                WindowKind::PlanckBessel { epsilon, beta }
-            }
-        }
-    }
-}
-
-impl From<WindowKind> for StoredWindowKind {
-    fn from(kind: WindowKind) -> Self {
-        match kind {
-            WindowKind::Rectangular => StoredWindowKind::Rectangular,
-            WindowKind::Hann => StoredWindowKind::Hann,
-            WindowKind::Hamming => StoredWindowKind::Hamming,
-            WindowKind::Blackman => StoredWindowKind::Blackman,
-            WindowKind::PlanckBessel { epsilon, beta } => {
-                StoredWindowKind::PlanckBessel { epsilon, beta }
-            }
-        }
-    }
-}
-
-impl Default for StoredWindowKind {
-    fn default() -> Self {
-        let config = SpectrogramConfig::default();
-        StoredWindowKind::from(config.window)
     }
 }
 

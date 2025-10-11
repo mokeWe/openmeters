@@ -450,10 +450,10 @@ fn interpolate_magnitude(bins: &[f32], magnitudes: &[f32], target: f32) -> f32 {
         return magnitudes[0];
     }
 
-    if let Some(&last_bin) = bins.last() {
-        if target >= last_bin {
-            return magnitudes.last().copied().unwrap_or(0.0);
-        }
+    if let Some(&last_bin) = bins.last()
+        && target >= last_bin
+    {
+        return magnitudes.last().copied().unwrap_or(0.0);
     }
 
     match bins.binary_search_by(|probe| probe.partial_cmp(&target).unwrap_or(Ordering::Less)) {
