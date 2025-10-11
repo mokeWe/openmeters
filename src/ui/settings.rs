@@ -29,17 +29,38 @@ pub struct VisualSettings {
     pub order: Vec<VisualKind>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ModuleConfig {
+    Spectrogram(SpectrogramSettings),
+    Spectrum(SpectrumSettings),
+    Oscilloscope(OscilloscopeSettings),
+    Empty {},
+}
+
+impl Default for ModuleConfig {
+    fn default() -> Self {
+        ModuleConfig::Empty {}
+    }
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModuleSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
-    pub oscilloscope: Option<OscilloscopeSettings>,
-    pub spectrogram: Option<SpectrogramSettings>,
-    pub spectrum: Option<SpectrumSettings>,
+    #[serde(flatten)]
+    pub config: ModuleConfig,
+}
+
+impl ModuleSettings {
+    pub fn set_config(&mut self, config: ModuleConfig) {
+        self.config = config;
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(deny_unknown_fields)]
 pub struct OscilloscopeSettings {
     pub segment_duration: f32,
     pub trigger_level: f32,
@@ -75,7 +96,7 @@ impl OscilloscopeSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(deny_unknown_fields)]
 pub struct SpectrumSettings {
     pub fft_size: usize,
     pub hop_size: usize,
@@ -120,7 +141,7 @@ impl SpectrumSettings {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[serde(deny_unknown_fields)]
 pub struct SpectrogramSettings {
     pub fft_size: usize,
     pub hop_size: usize,
@@ -215,17 +236,23 @@ impl SettingsManager {
 
     pub fn set_oscilloscope_settings(&mut self, kind: VisualKind, config: &OscilloscopeConfig) {
         let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.oscilloscope = Some(OscilloscopeSettings::from_config(config));
+        entry.set_config(ModuleConfig::Oscilloscope(
+            OscilloscopeSettings::from_config(config),
+        ));
     }
 
     pub fn set_spectrogram_settings(&mut self, kind: VisualKind, config: &SpectrogramConfig) {
         let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.spectrogram = Some(SpectrogramSettings::from_config(config));
+        entry.set_config(ModuleConfig::Spectrogram(SpectrogramSettings::from_config(
+            config,
+        )));
     }
 
     pub fn set_spectrum_settings(&mut self, kind: VisualKind, config: &SpectrumConfig) {
         let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.spectrum = Some(SpectrumSettings::from_config(config));
+        entry.set_config(ModuleConfig::Spectrum(SpectrumSettings::from_config(
+            config,
+        )));
     }
 
     pub fn set_visual_order(&mut self, order: &[VisualKind]) {

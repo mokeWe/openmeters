@@ -3,7 +3,7 @@ use crate::dsp::ProcessorUpdate;
 use crate::dsp::oscilloscope::OscilloscopeConfig;
 use crate::dsp::spectrogram::SpectrogramConfig;
 use crate::dsp::spectrum::SpectrumConfig;
-use crate::ui::settings::VisualSettings;
+use crate::ui::settings::{ModuleConfig, VisualSettings};
 use crate::ui::visualization::lufs_meter::{LufsMeterState, LufsProcessor};
 use crate::ui::visualization::oscilloscope::{OscilloscopeProcessor, OscilloscopeState};
 use crate::ui::visualization::spectrogram::{SpectrogramProcessor, SpectrogramState};
@@ -468,28 +468,29 @@ impl VisualManager {
                     entry.slot.enabled = enabled;
                 }
 
-                if let Some(stored) = &module.oscilloscope
-                    && let Some(config) = entry.runtime.oscilloscope_config()
-                {
-                    let mut updated = config;
-                    stored.apply_to(&mut updated);
-                    entry.runtime.set_oscilloscope_config(updated);
-                }
-
-                if let Some(stored) = &module.spectrum
-                    && let Some(config) = entry.runtime.spectrum_config()
-                {
-                    let mut updated = config;
-                    stored.apply_to(&mut updated);
-                    entry.runtime.set_spectrum_config(updated);
-                }
-
-                if let Some(stored) = &module.spectrogram
-                    && let Some(config) = entry.runtime.spectrogram_config()
-                {
-                    let mut updated = config;
-                    stored.apply_to(&mut updated);
-                    entry.runtime.set_spectrogram_config(updated);
+                match (entry.slot.kind, &module.config) {
+                    (VisualKind::Oscilloscope, ModuleConfig::Oscilloscope(stored)) => {
+                        if let Some(config) = entry.runtime.oscilloscope_config() {
+                            let mut updated = config;
+                            stored.apply_to(&mut updated);
+                            entry.runtime.set_oscilloscope_config(updated);
+                        }
+                    }
+                    (VisualKind::Spectrum, ModuleConfig::Spectrum(stored)) => {
+                        if let Some(config) = entry.runtime.spectrum_config() {
+                            let mut updated = config;
+                            stored.apply_to(&mut updated);
+                            entry.runtime.set_spectrum_config(updated);
+                        }
+                    }
+                    (VisualKind::Spectrogram, ModuleConfig::Spectrogram(stored)) => {
+                        if let Some(config) = entry.runtime.spectrogram_config() {
+                            let mut updated = config;
+                            stored.apply_to(&mut updated);
+                            entry.runtime.set_spectrogram_config(updated);
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
