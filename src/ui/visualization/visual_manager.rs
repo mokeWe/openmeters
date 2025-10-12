@@ -1,5 +1,5 @@
 //! central owner of visual modules and their state.
-//! 
+//!
 //! the visual manager handles the following:
 //! - instantiation of visual modules
 //! - applying settings to mods

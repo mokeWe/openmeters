@@ -1,5 +1,5 @@
 //! the main application code.
-//! 
+//!
 //! responsible for:
 //! - managing application state and transitions
 //!   between pages, e.g. config <-> visuals

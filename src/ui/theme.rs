@@ -30,7 +30,6 @@ pub const DEFAULT_SPECTROGRAM_PALETTE: [Color; 5] = [
     Color::from_rgba(1.00, 1.00, 1.00, 1.0),
 ];
 
-
 /// Returns the default spectrogram color palette.
 pub fn spectrogram_palette() -> [Color; 5] {
     DEFAULT_SPECTROGRAM_PALETTE

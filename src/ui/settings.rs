@@ -1,5 +1,5 @@
 //! this is responsible for loading and saving UI settings to disk
-//! 
+//!
 //! responsible for:
 //! - loading and saving settings
 //! - providing access to settings for other parts of the UI
