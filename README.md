@@ -62,7 +62,8 @@ Switch to the "visuals" tab to view the selected modules. Show/hide the top bar 
 
 ### configuration
 
-Configurations are saved to `~/.config/openmeters/settings.json`. If you encouter a bug that causes OpenMeters to misbehave, you can delete this file to reset all settings.
+Configurations are saved to `~/.config/openmeters/settings.json`. If you want to use settings/values not listed in the GUI, you can edit this file directly, however absurd values often lead to crashes.
+If you encounter a bug that causes OpenMeters to misbehave, you can delete `settings.json` to reset all settings.
 
 ## compatibility
 
