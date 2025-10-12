@@ -23,12 +23,6 @@ Checked features are implemented, unchecked features are planned.
   - [x] persisted to disk
   - [ ] themes/color schemes
 
-## usage
-
-Upon launch you'll see a configuration page where you can select which applications to monitor, along with a list of available modules to display. By default, all applications are selected, and the LUFS meter is enabled.
-
-Switch to the "visuals" tab to view the selected modules. Show/hide the top bar by pressing `ctrl+shift+h`. Rearrange modules by dragging and dropping them. Right click on a module to access its settings.
-
 ## build and run
 
 1. Ensure you have a working Rust toolchain. The recommended way is via [rustup](https://rustup.rs/).
@@ -59,6 +53,16 @@ Switch to the "visuals" tab to view the selected modules. Show/hide the top bar 
    ```
 
 5. If you encounter any issues or want to contribute in any way, please feel free to open an issue or a pull request on the GitHub repository.
+
+## usage
+
+Upon launch you'll see a configuration page where you can select which applications to monitor, along with a list of available modules to display. By default, all applications are selected, and the LUFS meter is enabled.
+
+Switch to the "visuals" tab to view the selected modules. Show/hide the top bar by pressing `ctrl+shift+h`. Rearrange modules by dragging and dropping them. Right click on a module to access its settings.
+
+### configuration
+
+Configurations are saved to `~/.config/openmeters/settings.json`. If you encouter a bug that causes OpenMeters to misbehave, you can delete this file to reset all settings.
 
 ## compatibility
 
