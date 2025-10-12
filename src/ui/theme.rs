@@ -21,14 +21,15 @@ const ACCENT_PRIMARY: Color = Color::from_rgb(0.529, 0.549, 0.584); // #878c95
 const ACCENT_SUCCESS: Color = Color::from_rgb(0.478, 0.557, 0.502); // #7a8e80
 const ACCENT_DANGER: Color = Color::from_rgb(0.557, 0.478, 0.478); // #8e7a7a
 
-// Visualization palettes
+// default spectrogram palette (5 stops from dark blue to white)
 pub const DEFAULT_SPECTROGRAM_PALETTE: [Color; 5] = [
-    Color::from_rgba(0.05, 0.08, 0.18, 0.0),
-    Color::from_rgba(0.13, 0.20, 0.46, 1.0),
-    Color::from_rgba(0.11, 0.48, 0.63, 1.0),
-    Color::from_rgba(0.94, 0.75, 0.29, 1.0),
-    Color::from_rgba(0.98, 0.93, 0.65, 1.0),
+    Color::from_rgba(0.08, 0.05, 0.25, 0.0),
+    Color::from_rgba(0.10, 0.10, 0.50, 1.0),
+    Color::from_rgba(0.20, 0.20, 0.65, 1.0),
+    Color::from_rgba(0.35, 0.70, 0.95, 1.0),
+    Color::from_rgba(1.00, 1.00, 1.00, 1.0),
 ];
+
 
 /// Returns the default spectrogram color palette.
 pub fn spectrogram_palette() -> [Color; 5] {
