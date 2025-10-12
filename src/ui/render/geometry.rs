@@ -1,4 +1,5 @@
-#[allow(clippy::needless_pass_by_value)]
+//! geometry utilities for rendering.
+
 pub fn compute_normals(positions: &[(f32, f32)]) -> Vec<(f32, f32)> {
     let count = positions.len();
     if count == 0 {

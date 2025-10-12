@@ -1,3 +1,6 @@
+//! page for configuring visuals.
+//! to be ingested into main app as a tab.
+
 use crate::ui::pane_grid::{self, Content as PaneContent, Pane};
 use crate::ui::settings::SettingsHandle;
 use crate::ui::visualization::visual_manager::{
@@ -87,13 +90,6 @@ impl VisualPane {
                         .height(Length::Fill)
                         .center_x(Length::Fill),
                 )
-            }
-            VisualContent::Placeholder { message } => {
-                let placeholder = text(message.as_ref())
-                    .size(14)
-                    .width(Length::Fill)
-                    .align_x(Horizontal::Center);
-                Element::from(placeholder)
             }
         };
 

@@ -1,3 +1,12 @@
+//! the main application code.
+//! 
+//! responsible for:
+//! - managing application state and transitions
+//!   between pages, e.g. config <-> visuals
+//! - handling window management (e.g. main window, settings windows)
+//! - routing messages between subcomponents
+//! - managing the main event loop
+
 pub mod config;
 pub mod visuals;
 

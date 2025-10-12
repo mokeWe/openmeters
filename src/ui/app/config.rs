@@ -1,3 +1,6 @@
+//! page for configuring apps and visuals.
+//! to be ingested into main app as a tab.
+
 use crate::audio::VIRTUAL_SINK_NAME;
 use crate::audio::pw_registry::RegistrySnapshot;
 use crate::ui::application_row::ApplicationRow;
