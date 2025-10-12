@@ -32,6 +32,12 @@ const DEFAULT_DB_FLOOR: f32 = -96.0;
 const DEFAULT_DB_CEILING: f32 = 0.0;
 const PALETTE_STOPS: usize = SPECTROGRAM_PALETTE_SIZE;
 const MIN_INCREMENTAL_UPDATES: u32 = 16;
+/// Maximum number of spectral rows we can store in a single GPU texture.
+/// Mirrors `wgpu::Limits::downlevel_defaults().max_texture_dimension_2d` which
+/// is 8192 on all supported backends. Staying within this guard prevents
+/// `Device::create_texture` validation failures when large FFT/zero-padding
+/// combinations are selected.
+const MAX_TEXTURE_BINS: usize = 8_192;
 
 static NEXT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -342,7 +348,8 @@ impl SpectrogramState {
     }
 
     fn column_height(column: &SpectrogramColumn, use_synchro: bool) -> Option<usize> {
-        SpectrogramBuffer::column_values(column, use_synchro).map(|values| values.len())
+        SpectrogramBuffer::column_values(column, use_synchro)
+            .map(|values| values.len().min(MAX_TEXTURE_BINS))
     }
 
     fn history_height(history: &VecDeque<SpectrogramColumn>, use_synchro: bool) -> Option<usize> {
@@ -613,14 +620,14 @@ impl SpectrogramBuffer {
         self.fft_size = fft_size.max(1);
         self.using_synchro = use_synchro;
 
-        let height = history
+        let requested_height = history
             .iter()
             .find_map(|column| {
                 SpectrogramBuffer::column_values(column, use_synchro)
-                    .map(|values| values.len() as u32)
+                    .map(|values| values.len().min(MAX_TEXTURE_BINS) as u32)
             })
             .unwrap_or(0);
-        self.height = height;
+        self.height = requested_height;
 
         if self.capacity == 0 || self.height == 0 {
             self.values.clear();
@@ -651,7 +658,7 @@ impl SpectrogramBuffer {
             let Some(values) = SpectrogramBuffer::column_values(column, use_synchro) else {
                 continue;
             };
-            if values.len() != self.height as usize {
+            if values.len() < self.height as usize {
                 continue;
             }
             self.push_column(values, style);
@@ -684,7 +691,7 @@ impl SpectrogramBuffer {
                 continue;
             };
 
-            if values.len() != self.height as usize {
+            if values.len() < self.height as usize {
                 continue;
             }
 
@@ -1011,6 +1018,37 @@ mod tests {
             top > bottom,
             "top row should represent higher magnitudes (high frequencies)"
         );
+    }
+
+    #[test]
+    fn clamps_height_when_bins_exceed_texture_limit() {
+        let mut state = SpectrogramState::new();
+        let oversized = MAX_TEXTURE_BINS + 5;
+        let magnitudes = vec![-42.0_f32; oversized];
+
+        let column = SpectrogramColumn {
+            timestamp: Instant::now(),
+            magnitudes_db: Arc::from(magnitudes.into_boxed_slice()),
+            reassigned: None,
+            synchro_magnitudes_db: None,
+        };
+
+        let update = SpectrogramUpdate {
+            fft_size: 16_384,
+            hop_size: 2_048,
+            sample_rate: DEFAULT_SAMPLE_RATE,
+            history_length: 8,
+            reset: true,
+            reassignment_enabled: false,
+            synchro_bins_hz: None,
+            new_columns: vec![column],
+        };
+
+        state.apply_update(&update);
+
+        let buffer = state.buffer.borrow();
+        assert_eq!(buffer.texture_height() as usize, MAX_TEXTURE_BINS);
+        assert_eq!(buffer.column_count(), 1);
     }
 }
 
