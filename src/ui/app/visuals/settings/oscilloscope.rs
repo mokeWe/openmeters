@@ -1,6 +1,6 @@
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::oscilloscope::OscilloscopeConfig;
-use crate::ui::settings::SettingsHandle;
+use crate::ui::settings::{ModuleSettings, OscilloscopeSettings, SettingsHandle};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::{checkbox, column, row, slider, text};
@@ -32,8 +32,13 @@ pub fn create(
 ) -> OscilloscopeSettingsPane {
     let config = visual_manager
         .borrow()
-        .oscilloscope_config()
-        .unwrap_or_default();
+        .module_settings(VisualKind::OSCILLOSCOPE)
+        .and_then(|stored| stored.oscilloscope().cloned())
+        .map_or_else(OscilloscopeConfig::default, |stored| {
+            let mut config = OscilloscopeConfig::default();
+            stored.apply_to(&mut config);
+            config
+        });
 
     OscilloscopeSettingsPane { visual_id, config }
 }
@@ -138,14 +143,18 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             }
         }
 
-        if changed
-            && visual_manager
+        if changed {
+            let mut module_settings = ModuleSettings::default();
+            module_settings.set_oscilloscope(OscilloscopeSettings::from_config(&self.config));
+
+            if visual_manager
                 .borrow_mut()
-                .set_oscilloscope_config(self.config)
-        {
-            settings.update(|settings| {
-                settings.set_oscilloscope_settings(VisualKind::Oscilloscope, &self.config)
-            });
+                .apply_module_settings(VisualKind::OSCILLOSCOPE, &module_settings)
+            {
+                settings.update(|settings| {
+                    settings.set_oscilloscope_settings(VisualKind::OSCILLOSCOPE, &self.config)
+                });
+            }
         }
     }
 }

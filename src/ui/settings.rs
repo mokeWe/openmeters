@@ -1,3 +1,10 @@
+//! this is responsible for loading and saving UI settings to disk
+//! 
+//! responsible for:
+//! - loading and saving settings
+//! - providing access to settings for other parts of the UI
+//! - converting between internal config structs and serializable settings structs
+
 use crate::dsp::oscilloscope::OscilloscopeConfig;
 use crate::dsp::spectrogram::{SpectrogramConfig, WindowKind};
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
@@ -81,17 +88,20 @@ impl ModuleSettings {
     }
 
     pub fn retain_only(&mut self, kind: VisualKind) {
-        match kind {
-            VisualKind::Spectrogram | VisualKind::Spectrum | VisualKind::Oscilloscope => {
-                if self
-                    .config
-                    .as_ref()
-                    .map_or(false, |config| config.kind() != kind)
-                {
-                    self.clear_config();
-                }
+        let configurable = kind == VisualKind::SPECTROGRAM
+            || kind == VisualKind::SPECTRUM
+            || kind == VisualKind::OSCILLOSCOPE;
+
+        if configurable {
+            if self
+                .config
+                .as_ref()
+                .is_some_and(|config| config.kind() != kind)
+            {
+                self.clear_config();
             }
-            _ => self.clear_config(),
+        } else {
+            self.clear_config();
         }
     }
 
@@ -111,9 +121,9 @@ enum StoredConfig {
 impl StoredConfig {
     fn kind(&self) -> VisualKind {
         match self {
-            StoredConfig::Spectrogram(_) => VisualKind::Spectrogram,
-            StoredConfig::Spectrum(_) => VisualKind::Spectrum,
-            StoredConfig::Oscilloscope(_) => VisualKind::Oscilloscope,
+            StoredConfig::Spectrogram(_) => VisualKind::SPECTROGRAM,
+            StoredConfig::Spectrum(_) => VisualKind::SPECTRUM,
+            StoredConfig::Oscilloscope(_) => VisualKind::OSCILLOSCOPE,
         }
     }
 

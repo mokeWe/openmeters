@@ -1,6 +1,6 @@
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::spectrogram::{SpectrogramConfig, WindowKind};
-use crate::ui::settings::SettingsHandle;
+use crate::ui::settings::{ModuleSettings, SettingsHandle, SpectrogramSettings};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::{checkbox, column, pick_list, row, slider, text};
@@ -65,8 +65,13 @@ pub fn create(
 ) -> SpectrogramSettingsPane {
     let config = visual_manager
         .borrow()
-        .spectrogram_config()
-        .unwrap_or_default();
+        .module_settings(VisualKind::SPECTROGRAM)
+        .and_then(|stored| stored.spectrogram().cloned())
+        .map_or_else(SpectrogramConfig::default, |stored| {
+            let mut config = SpectrogramConfig::default();
+            stored.apply_to(&mut config);
+            config
+        });
 
     let window = WindowPreset::from_kind(config.window);
     let hop_ratio = HopRatio::from_config(config.fft_size, config.hop_size);
@@ -436,9 +441,16 @@ fn apply_changes(
     settings: &SettingsHandle,
 ) {
     let config = pane.config;
-    if visual_manager.borrow_mut().set_spectrogram_config(config) {
+
+    let mut module_settings = ModuleSettings::default();
+    module_settings.set_spectrogram(SpectrogramSettings::from_config(&config));
+
+    if visual_manager
+        .borrow_mut()
+        .apply_module_settings(VisualKind::SPECTROGRAM, &module_settings)
+    {
         settings
-            .update(|settings| settings.set_spectrogram_settings(VisualKind::Spectrogram, &config));
+            .update(|settings| settings.set_spectrogram_settings(VisualKind::SPECTROGRAM, &config));
     }
 }
 

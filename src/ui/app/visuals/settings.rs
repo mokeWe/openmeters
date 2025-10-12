@@ -1,3 +1,6 @@
+//! Contains the settings panes for visual modules.
+//! Each module in ./settings corresponds to a module in ../../visualization.
+
 mod oscilloscope;
 mod spectrogram;
 mod spectrum;
@@ -96,29 +99,29 @@ pub fn create_panel(
 ) -> ActiveSettings {
     let preferred_size = settings_size_for(kind);
 
-    match kind {
-        VisualKind::Oscilloscope => {
-            let pane = oscilloscope::create(visual_id, visual_manager);
-            ActiveSettings::new(title, preferred_size, Box::new(pane))
-        }
-        VisualKind::Spectrogram => {
-            let pane = spectrogram::create(visual_id, visual_manager);
-            ActiveSettings::new(title, preferred_size, Box::new(pane))
-        }
-        VisualKind::Spectrum => {
-            let pane = spectrum::create(visual_id, visual_manager);
-            ActiveSettings::new(title, preferred_size, Box::new(pane))
-        }
-        _ => ActiveSettings::unsupported(title, visual_id, kind),
+    if kind == VisualKind::OSCILLOSCOPE {
+        let pane = oscilloscope::create(visual_id, visual_manager);
+        ActiveSettings::new(title, preferred_size, Box::new(pane))
+    } else if kind == VisualKind::SPECTROGRAM {
+        let pane = spectrogram::create(visual_id, visual_manager);
+        ActiveSettings::new(title, preferred_size, Box::new(pane))
+    } else if kind == VisualKind::SPECTRUM {
+        let pane = spectrum::create(visual_id, visual_manager);
+        ActiveSettings::new(title, preferred_size, Box::new(pane))
+    } else {
+        ActiveSettings::unsupported(title, visual_id, kind)
     }
 }
 
 fn settings_size_for(kind: VisualKind) -> Size {
-    match kind {
-        VisualKind::Oscilloscope => OSCILLOSCOPE_SETTINGS_SIZE,
-        VisualKind::Spectrogram => SPECTROGRAM_SETTINGS_SIZE,
-        VisualKind::Spectrum => SPECTRUM_SETTINGS_SIZE,
-        _ => DEFAULT_UNSUPPORTED_SIZE,
+    if kind == VisualKind::OSCILLOSCOPE {
+        OSCILLOSCOPE_SETTINGS_SIZE
+    } else if kind == VisualKind::SPECTROGRAM {
+        SPECTROGRAM_SETTINGS_SIZE
+    } else if kind == VisualKind::SPECTRUM {
+        SPECTRUM_SETTINGS_SIZE
+    } else {
+        DEFAULT_UNSUPPORTED_SIZE
     }
 }
 
