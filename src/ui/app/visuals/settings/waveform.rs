@@ -1,12 +1,9 @@
 use super::{ModuleSettingsPane, SettingsMessage};
-use crate::dsp::waveform::{
-    DownsampleStrategy, MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, WaveformConfig,
-};
+use crate::dsp::waveform::{MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, WaveformConfig};
 use crate::ui::settings::{ModuleSettings, SettingsHandle, WaveformSettings};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
-use iced::widget::{column, pick_list, row, slider, text};
-use std::fmt;
+use iced::widget::{column, row, slider, text};
 
 const SCROLL_SPEED_MIN: f32 = MIN_SCROLL_SPEED;
 const SCROLL_SPEED_MAX: f32 = MAX_SCROLL_SPEED;
@@ -17,20 +14,9 @@ pub struct WaveformSettingsPane {
     config: WaveformConfig,
 }
 
-impl fmt::Display for DownsampleStrategy {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DownsampleStrategy::MinMax => write!(f, "Min/Max"),
-            DownsampleStrategy::Average => write!(f, "Average"),
-            DownsampleStrategy::Disabled => write!(f, "Disabled"),
-        }
-    }
-}
-
 #[derive(Debug, Clone)]
 pub enum Message {
     ScrollSpeed(f32),
-    Downsample(DownsampleStrategy),
 }
 
 pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> WaveformSettingsPane {
@@ -53,12 +39,6 @@ impl ModuleSettingsPane for WaveformSettingsPane {
     }
 
     fn view(&self) -> Element<'_, SettingsMessage> {
-        let strategies = [
-            DownsampleStrategy::MinMax,
-            DownsampleStrategy::Average,
-            DownsampleStrategy::Disabled,
-        ];
-
         let scroll_speed = column![
             row![
                 text("Scroll speed"),
@@ -74,16 +54,7 @@ impl ModuleSettingsPane for WaveformSettingsPane {
         ]
         .spacing(8);
 
-        let downsample = column![
-            text("Downsampling strategy"),
-            pick_list(strategies.to_vec(), Some(self.config.downsample), |value| {
-                SettingsMessage::Waveform(Message::Downsample(value))
-            },)
-            .text_size(14)
-        ]
-        .spacing(8);
-
-        column![scroll_speed, downsample].spacing(16).into()
+        column![scroll_speed].spacing(16).into()
     }
 
     fn handle(
@@ -102,12 +73,6 @@ impl ModuleSettingsPane for WaveformSettingsPane {
                 let clamped = value.clamp(SCROLL_SPEED_MIN, SCROLL_SPEED_MAX);
                 if (self.config.scroll_speed - clamped).abs() > f32::EPSILON {
                     self.config.scroll_speed = clamped;
-                    changed = true;
-                }
-            }
-            Message::Downsample(strategy) => {
-                if self.config.downsample != *strategy {
-                    self.config.downsample = *strategy;
                     changed = true;
                 }
             }

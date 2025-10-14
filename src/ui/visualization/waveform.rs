@@ -2,8 +2,7 @@
 
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::waveform::{
-    DEFAULT_COLUMN_CAPACITY, DownsampleStrategy, MAX_COLUMN_CAPACITY, WaveformConfig,
-    WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
+    WaveformConfig, WaveformProcessor as CoreWaveformProcessor, WaveformSnapshot,
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::waveform::{WaveformParams, WaveformPrimitive};
@@ -14,12 +13,8 @@ use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Widget, layout, mouse};
 use iced::{Background, Color, Element, Length, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
-use std::cell::Cell;
-use std::rc::Rc;
 use std::time::Instant;
 
-const COLUMN_PIXEL_WIDTH: f32 = 1.0;
-const DEFAULT_FILL_ALPHA: f32 = 0.45;
 const DEFAULT_LINE_ALPHA: f32 = 1.0;
 const DEFAULT_VERTICAL_PADDING: f32 = 8.0;
 const DEFAULT_CHANNEL_GAP: f32 = 12.0;
@@ -74,33 +69,10 @@ impl WaveformProcessor {
     }
 }
 
-#[derive(Debug)]
-struct PresentationData {
-    columns: usize,
-    column_width: f32,
-    min_values: Vec<f32>,
-    max_values: Vec<f32>,
-    frequency: Vec<f32>,
-    preview_min: Vec<f32>,
-    preview_max: Vec<f32>,
-    preview_frequency: f32,
-    preview_progress: f32,
-    raw_channels: usize,
-    raw_frames: usize,
-    raw_sample_rate: f32,
-    raw_samples: Vec<f32>,
-    use_raw_polyline: bool,
-}
-
 #[derive(Debug, Clone)]
 pub struct WaveformState {
     snapshot: WaveformSnapshot,
-    preview_min: Vec<f32>,
-    preview_max: Vec<f32>,
-    preview_frequency: f32,
-    preview_progress: f32,
     style: WaveformStyle,
-    desired_columns: Rc<Cell<usize>>,
     frequency_hint: f32,
 }
 
@@ -108,12 +80,7 @@ impl WaveformState {
     pub fn new() -> Self {
         Self {
             snapshot: WaveformSnapshot::default(),
-            preview_min: Vec::new(),
-            preview_max: Vec::new(),
-            preview_frequency: 0.0,
-            preview_progress: 0.0,
             style: WaveformStyle::default(),
-            desired_columns: Rc::new(Cell::new(DEFAULT_COLUMN_CAPACITY)),
             frequency_hint: 0.0,
         }
     }
@@ -122,199 +89,54 @@ impl WaveformState {
         self.snapshot = snapshot.clone();
 
         self.update_frequency_hint();
-        self.update_preview_state();
     }
 
     pub fn visual(&self, bounds: Rectangle) -> Option<WaveformVisual> {
-        let presentation = self.build_presentation(bounds.width)?;
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return None;
+        }
 
         let channels = self.snapshot.channels.max(1);
-        let mut colors = Vec::with_capacity(presentation.columns);
-        for &value in &presentation.frequency {
-            let color = self.style.color_for_frequency(value);
+        let frames = self.snapshot.frames;
+        if frames < 2 {
+            return None;
+        }
+
+        let expected_samples = frames.saturating_mul(channels);
+        if self.snapshot.samples.len() < expected_samples {
+            return None;
+        }
+
+        let mut samples = self.snapshot.samples.clone();
+        samples.truncate(expected_samples);
+
+        let mut colors = Vec::with_capacity(frames);
+        let mut frequencies = self.snapshot.frequency_normalized.iter().copied();
+        for _ in 0..frames {
+            let frequency = frequencies.next().unwrap_or(self.frequency_hint);
+            let color = self.style.color_for_frequency(frequency);
             colors.push(theme::color_to_rgba(color));
         }
-        let preview_color = self
-            .style
-            .color_for_frequency(presentation.preview_frequency.min(1.0));
-        let raw_color = self
-            .style
-            .color_for_frequency(presentation.preview_frequency.min(1.0));
 
         let params = WaveformParams {
             bounds,
             channels,
-            column_width: presentation.column_width,
-            columns: presentation.columns,
-            min_values: presentation.min_values,
-            max_values: presentation.max_values,
+            frames,
+            samples,
             colors,
-            preview_min: presentation.preview_min,
-            preview_max: presentation.preview_max,
-            preview_color: theme::color_to_rgba(preview_color),
-            preview_progress: presentation.preview_progress,
-            fill_alpha: self.style.fill_alpha,
             line_alpha: self.style.line_alpha,
             vertical_padding: self.style.vertical_padding,
             channel_gap: self.style.channel_gap,
             amplitude_scale: self.style.amplitude_scale,
             stroke_width: self.style.stroke_width,
-            raw_channels: presentation.raw_channels,
-            raw_frames: presentation.raw_frames,
-            raw_sample_rate: presentation.raw_sample_rate,
-            raw_samples: presentation.raw_samples,
-            use_raw_polyline: presentation.use_raw_polyline,
-            raw_color: theme::color_to_rgba(raw_color),
         };
 
         Some(WaveformVisual { primitive: params })
     }
 
-    fn build_presentation(&self, width: f32) -> Option<PresentationData> {
-        let channels = self.snapshot.channels.max(1);
-        if width <= 0.0 {
-            return None;
-        }
-
-        let mut required = (width / COLUMN_PIXEL_WIDTH).ceil() as usize;
-        if required == 0 {
-            required = 1;
-        }
-        self.desired_columns
-            .set(required.min(MAX_COLUMN_CAPACITY).max(1));
-
-        let raw_channels = self.snapshot.raw.channels.max(1);
-        let raw_frames = self.snapshot.raw.frames;
-        let raw_sample_rate = self.snapshot.raw.sample_rate.max(1.0);
-        let raw_samples = if raw_frames > 0 {
-            self.snapshot.raw.samples.clone()
-        } else {
-            Vec::new()
-        };
-
-        let expected_raw_len = raw_frames.saturating_mul(raw_channels);
-        let has_raw = raw_frames >= 2 && raw_samples.len() >= expected_raw_len;
-        let use_raw_polyline = self.snapshot.downsample == DownsampleStrategy::Disabled && has_raw;
-
-        if use_raw_polyline {
-            return Some(PresentationData {
-                columns: 0,
-                column_width: COLUMN_PIXEL_WIDTH,
-                min_values: Vec::new(),
-                max_values: Vec::new(),
-                frequency: Vec::new(),
-                preview_min: Vec::new(),
-                preview_max: Vec::new(),
-                preview_frequency: self.preview_frequency,
-                preview_progress: 0.0,
-                raw_channels,
-                raw_frames,
-                raw_sample_rate,
-                raw_samples,
-                use_raw_polyline: true,
-            });
-        }
-
-        let columns = self.snapshot.columns;
-        if columns == 0 {
-            return None;
-        }
-
-        let mut visible = required;
-        if visible == 0 {
-            return None;
-        }
-        visible = visible.min(columns);
-
-        let start = columns.saturating_sub(visible);
-        let column_width = COLUMN_PIXEL_WIDTH;
-
-        let mut min_values = vec![0.0; visible * channels];
-        let mut max_values = vec![0.0; visible * channels];
-        for channel in 0..channels {
-            let src_base = channel * columns + start;
-            let dest_base = channel * visible;
-            min_values[dest_base..dest_base + visible]
-                .copy_from_slice(&self.snapshot.min_values[src_base..src_base + visible]);
-            max_values[dest_base..dest_base + visible]
-                .copy_from_slice(&self.snapshot.max_values[src_base..src_base + visible]);
-        }
-
-        let mut frequency = vec![0.0; visible];
-        frequency.copy_from_slice(&self.snapshot.frequency_normalized[start..start + visible]);
-
-        let preview_active = self.preview_progress > 0.0;
-        let preview_min = if preview_active {
-            self.preview_min.clone()
-        } else {
-            Vec::new()
-        };
-        let preview_max = if preview_active {
-            self.preview_max.clone()
-        } else {
-            Vec::new()
-        };
-        let preview_progress = if preview_active { 1.0 } else { 0.0 };
-
-        Some(PresentationData {
-            columns: visible,
-            column_width,
-            min_values,
-            max_values,
-            frequency,
-            preview_min,
-            preview_max,
-            preview_frequency: self.preview_frequency,
-            preview_progress,
-            raw_channels,
-            raw_frames,
-            raw_sample_rate,
-            raw_samples,
-            use_raw_polyline: false,
-        })
-    }
-
-    fn update_preview_state(&mut self) {
-        let channels = self.snapshot.channels.max(1);
-        ensure_len(&mut self.preview_min, channels);
-        ensure_len(&mut self.preview_max, channels);
-
-        let progress = self.snapshot.preview.progress.clamp(0.0, 1.0);
-        if progress > 0.0
-            && self.snapshot.preview.min_values.len() >= channels
-            && self.snapshot.preview.max_values.len() >= channels
-        {
-            for channel in 0..channels {
-                self.preview_min[channel] = self
-                    .snapshot
-                    .preview
-                    .min_values
-                    .get(channel)
-                    .copied()
-                    .unwrap_or(0.0);
-                self.preview_max[channel] = self
-                    .snapshot
-                    .preview
-                    .max_values
-                    .get(channel)
-                    .copied()
-                    .unwrap_or(0.0);
-            }
-            self.preview_frequency = self.snapshot.preview.frequency_normalized;
-            self.preview_progress = progress;
-        } else {
-            self.preview_min.fill(0.0);
-            self.preview_max.fill(0.0);
-            self.preview_frequency = self.frequency_hint;
-            self.preview_progress = 0.0;
-        }
-    }
-
     fn update_frequency_hint(&mut self) {
         if let Some(freq) = self.snapshot.frequency_normalized.last().copied() {
             self.frequency_hint = freq;
-        } else {
-            self.frequency_hint = self.snapshot.preview.frequency_normalized;
         }
     }
 
@@ -322,16 +144,11 @@ impl WaveformState {
     pub fn style_mut(&mut self) -> &mut WaveformStyle {
         &mut self.style
     }
-
-    pub fn desired_columns(&self) -> usize {
-        self.desired_columns.get()
-    }
 }
 
 #[derive(Debug, Clone)]
 pub struct WaveformStyle {
     pub background: Color,
-    pub fill_alpha: f32,
     pub line_alpha: f32,
     pub vertical_padding: f32,
     pub channel_gap: f32,
@@ -402,7 +219,6 @@ impl Default for WaveformStyle {
 
         Self {
             background,
-            fill_alpha: DEFAULT_FILL_ALPHA,
             line_alpha: DEFAULT_LINE_ALPHA,
             vertical_padding: DEFAULT_VERTICAL_PADDING,
             channel_gap: DEFAULT_CHANNEL_GAP,
@@ -495,12 +311,6 @@ where
     Message: 'a,
 {
     Element::new(Waveform::new(state))
-}
-
-fn ensure_len(vec: &mut Vec<f32>, len: usize) {
-    if vec.len() != len {
-        vec.resize(len, 0.0);
-    }
 }
 
 fn lerp_color(a: Color, b: Color, alpha: f32) -> Color {
