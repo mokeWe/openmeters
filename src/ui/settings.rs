@@ -8,7 +8,9 @@
 use crate::dsp::oscilloscope::OscilloscopeConfig;
 use crate::dsp::spectrogram::{SpectrogramConfig, WindowKind};
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
-use crate::dsp::waveform::{MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, WaveformConfig};
+use crate::dsp::waveform::{
+    DownsampleStrategy, MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, WaveformConfig,
+};
 use crate::ui::visualization::visual_manager::VisualKind;
 use serde::de::{self, Deserializer};
 use serde::ser::Serializer;
@@ -240,6 +242,9 @@ impl OscilloscopeSettings {
 #[serde(default, deny_unknown_fields)]
 pub struct WaveformSettings {
     pub scroll_speed: f32,
+    pub downsample: DownsampleStrategy,
+    #[serde(default, rename = "max_columns", skip_serializing)]
+    _legacy_max_columns: Option<usize>,
 }
 
 impl Default for WaveformSettings {
@@ -254,11 +259,14 @@ impl WaveformSettings {
             scroll_speed: config
                 .scroll_speed
                 .clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED),
+            downsample: config.downsample,
+            _legacy_max_columns: None,
         }
     }
 
     pub fn apply_to(&self, config: &mut WaveformConfig) {
         config.scroll_speed = self.scroll_speed.clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED);
+        config.downsample = self.downsample;
     }
 }
 

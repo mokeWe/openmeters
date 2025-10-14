@@ -8,6 +8,7 @@
 
 use crate::audio::meter_tap::{self, MeterFormat};
 use crate::dsp::ProcessorUpdate;
+use crate::dsp::waveform::{MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY};
 use crate::ui::settings::{
     ModuleSettings, OscilloscopeSettings, SpectrogramSettings, SpectrumSettings, VisualSettings,
     WaveformSettings,
@@ -369,6 +370,7 @@ impl Default for WaveformVisual {
 
 impl VisualModule for WaveformVisual {
     fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
+        self.ensure_capacity();
         let snapshot = self.processor.ingest(samples, format);
         self.state.apply_snapshot(&snapshot);
     }
@@ -384,6 +386,7 @@ impl VisualModule for WaveformVisual {
             let mut config = self.processor.config();
             stored.apply_to(&mut config);
             self.processor.update_config(config);
+            self.ensure_capacity();
         }
     }
 
@@ -392,6 +395,22 @@ impl VisualModule for WaveformVisual {
         let snapshot = WaveformSettings::from_config(&self.processor.config());
         module.set_waveform(snapshot);
         Some(module)
+    }
+}
+
+impl WaveformVisual {
+    fn ensure_capacity(&mut self) {
+        let mut config = self.processor.config();
+        let target = self.target_capacity();
+        if config.max_columns != target {
+            config.max_columns = target;
+            self.processor.update_config(config);
+        }
+    }
+
+    fn target_capacity(&self) -> usize {
+        let desired = self.state.desired_columns().max(1);
+        desired.max(MIN_COLUMN_CAPACITY).min(MAX_COLUMN_CAPACITY)
     }
 }
 
