@@ -8,13 +8,16 @@
 
 use crate::audio::meter_tap::{self, MeterFormat};
 use crate::dsp::ProcessorUpdate;
+use crate::dsp::waveform::{MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY};
 use crate::ui::settings::{
     ModuleSettings, OscilloscopeSettings, SpectrogramSettings, SpectrumSettings, VisualSettings,
+    WaveformSettings,
 };
 use crate::ui::visualization::lufs_meter::{LufsMeterState, LufsProcessor};
 use crate::ui::visualization::oscilloscope::{OscilloscopeProcessor, OscilloscopeState};
 use crate::ui::visualization::spectrogram::{SpectrogramProcessor, SpectrogramState};
 use crate::ui::visualization::spectrum::{SpectrumProcessor, SpectrumState};
+use crate::ui::visualization::waveform::{WaveformProcessor as WaveformUiProcessor, WaveformState};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use serde::de::{self, Deserializer};
 use serde::ser::Serializer;
@@ -32,6 +35,7 @@ impl VisualKind {
     pub const OSCILLOSCOPE: Self = Self("oscilloscope");
     pub const SPECTROGRAM: Self = Self("spectrogram");
     pub const SPECTRUM: Self = Self("spectrum");
+    pub const WAVEFORM: Self = Self("waveform");
 
     fn legacy_token(self) -> &'static str {
         match self {
@@ -39,6 +43,7 @@ impl VisualKind {
             Self::OSCILLOSCOPE => "Oscilloscope",
             Self::SPECTROGRAM => "Spectrogram",
             Self::SPECTRUM => "Spectrum",
+            Self::WAVEFORM => "Waveform",
             _ => self.0,
         }
     }
@@ -49,6 +54,7 @@ impl VisualKind {
             "oscilloscope" | "Oscilloscope" => Some(Self::OSCILLOSCOPE),
             "spectrogram" | "Spectrogram" => Some(Self::SPECTROGRAM),
             "spectrum" | "Spectrum" => Some(Self::SPECTRUM),
+            "waveform" | "Waveform" => Some(Self::WAVEFORM),
             _ => None,
         }
     }
@@ -72,7 +78,13 @@ impl<'de> Deserialize<'de> for VisualKind {
         Self::from_serialized(&token).ok_or_else(|| {
             de::Error::unknown_variant(
                 &token,
-                &["lufs_meter", "oscilloscope", "spectrogram", "spectrum"],
+                &[
+                    "lufs_meter",
+                    "oscilloscope",
+                    "spectrogram",
+                    "spectrum",
+                    "waveform",
+                ],
             )
         })
     }
@@ -137,6 +149,7 @@ pub enum VisualContent {
     Oscilloscope { state: OscilloscopeState },
     Spectrogram { state: Box<SpectrogramState> },
     Spectrum { state: SpectrumState },
+    Waveform { state: WaveformState },
 }
 
 trait VisualModule {
@@ -218,6 +231,20 @@ const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
         },
         default_enabled: false,
         build: build_module::<OscilloscopeVisual>,
+    },
+    VisualDescriptor {
+        kind: VisualKind::WAVEFORM,
+        metadata: VisualMetadata {
+            display_name: "Waveform",
+            preferred_width: 320.0,
+            preferred_height: 180.0,
+            fill_horizontal: true,
+            fill_vertical: true,
+            min_width: 220.0,
+            max_width: f32::INFINITY,
+        },
+        default_enabled: true,
+        build: build_module::<WaveformVisual>,
     },
     VisualDescriptor {
         kind: VisualKind::SPECTROGRAM,
@@ -324,6 +351,66 @@ impl VisualModule for OscilloscopeVisual {
         let snapshot = OscilloscopeSettings::from_config(&self.processor.config());
         settings.set_oscilloscope(snapshot);
         Some(settings)
+    }
+}
+
+struct WaveformVisual {
+    processor: WaveformUiProcessor,
+    state: WaveformState,
+}
+
+impl Default for WaveformVisual {
+    fn default() -> Self {
+        Self {
+            processor: WaveformUiProcessor::new(DEFAULT_SAMPLE_RATE),
+            state: WaveformState::new(),
+        }
+    }
+}
+
+impl VisualModule for WaveformVisual {
+    fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
+        self.ensure_capacity();
+        let snapshot = self.processor.ingest(samples, format);
+        self.state.apply_snapshot(&snapshot);
+    }
+
+    fn content(&self) -> VisualContent {
+        VisualContent::Waveform {
+            state: self.state.clone(),
+        }
+    }
+
+    fn apply_settings(&mut self, settings: &ModuleSettings) {
+        if let Some(stored) = settings.waveform() {
+            let mut config = self.processor.config();
+            stored.apply_to(&mut config);
+            self.processor.update_config(config);
+            self.ensure_capacity();
+        }
+    }
+
+    fn export_settings(&self) -> Option<ModuleSettings> {
+        let mut module = ModuleSettings::default();
+        let snapshot = WaveformSettings::from_config(&self.processor.config());
+        module.set_waveform(snapshot);
+        Some(module)
+    }
+}
+
+impl WaveformVisual {
+    fn ensure_capacity(&mut self) {
+        let mut config = self.processor.config();
+        let target = self.target_capacity();
+        if config.max_columns != target {
+            config.max_columns = target;
+            self.processor.update_config(config);
+        }
+    }
+
+    fn target_capacity(&self) -> usize {
+        let desired = self.state.desired_columns().max(1);
+        desired.max(MIN_COLUMN_CAPACITY).min(MAX_COLUMN_CAPACITY)
     }
 }
 
@@ -623,6 +710,7 @@ mod tests {
 
         let mut lufs_enabled = false;
         let mut oscilloscope_enabled = false;
+        let mut waveform_enabled = false;
 
         for slot in &snapshot.slots {
             if slot.kind == VisualKind::LUFS {
@@ -631,10 +719,14 @@ mod tests {
             if slot.kind == VisualKind::OSCILLOSCOPE {
                 oscilloscope_enabled = slot.enabled;
             }
+            if slot.kind == VisualKind::WAVEFORM {
+                waveform_enabled = slot.enabled;
+            }
         }
 
         assert!(lufs_enabled, "LUFS meter should be enabled by default");
         assert!(!oscilloscope_enabled, "Oscilloscope should start disabled");
+        assert!(waveform_enabled, "Waveform should be enabled by default");
     }
 
     #[test]

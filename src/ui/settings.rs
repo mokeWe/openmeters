@@ -8,6 +8,9 @@
 use crate::dsp::oscilloscope::OscilloscopeConfig;
 use crate::dsp::spectrogram::{SpectrogramConfig, WindowKind};
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
+use crate::dsp::waveform::{
+    DownsampleStrategy, MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, WaveformConfig,
+};
 use crate::ui::visualization::visual_manager::VisualKind;
 use serde::de::{self, Deserializer};
 use serde::ser::Serializer;
@@ -66,6 +69,10 @@ impl ModuleSettings {
         self.config = Some(StoredConfig::Oscilloscope(config));
     }
 
+    pub fn set_waveform(&mut self, config: WaveformSettings) {
+        self.config = Some(StoredConfig::Waveform(config));
+    }
+
     pub fn spectrogram(&self) -> Option<&SpectrogramSettings> {
         match &self.config {
             Some(StoredConfig::Spectrogram(cfg)) => Some(cfg),
@@ -87,10 +94,18 @@ impl ModuleSettings {
         }
     }
 
+    pub fn waveform(&self) -> Option<&WaveformSettings> {
+        match &self.config {
+            Some(StoredConfig::Waveform(cfg)) => Some(cfg),
+            _ => None,
+        }
+    }
+
     pub fn retain_only(&mut self, kind: VisualKind) {
         let configurable = kind == VisualKind::SPECTROGRAM
             || kind == VisualKind::SPECTRUM
-            || kind == VisualKind::OSCILLOSCOPE;
+            || kind == VisualKind::OSCILLOSCOPE
+            || kind == VisualKind::WAVEFORM;
 
         if configurable {
             if self
@@ -116,6 +131,7 @@ enum StoredConfig {
     Spectrogram(SpectrogramSettings),
     Spectrum(SpectrumSettings),
     Oscilloscope(OscilloscopeSettings),
+    Waveform(WaveformSettings),
 }
 
 impl StoredConfig {
@@ -124,6 +140,7 @@ impl StoredConfig {
             StoredConfig::Spectrogram(_) => VisualKind::SPECTROGRAM,
             StoredConfig::Spectrum(_) => VisualKind::SPECTRUM,
             StoredConfig::Oscilloscope(_) => VisualKind::OSCILLOSCOPE,
+            StoredConfig::Waveform(_) => VisualKind::WAVEFORM,
         }
     }
 
@@ -218,6 +235,38 @@ impl OscilloscopeSettings {
         config.trigger_rising = self.trigger_rising;
         config.target_sample_count = self.target_sample_count;
         config.persistence = self.persistence;
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WaveformSettings {
+    pub scroll_speed: f32,
+    pub downsample: DownsampleStrategy,
+    #[serde(default, rename = "max_columns", skip_serializing)]
+    _legacy_max_columns: Option<usize>,
+}
+
+impl Default for WaveformSettings {
+    fn default() -> Self {
+        Self::from_config(&WaveformConfig::default())
+    }
+}
+
+impl WaveformSettings {
+    pub fn from_config(config: &WaveformConfig) -> Self {
+        Self {
+            scroll_speed: config
+                .scroll_speed
+                .clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED),
+            downsample: config.downsample,
+            _legacy_max_columns: None,
+        }
+    }
+
+    pub fn apply_to(&self, config: &mut WaveformConfig) {
+        config.scroll_speed = self.scroll_speed.clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED);
+        config.downsample = self.downsample;
     }
 }
 
@@ -385,6 +434,11 @@ impl SettingsManager {
     pub fn set_oscilloscope_settings(&mut self, kind: VisualKind, config: &OscilloscopeConfig) {
         let entry = self.data.visuals.modules.entry(kind).or_default();
         entry.set_oscilloscope(OscilloscopeSettings::from_config(config));
+    }
+
+    pub fn set_waveform_settings(&mut self, kind: VisualKind, config: &WaveformConfig) {
+        let entry = self.data.visuals.modules.entry(kind).or_default();
+        entry.set_waveform(WaveformSettings::from_config(config));
     }
 
     pub fn set_spectrogram_settings(&mut self, kind: VisualKind, config: &SpectrogramConfig) {

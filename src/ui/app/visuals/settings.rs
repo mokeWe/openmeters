@@ -4,6 +4,7 @@
 mod oscilloscope;
 mod spectrogram;
 mod spectrum;
+mod waveform;
 
 use crate::ui::settings::SettingsHandle;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
@@ -15,6 +16,7 @@ pub enum SettingsMessage {
     Oscilloscope(oscilloscope::Message),
     Spectrogram(spectrogram::Message),
     Spectrum(spectrum::Message),
+    Waveform(waveform::Message),
 }
 
 pub trait ModuleSettingsPane: std::fmt::Debug + 'static {
@@ -32,6 +34,7 @@ const DEFAULT_UNSUPPORTED_SIZE: Size = Size::new(320.0, 160.0);
 const OSCILLOSCOPE_SETTINGS_SIZE: Size = Size::new(420.0, 340.0);
 const SPECTROGRAM_SETTINGS_SIZE: Size = Size::new(560.0, 880.0);
 const SPECTRUM_SETTINGS_SIZE: Size = Size::new(420.0, 260.0);
+const WAVEFORM_SETTINGS_SIZE: Size = Size::new(360.0, 200.0);
 
 #[derive(Debug)]
 pub struct ActiveSettings {
@@ -108,6 +111,9 @@ pub fn create_panel(
     } else if kind == VisualKind::SPECTRUM {
         let pane = spectrum::create(visual_id, visual_manager);
         ActiveSettings::new(title, preferred_size, Box::new(pane))
+    } else if kind == VisualKind::WAVEFORM {
+        let pane = waveform::create(visual_id, visual_manager);
+        ActiveSettings::new(title, preferred_size, Box::new(pane))
     } else {
         ActiveSettings::unsupported(title, visual_id, kind)
     }
@@ -120,6 +126,8 @@ fn settings_size_for(kind: VisualKind) -> Size {
         SPECTROGRAM_SETTINGS_SIZE
     } else if kind == VisualKind::SPECTRUM {
         SPECTRUM_SETTINGS_SIZE
+    } else if kind == VisualKind::WAVEFORM {
+        WAVEFORM_SETTINGS_SIZE
     } else {
         DEFAULT_UNSUPPORTED_SIZE
     }

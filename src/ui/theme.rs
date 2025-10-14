@@ -30,9 +30,22 @@ pub const DEFAULT_SPECTROGRAM_PALETTE: [Color; 5] = [
     Color::from_rgba(1.00, 1.00, 1.00, 1.0),
 ];
 
+pub const DEFAULT_WAVEFORM_PALETTE: [Color; 5] = [
+    Color::from_rgb(0.286, 0.070, 1.000),
+    Color::from_rgb(0.000, 0.654, 1.000),
+    Color::from_rgb(0.000, 0.878, 0.643),
+    Color::from_rgb(0.961, 0.718, 0.000),
+    Color::from_rgb(1.000, 0.239, 0.553),
+];
+
 /// Returns the default spectrogram color palette.
 pub fn spectrogram_palette() -> [Color; 5] {
     DEFAULT_SPECTROGRAM_PALETTE
+}
+
+/// Returns the waveform color palette.
+pub fn waveform_palette() -> [Color; 5] {
+    DEFAULT_WAVEFORM_PALETTE
 }
 
 /// Returns the monochrome theme for the application.

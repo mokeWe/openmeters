@@ -7,7 +7,7 @@ use crate::ui::visualization::visual_manager::{
     VisualContent, VisualId, VisualKind, VisualLayoutHint, VisualManagerHandle, VisualMetadata,
     VisualSlotSnapshot, VisualSnapshot,
 };
-use crate::ui::visualization::{lufs_meter, oscilloscope, spectrogram, spectrum};
+use crate::ui::visualization::{lufs_meter, oscilloscope, spectrogram, spectrum, waveform};
 mod settings;
 
 pub use settings::{ActiveSettings, SettingsMessage, create_panel as create_settings_panel};
@@ -86,6 +86,15 @@ impl VisualPane {
                 let spec = spectrum::widget(state);
                 Element::from(
                     container(spec)
+                        .width(Length::Fill)
+                        .height(Length::Fill)
+                        .center_x(Length::Fill),
+                )
+            }
+            VisualContent::Waveform { state } => {
+                let wave = waveform::widget(state);
+                Element::from(
+                    container(wave)
                         .width(Length::Fill)
                         .height(Length::Fill)
                         .center_x(Length::Fill),
