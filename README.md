@@ -18,7 +18,7 @@ Checked features are implemented, unchecked features are planned.
   - [x] Reassignment for better low-frequency resolution
 - [x] spectrum analyzer
 - [ ] stereometer
-- [ ] waveform visualization
+- [x] waveform visualization
 - [x] configurability
   - [x] persisted to disk
   - [ ] themes/color schemes
