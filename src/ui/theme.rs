@@ -31,7 +31,7 @@ pub const DEFAULT_SPECTROGRAM_PALETTE: [Color; 5] = [
 ];
 
 pub const DEFAULT_WAVEFORM_PALETTE: [Color; 5] = [
-    Color::from_rgb(0.08, 0.05, 0.25),
+    Color::from_rgb(0.9, 0.05, 0.01),
     Color::from_rgb(1.000, 0.654, 0.000),
     Color::from_rgb(0.643, 0.878, 0.000),
     Color::from_rgb(0.000, 0.718, 0.961),

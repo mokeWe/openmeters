@@ -26,18 +26,12 @@ pub struct WaveformParams {
     pub channel_gap: f32,
     pub amplitude_scale: f32,
     pub stroke_width: f32,
-    pub raw_channels: usize,
-    pub raw_frames: usize,
-    pub raw_sample_rate: f32,
-    pub raw_samples: Vec<f32>,
-    pub use_raw_polyline: bool,
-    pub raw_color: [f32; 4],
+    pub instance_key: u64,
 }
 
 impl WaveformParams {
     pub fn preview_active(&self) -> bool {
-        !self.use_raw_polyline
-            && self.preview_progress > 0.0
+        self.preview_progress > 0.0
             && self.preview_min.len() >= self.channels
             && self.preview_max.len() >= self.channels
     }
@@ -53,17 +47,11 @@ impl WaveformPrimitive {
         Self { params }
     }
 
-    fn key(&self) -> usize {
-        self as *const Self as usize
+    fn key(&self) -> u64 {
+        self.params.instance_key
     }
 
     fn build_vertices(&self, viewport: &Viewport) -> Vec<Vertex> {
-        if self.params.use_raw_polyline {
-            if let Some(vertices) = self.build_raw_vertices(viewport) {
-                return vertices;
-            }
-        }
-
         let channels = self.params.channels.max(1);
         let columns = self.params.columns;
         let total_samples = channels * columns;
@@ -240,127 +228,6 @@ impl WaveformPrimitive {
 
         vertices
     }
-
-    fn build_raw_vertices(&self, viewport: &Viewport) -> Option<Vec<Vertex>> {
-        let channels = self.params.channels.max(1);
-        let raw_channels = self.params.raw_channels.max(1);
-        let frames = self.params.raw_frames;
-        if frames < 2 {
-            return None;
-        }
-
-        let expected_len = frames.saturating_mul(raw_channels);
-        if self.params.raw_samples.len() < expected_len {
-            return None;
-        }
-
-        let bounds = self.params.bounds;
-        if bounds.width <= 0.0 || bounds.height <= 0.0 {
-            return Some(Vec::new());
-        }
-
-        let clip = ClipTransform::new(
-            viewport.logical_size().width.max(1.0),
-            viewport.logical_size().height.max(1.0),
-        );
-
-        let vertical_padding = self.params.vertical_padding.max(0.0);
-        let channel_gap = self.params.channel_gap.max(0.0);
-        let usable_height = (bounds.height
-            - vertical_padding * 2.0
-            - channel_gap * (channels.saturating_sub(1) as f32))
-            .max(1.0);
-        let channel_height = usable_height / channels as f32;
-        let amplitude_scale = channel_height * 0.5 * self.params.amplitude_scale.max(0.01);
-        let half_stroke = self.params.stroke_width.max(0.5) * 0.5;
-
-        let sample_rate = self.params.raw_sample_rate.max(1.0);
-        let frame_span = (frames - 1) as f32;
-        let duration = frame_span / sample_rate;
-        let pixels_per_second = if duration.abs() < f32::EPSILON {
-            0.0
-        } else {
-            bounds.width.max(1.0) / duration
-        };
-        let pitch = if sample_rate > f32::EPSILON {
-            pixels_per_second / sample_rate
-        } else {
-            0.0
-        };
-
-        let mut vertices = Vec::with_capacity(channels * frames * 2);
-
-        let append_strip = |dest: &mut Vec<Vertex>, strip: Vec<Vertex>| {
-            if strip.is_empty() {
-                return;
-            }
-            if !dest.is_empty()
-                && let Some(last) = dest.last().copied()
-            {
-                let mut iter = strip.into_iter();
-                let first = iter.next().unwrap();
-                dest.push(last);
-                dest.push(last);
-                dest.push(first);
-                dest.push(first);
-                dest.extend(iter);
-                return;
-            }
-            dest.extend(strip);
-        };
-
-        let line_color = [
-            self.params.raw_color[0],
-            self.params.raw_color[1],
-            self.params.raw_color[2],
-            self.params.line_alpha,
-        ];
-
-        for channel in 0..channels {
-            let target_channel = channel.min(raw_channels.saturating_sub(1));
-            let top = bounds.y + vertical_padding + channel as f32 * (channel_height + channel_gap);
-            let center = top + channel_height * 0.5;
-
-            let mut positions = Vec::with_capacity(frames);
-            for frame_index in 0..frames {
-                let sample_index = frame_index * raw_channels + target_channel;
-                if sample_index >= self.params.raw_samples.len() {
-                    break;
-                }
-                let sample = self.params.raw_samples[sample_index].clamp(-1.0, 1.0);
-                let x = bounds.x + pitch * frame_index as f32;
-                let y = center - sample * amplitude_scale;
-                positions.push((x, y));
-            }
-
-            if positions.len() < 2 {
-                continue;
-            }
-
-            let normals = compute_normals(&positions);
-            let mut line_vertices = Vec::with_capacity(positions.len() * 2);
-            for (position, normal) in positions.iter().zip(normals.iter()) {
-                let offset_x = normal.0 * half_stroke;
-                let offset_y = normal.1 * half_stroke;
-
-                let left = clip.to_clip(position.0 - offset_x, position.1 - offset_y);
-                let right = clip.to_clip(position.0 + offset_x, position.1 + offset_y);
-
-                line_vertices.push(Vertex {
-                    position: left,
-                    color: line_color,
-                });
-                line_vertices.push(Vertex {
-                    position: right,
-                    color: line_color,
-                });
-            }
-
-            append_strip(&mut vertices, line_vertices);
-        }
-
-        Some(vertices)
-    }
 }
 
 impl Primitive for WaveformPrimitive {
@@ -482,7 +349,7 @@ impl ClipTransform {
 #[derive(Debug)]
 struct Pipeline {
     pipeline: wgpu::RenderPipeline,
-    instances: HashMap<usize, InstanceBuffer>,
+    instances: HashMap<u64, InstanceBuffer>,
 }
 
 impl Pipeline {
@@ -543,7 +410,7 @@ impl Pipeline {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        key: usize,
+        key: u64,
         vertices: &[Vertex],
     ) {
         let required_size = std::mem::size_of_val(vertices) as wgpu::BufferAddress;
@@ -562,7 +429,7 @@ impl Pipeline {
         entry.vertex_count = vertices.len() as u32;
     }
 
-    fn instance(&self, key: usize) -> Option<&InstanceBuffer> {
+    fn instance(&self, key: u64) -> Option<&InstanceBuffer> {
         self.instances.get(&key)
     }
 }

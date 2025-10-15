@@ -372,7 +372,7 @@ impl VisualModule for WaveformVisual {
     fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
         self.ensure_capacity();
         let snapshot = self.processor.ingest(samples, format);
-        self.state.apply_snapshot(&snapshot);
+        self.state.apply_snapshot(snapshot);
     }
 
     fn content(&self) -> VisualContent {
@@ -409,8 +409,8 @@ impl WaveformVisual {
     }
 
     fn target_capacity(&self) -> usize {
-        let desired = self.state.desired_columns().max(1);
-        desired.max(MIN_COLUMN_CAPACITY).min(MAX_COLUMN_CAPACITY)
+        let desired = self.state.desired_columns();
+        desired.clamp(MIN_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY)
     }
 }
 

@@ -16,6 +16,7 @@ use iced::{Background, Color, Element, Length, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::Cell;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 const COLUMN_PIXEL_WIDTH: f32 = 2.0;
@@ -34,8 +35,10 @@ pub struct WaveformProcessor {
 
 impl WaveformProcessor {
     pub fn new(sample_rate: f32) -> Self {
-        let mut config = WaveformConfig::default();
-        config.sample_rate = sample_rate;
+        let config = WaveformConfig {
+            sample_rate,
+            ..WaveformConfig::default()
+        };
         Self {
             inner: CoreWaveformProcessor::new(config),
             channels: 2,
@@ -85,11 +88,6 @@ struct PresentationData {
     preview_max: Vec<f32>,
     preview_frequency: f32,
     preview_progress: f32,
-    raw_channels: usize,
-    raw_frames: usize,
-    raw_sample_rate: f32,
-    raw_samples: Vec<f32>,
-    use_raw_polyline: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -102,9 +100,15 @@ pub struct WaveformState {
     style: WaveformStyle,
     desired_columns: Rc<Cell<usize>>,
     frequency_hint: f32,
+    render_key: u64,
 }
 
 impl WaveformState {
+    fn next_render_key() -> u64 {
+        static NEXT_RENDER_KEY: AtomicU64 = AtomicU64::new(1);
+        NEXT_RENDER_KEY.fetch_add(1, Ordering::Relaxed)
+    }
+
     pub fn new() -> Self {
         Self {
             snapshot: WaveformSnapshot::default(),
@@ -115,11 +119,12 @@ impl WaveformState {
             style: WaveformStyle::default(),
             desired_columns: Rc::new(Cell::new(DEFAULT_COLUMN_CAPACITY)),
             frequency_hint: 0.0,
+            render_key: Self::next_render_key(),
         }
     }
 
-    pub fn apply_snapshot(&mut self, snapshot: &WaveformSnapshot) {
-        self.snapshot = snapshot.clone();
+    pub fn apply_snapshot(&mut self, snapshot: WaveformSnapshot) {
+        self.snapshot = snapshot;
 
         self.update_frequency_hint();
         self.update_preview_state();
@@ -135,9 +140,6 @@ impl WaveformState {
             colors.push(theme::color_to_rgba(color));
         }
         let preview_color = self
-            .style
-            .color_for_frequency(presentation.preview_frequency.min(1.0));
-        let raw_color = self
             .style
             .color_for_frequency(presentation.preview_frequency.min(1.0));
 
@@ -159,12 +161,7 @@ impl WaveformState {
             channel_gap: self.style.channel_gap,
             amplitude_scale: self.style.amplitude_scale,
             stroke_width: self.style.stroke_width,
-            raw_channels: presentation.raw_channels,
-            raw_frames: presentation.raw_frames,
-            raw_sample_rate: presentation.raw_sample_rate,
-            raw_samples: presentation.raw_samples,
-            use_raw_polyline: presentation.use_raw_polyline,
-            raw_color: theme::color_to_rgba(raw_color),
+            instance_key: self.render_key,
         };
 
         Some(WaveformVisual { primitive: params })
@@ -181,21 +178,7 @@ impl WaveformState {
             required = 1;
         }
         self.desired_columns
-            .set(required.min(MAX_COLUMN_CAPACITY).max(1));
-
-        let raw_channels = self.snapshot.raw.channels.max(1);
-        let raw_frames = self.snapshot.raw.frames;
-        let raw_sample_rate = self.snapshot.raw.sample_rate.max(1.0);
-        let raw_samples = if raw_frames > 0 {
-            let expected_len = raw_frames.saturating_mul(raw_channels);
-            let mut samples = self.snapshot.raw.samples.clone();
-            if samples.len() > expected_len {
-                samples.truncate(expected_len);
-            }
-            samples
-        } else {
-            Vec::new()
-        };
+            .set(required.clamp(1, MAX_COLUMN_CAPACITY));
 
         let columns = self.snapshot.columns;
         if columns == 0 {
@@ -213,17 +196,20 @@ impl WaveformState {
 
         let mut min_values = vec![0.0; visible * channels];
         let mut max_values = vec![0.0; visible * channels];
+        let min_source = self.snapshot.min_values.as_ref();
+        let max_source = self.snapshot.max_values.as_ref();
         for channel in 0..channels {
             let src_base = channel * columns + start;
             let dest_base = channel * visible;
             min_values[dest_base..dest_base + visible]
-                .copy_from_slice(&self.snapshot.min_values[src_base..src_base + visible]);
+                .copy_from_slice(&min_source[src_base..src_base + visible]);
             max_values[dest_base..dest_base + visible]
-                .copy_from_slice(&self.snapshot.max_values[src_base..src_base + visible]);
+                .copy_from_slice(&max_source[src_base..src_base + visible]);
         }
 
         let mut frequency = vec![0.0; visible];
-        frequency.copy_from_slice(&self.snapshot.frequency_normalized[start..start + visible]);
+        let freq_source = self.snapshot.frequency_normalized.as_ref();
+        frequency.copy_from_slice(&freq_source[start..start + visible]);
 
         let preview_active = self.preview_progress > 0.0;
         let preview_min = if preview_active {
@@ -256,11 +242,6 @@ impl WaveformState {
             preview_max,
             preview_frequency: self.preview_frequency,
             preview_progress,
-            raw_channels,
-            raw_frames,
-            raw_sample_rate,
-            raw_samples,
-            use_raw_polyline: false,
         })
     }
 
@@ -301,7 +282,7 @@ impl WaveformState {
     }
 
     fn update_frequency_hint(&mut self) {
-        if let Some(freq) = self.snapshot.frequency_normalized.last().copied() {
+        if let Some(freq) = self.snapshot.frequency_normalized.as_ref().last().copied() {
             self.frequency_hint = freq;
         } else {
             self.frequency_hint = self.snapshot.preview.frequency_normalized;
