@@ -33,12 +33,14 @@ pub fn create(
     let config = visual_manager
         .borrow()
         .module_settings(VisualKind::OSCILLOSCOPE)
-        .and_then(|stored| stored.oscilloscope().cloned())
-        .map_or_else(OscilloscopeConfig::default, |stored| {
-            let mut config = OscilloscopeConfig::default();
-            stored.apply_to(&mut config);
-            config
-        });
+        .and_then(|stored| {
+            stored.oscilloscope().map(|settings| {
+                let mut config = OscilloscopeConfig::default();
+                settings.apply_to(&mut config);
+                config
+            })
+        })
+        .unwrap_or_default();
 
     OscilloscopeSettingsPane { visual_id, config }
 }
@@ -112,49 +114,54 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             return;
         };
 
-        let mut changed = false;
-        match msg {
-            Message::SegmentDuration(value) => {
-                let clamped = value.clamp(SEGMENT_MIN, SEGMENT_MAX);
-                if (self.config.segment_duration - clamped).abs() > f32::EPSILON {
-                    self.config.segment_duration = clamped;
-                    changed = true;
-                }
-            }
-            Message::TriggerLevel(value) => {
-                let clamped = value.clamp(TRIGGER_MIN, TRIGGER_MAX);
-                if (self.config.trigger_level - clamped).abs() > f32::EPSILON {
-                    self.config.trigger_level = clamped;
-                    changed = true;
-                }
-            }
-            Message::Persistence(value) => {
-                let clamped = value.clamp(PERSISTENCE_MIN, PERSISTENCE_MAX);
-                if (self.config.persistence - clamped).abs() > f32::EPSILON {
-                    self.config.persistence = clamped;
-                    changed = true;
-                }
-            }
+        let changed = match msg {
+            Message::SegmentDuration(value) => update_if_changed(
+                &mut self.config.segment_duration,
+                value.clamp(SEGMENT_MIN, SEGMENT_MAX),
+            ),
+            Message::TriggerLevel(value) => update_if_changed(
+                &mut self.config.trigger_level,
+                value.clamp(TRIGGER_MIN, TRIGGER_MAX),
+            ),
+            Message::Persistence(value) => update_if_changed(
+                &mut self.config.persistence,
+                value.clamp(PERSISTENCE_MIN, PERSISTENCE_MAX),
+            ),
             Message::TriggerMode(rising) => {
-                if self.config.trigger_rising != *rising {
-                    self.config.trigger_rising = *rising;
-                    changed = true;
-                }
+                update_if_changed(&mut self.config.trigger_rising, *rising)
             }
-        }
+        };
 
         if changed {
-            let mut module_settings = ModuleSettings::default();
-            module_settings.set_oscilloscope(OscilloscopeSettings::from_config(&self.config));
-
-            if visual_manager
-                .borrow_mut()
-                .apply_module_settings(VisualKind::OSCILLOSCOPE, &module_settings)
-            {
-                settings.update(|settings| {
-                    settings.set_oscilloscope_settings(VisualKind::OSCILLOSCOPE, &self.config)
-                });
-            }
+            apply_oscilloscope_config(&self.config, visual_manager, settings);
         }
+    }
+}
+
+#[inline]
+fn update_if_changed<T: PartialEq + Copy>(target: &mut T, new_value: T) -> bool {
+    if *target != new_value {
+        *target = new_value;
+        true
+    } else {
+        false
+    }
+}
+
+fn apply_oscilloscope_config(
+    config: &OscilloscopeConfig,
+    visual_manager: &VisualManagerHandle,
+    settings: &SettingsHandle,
+) {
+    let mut module_settings = ModuleSettings::default();
+    module_settings.set_oscilloscope(OscilloscopeSettings::from_config(config));
+
+    if visual_manager
+        .borrow_mut()
+        .apply_module_settings(VisualKind::OSCILLOSCOPE, &module_settings)
+    {
+        settings.update(|mgr| {
+            mgr.set_oscilloscope_settings(VisualKind::OSCILLOSCOPE, config);
+        });
     }
 }

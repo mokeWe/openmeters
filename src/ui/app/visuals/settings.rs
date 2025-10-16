@@ -102,34 +102,24 @@ pub fn create_panel(
 ) -> ActiveSettings {
     let preferred_size = settings_size_for(kind);
 
-    if kind == VisualKind::OSCILLOSCOPE {
-        let pane = oscilloscope::create(visual_id, visual_manager);
-        ActiveSettings::new(title, preferred_size, Box::new(pane))
-    } else if kind == VisualKind::SPECTROGRAM {
-        let pane = spectrogram::create(visual_id, visual_manager);
-        ActiveSettings::new(title, preferred_size, Box::new(pane))
-    } else if kind == VisualKind::SPECTRUM {
-        let pane = spectrum::create(visual_id, visual_manager);
-        ActiveSettings::new(title, preferred_size, Box::new(pane))
-    } else if kind == VisualKind::WAVEFORM {
-        let pane = waveform::create(visual_id, visual_manager);
-        ActiveSettings::new(title, preferred_size, Box::new(pane))
-    } else {
-        ActiveSettings::unsupported(title, visual_id, kind)
-    }
+    let pane: Box<dyn ModuleSettingsPane> = match kind {
+        VisualKind::OSCILLOSCOPE => Box::new(oscilloscope::create(visual_id, visual_manager)),
+        VisualKind::SPECTROGRAM => Box::new(spectrogram::create(visual_id, visual_manager)),
+        VisualKind::SPECTRUM => Box::new(spectrum::create(visual_id, visual_manager)),
+        VisualKind::WAVEFORM => Box::new(waveform::create(visual_id, visual_manager)),
+        _ => return ActiveSettings::unsupported(title, visual_id, kind),
+    };
+
+    ActiveSettings::new(title, preferred_size, pane)
 }
 
 fn settings_size_for(kind: VisualKind) -> Size {
-    if kind == VisualKind::OSCILLOSCOPE {
-        OSCILLOSCOPE_SETTINGS_SIZE
-    } else if kind == VisualKind::SPECTROGRAM {
-        SPECTROGRAM_SETTINGS_SIZE
-    } else if kind == VisualKind::SPECTRUM {
-        SPECTRUM_SETTINGS_SIZE
-    } else if kind == VisualKind::WAVEFORM {
-        WAVEFORM_SETTINGS_SIZE
-    } else {
-        DEFAULT_UNSUPPORTED_SIZE
+    match kind {
+        VisualKind::OSCILLOSCOPE => OSCILLOSCOPE_SETTINGS_SIZE,
+        VisualKind::SPECTROGRAM => SPECTROGRAM_SETTINGS_SIZE,
+        VisualKind::SPECTRUM => SPECTRUM_SETTINGS_SIZE,
+        VisualKind::WAVEFORM => WAVEFORM_SETTINGS_SIZE,
+        _ => DEFAULT_UNSUPPORTED_SIZE,
     }
 }
 

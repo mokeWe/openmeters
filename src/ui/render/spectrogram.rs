@@ -44,17 +44,25 @@ impl ColumnBufferPool {
 
     pub fn acquire(&self, len: usize) -> Vec<f32> {
         let mut buffers = self.buffers.lock().unwrap();
-        let mut buffer = buffers.pop().unwrap_or_else(|| Vec::with_capacity(len));
-        if buffer.capacity() < len {
-            buffer.reserve(len - buffer.capacity());
-        }
-        buffer.resize(len, 0.0);
-        buffer
+        buffers
+            .pop()
+            .map(|mut buffer| {
+                buffer.clear();
+                buffer.resize(len, 0.0);
+                buffer
+            })
+            .unwrap_or_else(|| vec![0.0; len])
     }
 
     pub fn release(&self, mut buffer: Vec<f32>) {
         buffer.clear();
         self.buffers.lock().unwrap().push(buffer);
+    }
+}
+
+impl Default for ColumnBufferPool {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -105,13 +113,14 @@ impl SpectrogramPrimitive {
         let height = logical_size.height.max(1.0);
         let scale_x = 2.0 / width;
         let scale_y = 2.0 / height;
-        let to_clip = |x: f32, y: f32| [x * scale_x - 1.0, 1.0 - y * scale_y];
-        let bounds = self.params.bounds;
 
+        let bounds = self.params.bounds;
         let left = bounds.x;
         let right = bounds.x + bounds.width.max(1.0);
         let top = bounds.y;
         let bottom = bounds.y + bounds.height.max(1.0);
+
+        let to_clip = |x: f32, y: f32| -> [f32; 2] { [x * scale_x - 1.0, 1.0 - y * scale_y] };
 
         [
             Vertex {
@@ -838,12 +847,14 @@ fn write_column(
 }
 
 fn populate_palette_lut(palette: &[[f32; 4]; SPECTROGRAM_PALETTE_SIZE]) -> Vec<u8> {
-    let mut data = vec![0u8; (PALETTE_LUT_SIZE as usize) * 4];
+    let size = PALETTE_LUT_SIZE as usize;
+    let mut data = vec![0u8; size * 4];
+
     if PALETTE_LUT_SIZE == 0 {
         return data;
     }
 
-    let max_index = (PALETTE_LUT_SIZE.saturating_sub(1)) as f32;
+    let max_index = (PALETTE_LUT_SIZE - 1) as f32;
     let segments = (SPECTROGRAM_PALETTE_SIZE - 1) as f32;
 
     for (i, chunk) in data.chunks_exact_mut(4).enumerate() {
@@ -852,16 +863,14 @@ fn populate_palette_lut(palette: &[[f32; 4]; SPECTROGRAM_PALETTE_SIZE]) -> Vec<u
         } else {
             i as f32 / max_index
         };
-
         let scaled = t * segments;
         let index = scaled.floor() as usize;
         let next = (index + 1).min(SPECTROGRAM_PALETTE_SIZE - 1);
         let frac = scaled - index as f32;
 
         for (channel, byte) in chunk.iter_mut().enumerate() {
-            let start = palette[index][channel];
-            let stop = palette[next][channel];
-            let value = start + (stop - start) * frac;
+            let value =
+                palette[index][channel] + (palette[next][channel] - palette[index][channel]) * frac;
             *byte = (value.clamp(0.0, 1.0) * 255.0).round() as u8;
         }
     }

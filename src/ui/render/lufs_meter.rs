@@ -20,7 +20,6 @@ const VALUE_SCALE_BASE: &[(f32, f32)] = &[
 ];
 
 const VALUE_SCALE_EXPONENT: f32 = 1.1;
-const GUIDE_LINE_THICKNESS: f32 = 1.0;
 
 const INNER_FILL_GAP_RATIO: f32 = 0.09;
 
@@ -86,24 +85,27 @@ impl VisualParams {
 
     pub fn meter_ratio(&self, value: f32) -> f32 {
         let raw = self.clamp_ratio(value);
-        if raw <= 0.0 || raw >= 1.0 {
-            return raw.clamp(0.0, 1.0);
+        if raw <= 0.0 {
+            return 0.0;
+        }
+        if raw >= 1.0 {
+            return 1.0;
         }
 
         let shaped = raw.powf(VALUE_SCALE_EXPONENT);
         let bias = self.value_scale_bias.clamp(0.0, 1.0);
-        let upper_index = VALUE_SCALE_BASE
-            .partition_point(|&(ratio, _)| ratio < shaped)
+        let upper_idx = VALUE_SCALE_BASE
+            .partition_point(|&(r, _)| r < shaped)
             .min(VALUE_SCALE_BASE.len() - 1);
-        let lower_index = upper_index.saturating_sub(1);
-        let prev = VALUE_SCALE_BASE[lower_index];
-        let next = VALUE_SCALE_BASE[upper_index];
-        let span = (next.0 - prev.0).max(f32::EPSILON);
-        let t = ((shaped - prev.0) / span).clamp(0.0, 1.0);
+        let lower_idx = upper_idx.saturating_sub(1);
+        let (r0, v0) = VALUE_SCALE_BASE[lower_idx];
+        let (r1, v1) = VALUE_SCALE_BASE[upper_idx];
+        let span = (r1 - r0).max(f32::EPSILON);
+        let t = ((shaped - r0) / span).clamp(0.0, 1.0);
         let smooth_t = t * t * (3.0 - 2.0 * t);
-        let prev_target = lerp(prev.0, prev.1, bias);
-        let next_target = lerp(next.0, next.1, bias);
-        lerp(prev_target, next_target, smooth_t)
+        let target0 = lerp(r0, v0, bias);
+        let target1 = lerp(r1, v1, bias);
+        lerp(target0, target1, smooth_t)
     }
 
     pub fn vertical_bounds(&self, bounds: &Rectangle) -> Option<(f32, f32)> {
@@ -261,12 +263,12 @@ impl LayoutContext {
     }
 
     fn estimate_vertex_count(&self, params: &VisualParams) -> usize {
-        let channel_vertices = params
+        params
             .channels
             .iter()
-            .map(|channel| 6 + channel.fills.len() * 6)
-            .sum::<usize>();
-        channel_vertices + params.guides.len() * 6
+            .map(|ch| 6 + ch.fills.len() * 6)
+            .sum::<usize>()
+            + params.guides.len() * 6
     }
 
     fn bar_span(&self, index: usize) -> (f32, f32) {
@@ -299,7 +301,7 @@ impl LayoutContext {
             }
 
             let inner_gap = Self::inner_gap(bar_width, fill_count);
-            let total_gap = inner_gap * (fill_count.saturating_sub(1) as f32);
+            let total_gap = inner_gap * fill_count.saturating_sub(1) as f32;
             let available_width = (bar_width - total_gap).max(0.0);
             if available_width <= f32::EPSILON {
                 continue;
@@ -330,36 +332,25 @@ impl LayoutContext {
         }
 
         let desired_gap = bar_width * INNER_FILL_GAP_RATIO;
-        let max_gap = (bar_width * 0.4).max(0.0);
-        if max_gap <= f32::EPSILON {
-            return 0.0;
-        }
-
+        let max_gap = bar_width * 0.4;
         let min_gap = 0.5f32.min(max_gap);
         desired_gap.clamp(min_gap, max_gap)
     }
 
     fn push_guide_vertices(&self, vertices: &mut Vec<Vertex>, params: &VisualParams) {
-        if params.guides.is_empty() {
-            return;
-        }
-
         let anchor_x = self.x0 - params.guide_padding;
         for guide in &params.guides {
-            let ratio = params.meter_ratio(guide.value_lufs);
-            let center = self.y1 - self.height * ratio;
-            let _ = guide.thickness;
-            let thickness = GUIDE_LINE_THICKNESS;
-            let half = thickness * 0.5;
-            let top = (center - half).clamp(self.y0, self.y1);
-            let bottom = (center + half).clamp(self.y0, self.y1);
-            let start = anchor_x - guide.length;
-            let end = anchor_x;
+            let ratio = params.clamp_ratio(guide.value_lufs);
+            let center_y = self.y1 - self.height * ratio;
+            let half_thick = guide.thickness * 0.5;
+            let top = (center_y - half_thick).clamp(self.y0, self.y1);
+            let bottom = (center_y + half_thick).clamp(self.y0, self.y1);
+            let line_x0 = anchor_x - guide.length;
 
             vertices.extend(quad_vertices(
-                start,
+                line_x0,
                 top,
-                end,
+                anchor_x,
                 bottom,
                 self.clip,
                 guide.color,

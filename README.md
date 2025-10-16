@@ -12,13 +12,23 @@ Checked features are implemented, unchecked features are planned.
 
 - [x] Per-application capture
 - [ ] Per-device capture
-- [x] LUFS and peak metering
-- [x] Oscilloscope
-- [x] spectrogram
+- [x] **loudness**
+  - [x] LUFS
+    - [x] Short-term
+    - [ ] Momentary
+  - [ ] RMS
+    - [ ] Fast
+    - [ ] Slow
+  - [ ] True Peak
+- [x] **oscilloscope**
+  - [ ] XY mode
+- [x] **spectrogram**
   - [x] Reassignment for better low-frequency resolution
-- [x] spectrum analyzer
-- [ ] stereometer
-- [x] waveform visualization
+  - [ ] mel, log, and linear scales
+- [x] **spectrum analyzer**
+  - [ ] mel, log, and linear scales
+- [ ] **stereometer**
+- [x] **waveform**
 - [x] configurability
   - [x] persisted to disk
   - [ ] themes/color schemes

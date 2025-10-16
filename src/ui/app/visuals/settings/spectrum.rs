@@ -26,12 +26,14 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Spec
     let config = visual_manager
         .borrow()
         .module_settings(VisualKind::SPECTRUM)
-        .and_then(|stored| stored.spectrum().cloned())
-        .map_or_else(SpectrumConfig::default, |stored| {
-            let mut config = SpectrumConfig::default();
-            stored.apply_to(&mut config);
-            config
-        });
+        .and_then(|stored| {
+            stored.spectrum().map(|settings| {
+                let mut config = SpectrumConfig::default();
+                settings.apply_to(&mut config);
+                config
+            })
+        })
+        .unwrap_or_default();
 
     let averaging_factor = match config.averaging {
         AveragingMode::Exponential { factor } => factor,
@@ -85,14 +87,11 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
             return;
         };
 
-        let mut changed = false;
-        match msg {
-            Message::FftSize(size) => {
-                if self.config.fft_size != *size {
-                    self.config.fft_size = *size;
-                    self.config.hop_size = (size / 4).max(1);
-                    changed = true;
-                }
+        let changed = match msg {
+            Message::FftSize(size) if self.config.fft_size != *size => {
+                self.config.fft_size = *size;
+                self.config.hop_size = (size / 4).max(1);
+                true
             }
             Message::Averaging(value) => {
                 let clamped = value.clamp(AVERAGING_MIN, AVERAGING_MAX);
@@ -101,23 +100,34 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                     self.config.averaging = AveragingMode::Exponential {
                         factor: self.averaging_factor,
                     };
-                    changed = true;
+                    true
+                } else {
+                    false
                 }
             }
-        }
+            _ => false,
+        };
 
         if changed {
-            let mut module_settings = ModuleSettings::default();
-            module_settings.set_spectrum(SpectrumSettings::from_config(&self.config));
-
-            if visual_manager
-                .borrow_mut()
-                .apply_module_settings(VisualKind::SPECTRUM, &module_settings)
-            {
-                settings.update(|settings| {
-                    settings.set_spectrum_settings(VisualKind::SPECTRUM, &self.config);
-                });
-            }
+            apply_spectrum_config(&self.config, visual_manager, settings);
         }
+    }
+}
+
+fn apply_spectrum_config(
+    config: &SpectrumConfig,
+    visual_manager: &VisualManagerHandle,
+    settings: &SettingsHandle,
+) {
+    let mut module_settings = ModuleSettings::default();
+    module_settings.set_spectrum(SpectrumSettings::from_config(config));
+
+    if visual_manager
+        .borrow_mut()
+        .apply_module_settings(VisualKind::SPECTRUM, &module_settings)
+    {
+        settings.update(|mgr| {
+            mgr.set_spectrum_settings(VisualKind::SPECTRUM, config);
+        });
     }
 }

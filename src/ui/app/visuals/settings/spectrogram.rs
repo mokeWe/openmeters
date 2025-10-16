@@ -8,28 +8,18 @@ use std::fmt;
 
 const FFT_OPTIONS: [usize; 4] = [1024, 2048, 4096, 8192];
 const ZERO_PADDING_OPTIONS: [usize; 3] = [1, 2, 4];
-const HISTORY_MIN: f32 = 120.0;
-const HISTORY_MAX: f32 = 960.0;
-const HISTORY_STEP: f32 = 30.0;
-const REASSIGNMENT_FLOOR_MIN: f32 = -120.0;
-const REASSIGNMENT_FLOOR_MAX: f32 = -30.0;
-const TEMPORAL_SMOOTHING_MIN: f32 = 0.0;
-const TEMPORAL_SMOOTHING_MAX: f32 = 0.99;
-const FREQUENCY_SMOOTHING_MIN: f32 = 0.0;
-const FREQUENCY_SMOOTHING_MAX: f32 = 20.0;
-const REASSIGNMENT_LOW_BIN_MIN: f32 = 0.0;
-const REASSIGNMENT_LOW_BIN_MAX: f32 = 4096.0;
-const SYNCHRO_BINS_MIN: f32 = 64.0;
-const SYNCHRO_BINS_MAX: f32 = 4096.0;
-const SYNCHRO_BINS_STEP: f32 = 64.0;
-const TEMPORAL_MAX_HZ_MIN: f32 = 0.0;
-const TEMPORAL_MAX_HZ_MAX: f32 = 4000.0;
-const TEMPORAL_BLEND_HZ_MIN: f32 = 0.0;
-const TEMPORAL_BLEND_HZ_MAX: f32 = 4000.0;
-const FREQUENCY_MAX_HZ_MIN: f32 = 0.0;
-const FREQUENCY_MAX_HZ_MAX: f32 = 4000.0;
-const FREQUENCY_BLEND_HZ_MIN: f32 = 0.0;
-const FREQUENCY_BLEND_HZ_MAX: f32 = 4000.0;
+
+// Slider ranges: (min, max, step)
+const HISTORY_RANGE: (f32, f32, f32) = (120.0, 960.0, 30.0);
+const REASSIGNMENT_FLOOR_RANGE: (f32, f32, f32) = (-120.0, -30.0, 1.0);
+const REASSIGNMENT_LOW_BIN_RANGE: (f32, f32, f32) = (0.0, 4096.0, 1.0);
+const TEMPORAL_SMOOTHING_RANGE: (f32, f32, f32) = (0.0, 0.99, 0.01);
+const SYNCHRO_BINS_RANGE: (f32, f32, f32) = (64.0, 4096.0, 64.0);
+const TEMPORAL_MAX_HZ_RANGE: (f32, f32, f32) = (0.0, 4000.0, 1.0);
+const TEMPORAL_BLEND_HZ_RANGE: (f32, f32, f32) = (0.0, 4000.0, 1.0);
+const FREQUENCY_SMOOTHING_RANGE: (f32, f32, f32) = (0.0, 20.0, 1.0);
+const FREQUENCY_MAX_HZ_RANGE: (f32, f32, f32) = (0.0, 4000.0, 1.0);
+const FREQUENCY_BLEND_HZ_RANGE: (f32, f32, f32) = (0.0, 4000.0, 1.0);
 
 #[derive(Debug)]
 pub struct SpectrogramSettingsPane {
@@ -66,12 +56,14 @@ pub fn create(
     let config = visual_manager
         .borrow()
         .module_settings(VisualKind::SPECTROGRAM)
-        .and_then(|stored| stored.spectrogram().cloned())
-        .map_or_else(SpectrogramConfig::default, |stored| {
-            let mut config = SpectrogramConfig::default();
-            stored.apply_to(&mut config);
-            config
-        });
+        .and_then(|stored| {
+            stored.spectrogram().map(|settings| {
+                let mut config = SpectrogramConfig::default();
+                settings.apply_to(&mut config);
+                config
+            })
+        })
+        .unwrap_or_default();
 
     let window = WindowPreset::from_kind(config.window);
     let hop_ratio = HopRatio::from_config(config.fft_size, config.hop_size);
@@ -82,6 +74,22 @@ pub fn create(
         window,
         hop_ratio,
     }
+}
+
+// Helper function to create a labeled slider
+fn labeled_slider<'a>(
+    label: &'static str,
+    value: f32,
+    format: String,
+    range: (f32, f32, f32), // (min, max, step)
+    on_change: impl Fn(f32) -> SettingsMessage + 'a,
+) -> iced::widget::Column<'a, SettingsMessage> {
+    let (min, max, step) = range;
+    column![
+        row![text(label), text(format).size(12)].spacing(8),
+        slider::Slider::new(min..=max, value, on_change).step(step),
+    ]
+    .spacing(8)
 }
 
 impl ModuleSettingsPane for SpectrogramSettingsPane {
@@ -108,169 +116,93 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             SettingsMessage::Spectrogram(Message::Window(preset))
         });
 
-        let history_slider = column![
-            row![
-                text("History length"),
-                text(format!("{} columns", self.config.history_length)).size(12)
-            ]
-            .spacing(8),
-            slider::Slider::new(
-                HISTORY_MIN..=HISTORY_MAX,
-                self.config.history_length as f32,
-                |value| SettingsMessage::Spectrogram(Message::HistoryLength(value)),
-            )
-            .step(HISTORY_STEP),
-        ]
-        .spacing(8);
+        let history_slider = labeled_slider(
+            "History length",
+            self.config.history_length as f32,
+            format!("{} columns", self.config.history_length),
+            HISTORY_RANGE,
+            |value| SettingsMessage::Spectrogram(Message::HistoryLength(value)),
+        );
 
-        let reassignment_floor = column![
-            row![
-                text("Reassignment floor"),
-                text(format!("{:.0} dB", self.config.reassignment_power_floor_db)).size(12)
-            ]
-            .spacing(8),
-            slider::Slider::new(
-                REASSIGNMENT_FLOOR_MIN..=REASSIGNMENT_FLOOR_MAX,
-                self.config.reassignment_power_floor_db,
-                |value| SettingsMessage::Spectrogram(Message::ReassignmentFloor(value)),
-            )
-            .step(1.0),
-        ]
-        .spacing(8);
+        let reassignment_floor = labeled_slider(
+            "Reassignment floor",
+            self.config.reassignment_power_floor_db,
+            format!("{:.0} dB", self.config.reassignment_power_floor_db),
+            REASSIGNMENT_FLOOR_RANGE,
+            |value| SettingsMessage::Spectrogram(Message::ReassignmentFloor(value)),
+        );
 
-        let reassignment_low_bin = column![
-            row![
-                text("Reassignment low-bin limit"),
-                text(format!("{} bins", self.config.reassignment_low_bin_limit)).size(12)
-            ]
-            .spacing(8),
-            slider::Slider::new(
-                REASSIGNMENT_LOW_BIN_MIN..=REASSIGNMENT_LOW_BIN_MAX,
-                self.config.reassignment_low_bin_limit as f32,
-                |value| {
-                    let bins = value
-                        .round()
-                        .clamp(REASSIGNMENT_LOW_BIN_MIN, REASSIGNMENT_LOW_BIN_MAX)
-                        as usize;
-                    SettingsMessage::Spectrogram(Message::ReassignmentLowBinLimit(bins))
-                },
-            )
-            .step(1.0),
-        ]
-        .spacing(8);
+        let reassignment_low_bin = labeled_slider(
+            "Reassignment low-bin limit",
+            self.config.reassignment_low_bin_limit as f32,
+            format!("{} bins", self.config.reassignment_low_bin_limit),
+            REASSIGNMENT_LOW_BIN_RANGE,
+            |value| {
+                let (min, max, _) = REASSIGNMENT_LOW_BIN_RANGE;
+                let bins = value.round().clamp(min, max) as usize;
+                SettingsMessage::Spectrogram(Message::ReassignmentLowBinLimit(bins))
+            },
+        );
 
-        let temporal_smoothing = column![
-            row![
-                text("Temporal smoothing"),
-                text(format!("{:.2}", self.config.temporal_smoothing)).size(12)
-            ]
-            .spacing(8),
-            slider::Slider::new(
-                TEMPORAL_SMOOTHING_MIN..=TEMPORAL_SMOOTHING_MAX,
-                self.config.temporal_smoothing,
-                |value| SettingsMessage::Spectrogram(Message::TemporalSmoothing(value)),
-            )
-            .step(0.01),
-        ]
-        .spacing(8);
+        let temporal_smoothing = labeled_slider(
+            "Temporal smoothing",
+            self.config.temporal_smoothing,
+            format!("{:.2}", self.config.temporal_smoothing),
+            TEMPORAL_SMOOTHING_RANGE,
+            |value| SettingsMessage::Spectrogram(Message::TemporalSmoothing(value)),
+        );
 
-        let synchro_bins = column![
-            row![
-                text("Synchrosqueezing bins"),
-                text(format!("{} bins", self.config.synchrosqueezing_bin_count)).size(12)
-            ]
-            .spacing(8),
-            slider::Slider::new(
-                SYNCHRO_BINS_MIN..=SYNCHRO_BINS_MAX,
-                self.config.synchrosqueezing_bin_count as f32,
-                |value| {
-                    let bins = (value / SYNCHRO_BINS_STEP).round() * SYNCHRO_BINS_STEP;
-                    let bins = bins.clamp(SYNCHRO_BINS_MIN, SYNCHRO_BINS_MAX) as usize;
-                    SettingsMessage::Spectrogram(Message::SynchroBinCount(bins))
-                },
-            )
-            .step(SYNCHRO_BINS_STEP),
-        ]
-        .spacing(8);
+        let synchro_bins = labeled_slider(
+            "Synchrosqueezing bins",
+            self.config.synchrosqueezing_bin_count as f32,
+            format!("{} bins", self.config.synchrosqueezing_bin_count),
+            SYNCHRO_BINS_RANGE,
+            |value| {
+                let (min, max, step) = SYNCHRO_BINS_RANGE;
+                let bins = ((value / step).round() * step).clamp(min, max) as usize;
+                SettingsMessage::Spectrogram(Message::SynchroBinCount(bins))
+            },
+        );
 
-        let temporal_smoothing_max = column![
-            row![
-                text("Temporal smoothing max"),
-                text(format!("{:.0} Hz", self.config.temporal_smoothing_max_hz)).size(12)
-            ]
-            .spacing(8),
-            slider::Slider::new(
-                TEMPORAL_MAX_HZ_MIN..=TEMPORAL_MAX_HZ_MAX,
-                self.config.temporal_smoothing_max_hz,
-                |value| SettingsMessage::Spectrogram(Message::TemporalSmoothingMaxHz(value)),
-            )
-            .step(1.0),
-        ]
-        .spacing(8);
+        let temporal_smoothing_max = labeled_slider(
+            "Temporal smoothing max",
+            self.config.temporal_smoothing_max_hz,
+            format!("{:.0} Hz", self.config.temporal_smoothing_max_hz),
+            TEMPORAL_MAX_HZ_RANGE,
+            |value| SettingsMessage::Spectrogram(Message::TemporalSmoothingMaxHz(value)),
+        );
 
-        let temporal_smoothing_blend = column![
-            row![
-                text("Temporal smoothing blend"),
-                text(format!("{:.0} Hz", self.config.temporal_smoothing_blend_hz)).size(12)
-            ]
-            .spacing(8),
-            slider::Slider::new(
-                TEMPORAL_BLEND_HZ_MIN..=TEMPORAL_BLEND_HZ_MAX,
-                self.config.temporal_smoothing_blend_hz,
-                |value| SettingsMessage::Spectrogram(Message::TemporalSmoothingBlendHz(value)),
-            )
-            .step(1.0),
-        ]
-        .spacing(8);
+        let temporal_smoothing_blend = labeled_slider(
+            "Temporal smoothing blend",
+            self.config.temporal_smoothing_blend_hz,
+            format!("{:.0} Hz", self.config.temporal_smoothing_blend_hz),
+            TEMPORAL_BLEND_HZ_RANGE,
+            |value| SettingsMessage::Spectrogram(Message::TemporalSmoothingBlendHz(value)),
+        );
 
-        let frequency_smoothing = column![
-            row![
-                text("Frequency smoothing"),
-                text(format!("{} bins", self.config.frequency_smoothing_radius)).size(12)
-            ]
-            .spacing(8),
-            slider::Slider::new(
-                FREQUENCY_SMOOTHING_MIN..=FREQUENCY_SMOOTHING_MAX,
-                self.config.frequency_smoothing_radius as f32,
-                |value| SettingsMessage::Spectrogram(Message::FrequencySmoothing(value)),
-            )
-            .step(1.0),
-        ]
-        .spacing(8);
+        let frequency_smoothing = labeled_slider(
+            "Frequency smoothing",
+            self.config.frequency_smoothing_radius as f32,
+            format!("{} bins", self.config.frequency_smoothing_radius),
+            FREQUENCY_SMOOTHING_RANGE,
+            |value| SettingsMessage::Spectrogram(Message::FrequencySmoothing(value)),
+        );
 
-        let frequency_smoothing_max = column![
-            row![
-                text("Frequency smoothing max"),
-                text(format!("{:.0} Hz", self.config.frequency_smoothing_max_hz)).size(12)
-            ]
-            .spacing(8),
-            slider::Slider::new(
-                FREQUENCY_MAX_HZ_MIN..=FREQUENCY_MAX_HZ_MAX,
-                self.config.frequency_smoothing_max_hz,
-                |value| SettingsMessage::Spectrogram(Message::FrequencySmoothingMaxHz(value)),
-            )
-            .step(1.0),
-        ]
-        .spacing(8);
+        let frequency_smoothing_max = labeled_slider(
+            "Frequency smoothing max",
+            self.config.frequency_smoothing_max_hz,
+            format!("{:.0} Hz", self.config.frequency_smoothing_max_hz),
+            FREQUENCY_MAX_HZ_RANGE,
+            |value| SettingsMessage::Spectrogram(Message::FrequencySmoothingMaxHz(value)),
+        );
 
-        let frequency_smoothing_blend = column![
-            row![
-                text("Frequency smoothing blend"),
-                text(format!(
-                    "{:.0} Hz",
-                    self.config.frequency_smoothing_blend_hz
-                ))
-                .size(12)
-            ]
-            .spacing(8),
-            slider::Slider::new(
-                FREQUENCY_BLEND_HZ_MIN..=FREQUENCY_BLEND_HZ_MAX,
-                self.config.frequency_smoothing_blend_hz,
-                |value| SettingsMessage::Spectrogram(Message::FrequencySmoothingBlendHz(value)),
-            )
-            .step(1.0),
-        ]
-        .spacing(8);
+        let frequency_smoothing_blend = labeled_slider(
+            "Frequency smoothing blend",
+            self.config.frequency_smoothing_blend_hz,
+            format!("{:.0} Hz", self.config.frequency_smoothing_blend_hz),
+            FREQUENCY_BLEND_HZ_RANGE,
+            |value| SettingsMessage::Spectrogram(Message::FrequencySmoothingBlendHz(value)),
+        );
 
         column![
             row![
@@ -332,8 +264,8 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                 }
             }
             Message::HistoryLength(value) => {
-                let columns = (value / HISTORY_STEP).round() * HISTORY_STEP;
-                let columns = columns.clamp(HISTORY_MIN, HISTORY_MAX) as usize;
+                let (min, max, step) = HISTORY_RANGE;
+                let columns = ((value / step).round() * step).clamp(min, max) as usize;
                 if self.config.history_length != columns {
                     self.config.history_length = columns;
                     changed = true;
@@ -353,7 +285,8 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                 }
             }
             Message::ReassignmentFloor(value) => {
-                let clamped = value.clamp(REASSIGNMENT_FLOOR_MIN, REASSIGNMENT_FLOOR_MAX);
+                let (min, max, _) = REASSIGNMENT_FLOOR_RANGE;
+                let clamped = value.clamp(min, max);
                 if (self.config.reassignment_power_floor_db - clamped).abs() > f32::EPSILON {
                     self.config.reassignment_power_floor_db = clamped;
                     changed = true;
@@ -384,44 +317,48 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                 }
             }
             Message::TemporalSmoothing(value) => {
-                let clamped = value.clamp(TEMPORAL_SMOOTHING_MIN, TEMPORAL_SMOOTHING_MAX);
+                let (min, max, _) = TEMPORAL_SMOOTHING_RANGE;
+                let clamped = value.clamp(min, max);
                 if (self.config.temporal_smoothing - clamped).abs() > f32::EPSILON {
                     self.config.temporal_smoothing = clamped;
                     changed = true;
                 }
             }
             Message::TemporalSmoothingMaxHz(value) => {
-                let clamped = value.clamp(TEMPORAL_MAX_HZ_MIN, TEMPORAL_MAX_HZ_MAX);
+                let (min, max, _) = TEMPORAL_MAX_HZ_RANGE;
+                let clamped = value.clamp(min, max);
                 if (self.config.temporal_smoothing_max_hz - clamped).abs() > f32::EPSILON {
                     self.config.temporal_smoothing_max_hz = clamped;
                     changed = true;
                 }
             }
             Message::TemporalSmoothingBlendHz(value) => {
-                let clamped = value.clamp(TEMPORAL_BLEND_HZ_MIN, TEMPORAL_BLEND_HZ_MAX);
+                let (min, max, _) = TEMPORAL_BLEND_HZ_RANGE;
+                let clamped = value.clamp(min, max);
                 if (self.config.temporal_smoothing_blend_hz - clamped).abs() > f32::EPSILON {
                     self.config.temporal_smoothing_blend_hz = clamped;
                     changed = true;
                 }
             }
             Message::FrequencySmoothing(value) => {
-                let radius = value
-                    .clamp(FREQUENCY_SMOOTHING_MIN, FREQUENCY_SMOOTHING_MAX)
-                    .round() as usize;
+                let (min, max, _) = FREQUENCY_SMOOTHING_RANGE;
+                let radius = value.clamp(min, max).round() as usize;
                 if self.config.frequency_smoothing_radius != radius {
                     self.config.frequency_smoothing_radius = radius;
                     changed = true;
                 }
             }
             Message::FrequencySmoothingMaxHz(value) => {
-                let clamped = value.clamp(FREQUENCY_MAX_HZ_MIN, FREQUENCY_MAX_HZ_MAX);
+                let (min, max, _) = FREQUENCY_MAX_HZ_RANGE;
+                let clamped = value.clamp(min, max);
                 if (self.config.frequency_smoothing_max_hz - clamped).abs() > f32::EPSILON {
                     self.config.frequency_smoothing_max_hz = clamped;
                     changed = true;
                 }
             }
             Message::FrequencySmoothingBlendHz(value) => {
-                let clamped = value.clamp(FREQUENCY_BLEND_HZ_MIN, FREQUENCY_BLEND_HZ_MAX);
+                let (min, max, _) = FREQUENCY_BLEND_HZ_RANGE;
+                let clamped = value.clamp(min, max);
                 if (self.config.frequency_smoothing_blend_hz - clamped).abs() > f32::EPSILON {
                     self.config.frequency_smoothing_blend_hz = clamped;
                     changed = true;

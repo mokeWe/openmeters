@@ -3,35 +3,26 @@
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
 pub const MIN_SCROLL_SPEED: f32 = 10.0;
 pub const MAX_SCROLL_SPEED: f32 = 1000.0;
-pub const DEFAULT_SCROLL_SPEED: f32 = 80.0;
+const DEFAULT_SCROLL_SPEED: f32 = 80.0;
 pub const MIN_COLUMN_CAPACITY: usize = 512;
 pub const MAX_COLUMN_CAPACITY: usize = 16_384;
 pub const DEFAULT_COLUMN_CAPACITY: usize = 4_096;
 const MIN_FREQUENCY_HZ: f32 = 20.0;
 const MAX_FREQUENCY_HZ: f32 = 20_000.0;
-const RAW_HISTORY_SECONDS: f32 = 0.5;
-const RAW_HISTORY_MIN_FRAMES: usize = 2_048;
-const RAW_HISTORY_MAX_FRAMES: usize = 65_536;
 
-/// Strategy used to downsample the waveform when pixel budget is limited.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum DownsampleStrategy {
-    /// Keep min/max values per bucket (preserves peaks).
     #[default]
     MinMax,
-    /// Simple averaging (cheaper but can hide transients).
     Average,
 }
 
-/// Configuration for the waveform preview.
 #[derive(Debug, Clone, Copy)]
 pub struct WaveformConfig {
     pub sample_rate: f32,
-    /// How quickly the waveform scrolls, expressed as columns per second.
     pub scroll_speed: f32,
     pub downsample: DownsampleStrategy,
     pub max_columns: usize,
@@ -48,36 +39,91 @@ impl Default for WaveformConfig {
     }
 }
 
-/// Preview column describing in-flight samples that have not yet been committed.
 #[derive(Debug, Clone, Default)]
 pub struct WaveformPreview {
     pub progress: f32,
-    pub min_values: Arc<Vec<f32>>,
-    pub max_values: Arc<Vec<f32>>,
+    pub min_values: Vec<f32>,
+    pub max_values: Vec<f32>,
     pub frequency_normalized: f32,
 }
 
-/// Snapshot storing resampled waveform data.
 #[derive(Debug, Clone, Default)]
 pub struct WaveformSnapshot {
     pub channels: usize,
     pub columns: usize,
-    pub min_values: Arc<Vec<f32>>,
-    pub max_values: Arc<Vec<f32>>,
-    pub frequency_normalized: Arc<Vec<f32>>,
+    pub min_values: Vec<f32>,
+    pub max_values: Vec<f32>,
+    pub frequency_normalized: Vec<f32>,
     pub column_spacing_seconds: f32,
     pub scroll_position: f32,
     pub downsample: DownsampleStrategy,
     pub preview: WaveformPreview,
-    pub raw: RawWaveform,
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct RawWaveform {
-    pub channels: usize,
-    pub frames: usize,
-    pub sample_rate: f32,
-    pub samples: Arc<Vec<f32>>,
+#[derive(Debug, Clone, Copy, Default)]
+struct ChannelAccumulator {
+    min: f32,
+    max: f32,
+    sum: f32,
+    sum_squares: f32,
+}
+
+impl ChannelAccumulator {
+    fn reset(&mut self) {
+        *self = Self {
+            min: f32::MAX,
+            max: f32::MIN,
+            sum: 0.0,
+            sum_squares: 0.0,
+        };
+    }
+
+    fn accumulate(&mut self, sample: f32) {
+        self.min = self.min.min(sample);
+        self.max = self.max.max(sample);
+        self.sum += sample;
+        self.sum_squares += sample * sample;
+    }
+
+    fn compute_range(&self, sample_count: usize, use_average: bool) -> (f32, f32) {
+        if sample_count == 0 {
+            return (0.0, 0.0);
+        }
+
+        let count = sample_count as f32;
+        let mean = self.sum / count;
+
+        if use_average {
+            let variance = ((self.sum_squares / count) - mean * mean).max(0.0);
+            let amplitude = variance.sqrt();
+            (mean - amplitude, mean + amplitude)
+        } else {
+            let min = if self.min == f32::MAX { 0.0 } else { self.min };
+            let max = if self.max == f32::MIN { 0.0 } else { self.max };
+            (min, max)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Prefilter {
+    prev1: f32,
+    prev2: f32,
+    initialized: bool,
+}
+
+impl Prefilter {
+    fn process(&mut self, sample: f32) -> f32 {
+        if !self.initialized {
+            self.prev1 = sample;
+            self.prev2 = sample;
+            self.initialized = true;
+        }
+        let filtered = self.prev2 * 0.25 + self.prev1 * 0.5 + sample * 0.25;
+        self.prev2 = self.prev1;
+        self.prev1 = sample;
+        filtered
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -93,129 +139,16 @@ pub struct WaveformProcessor {
     column_count: usize,
     write_column: usize,
     total_columns_written: u64,
-    current_min: Vec<f32>,
-    current_max: Vec<f32>,
-    current_sum: Vec<f32>,
-    current_sum_squares: Vec<f32>,
-    current_samples: usize,
-    current_crossing_count: usize,
+    accumulators: Vec<ChannelAccumulator>,
+    sample_count: usize,
+    crossing_count: usize,
     first_crossing_time: Option<f64>,
     last_crossing_time: Option<f64>,
-    bucket_prev_sample: Option<f32>,
-    bucket_prev_time: f64,
-    prefilters: Vec<PrefilterState>,
-    track_average: bool,
-    last_snapshot_write_column: usize,
-    last_snapshot_column_count: usize,
-    preview_update_stride: usize,
-    samples_since_preview_update: usize,
-    raw_history_capacity: usize,
-    raw_history: Vec<RawChannelHistory>,
-}
-
-#[derive(Debug, Clone)]
-struct RawChannelHistory {
-    samples: Vec<f32>,
-    write_pos: usize,
-    len: usize,
-}
-
-impl RawChannelHistory {
-    fn new(capacity: usize) -> Self {
-        Self {
-            samples: vec![0.0; capacity],
-            write_pos: 0,
-            len: 0,
-        }
-    }
-
-    fn capacity(&self) -> usize {
-        self.samples.len()
-    }
-
-    fn ensure_capacity(&mut self, capacity: usize) {
-        if self.capacity() == capacity {
-            return;
-        }
-
-        let mut resized = RawChannelHistory::new(capacity);
-        let keep = self.len.min(capacity);
-        let start = self.start_index();
-        for i in 0..keep {
-            let idx = (start + i) % self.capacity();
-            resized.samples[i] = self.samples[idx];
-        }
-        resized.write_pos = keep % capacity.max(1);
-        resized.len = keep;
-        *self = resized;
-    }
-
-    fn clear(&mut self) {
-        self.samples.fill(0.0);
-        self.write_pos = 0;
-        self.len = 0;
-    }
-
-    fn push(&mut self, sample: f32) {
-        if self.samples.is_empty() {
-            return;
-        }
-        self.samples[self.write_pos] = sample;
-        self.write_pos = (self.write_pos + 1) % self.capacity();
-        if self.len < self.capacity() {
-            self.len += 1;
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.len
-    }
-
-    fn start_index(&self) -> usize {
-        if self.len >= self.capacity() {
-            self.write_pos
-        } else if self.capacity() == 0 {
-            0
-        } else {
-            (self.write_pos + self.capacity() - self.len) % self.capacity()
-        }
-    }
-
-    fn write_interleaved(&self, dest: &mut [f32], channels: usize, channel_index: usize) {
-        if self.len == 0 {
-            return;
-        }
-
-        let mut index = self.start_index();
-        let cap = self.capacity().max(1);
-        for frame in 0..self.len {
-            let dest_index = frame * channels + channel_index;
-            dest[dest_index] = self.samples[index];
-            index = (index + 1) % cap;
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-struct PrefilterState {
-    prev1: f32,
-    prev2: f32,
-    initialized: bool,
-}
-
-impl PrefilterState {
-    fn filter(&mut self, sample: f32) -> f32 {
-        if !self.initialized {
-            self.prev1 = sample;
-            self.prev2 = sample;
-            self.initialized = true;
-        }
-
-        let filtered = self.prev2 * 0.25 + self.prev1 * 0.5 + sample * 0.25;
-        self.prev2 = self.prev1;
-        self.prev1 = sample;
-        filtered
-    }
+    prev_sample: Option<f32>,
+    prev_time: f64,
+    prefilters: Vec<Prefilter>,
+    use_average: bool,
+    snapshot_dirty: bool,
 }
 
 impl WaveformProcessor {
@@ -225,7 +158,7 @@ impl WaveformProcessor {
             config: clamped,
             snapshot: WaveformSnapshot::default(),
             channels: 2,
-            column_period_seconds: calculate_column_period_seconds(&clamped),
+            column_period_seconds: column_period_seconds(&clamped),
             bucket_elapsed_seconds: 0.0,
             min_columns: Vec::new(),
             max_columns: Vec::new(),
@@ -233,24 +166,16 @@ impl WaveformProcessor {
             column_count: 0,
             write_column: 0,
             total_columns_written: 0,
-            current_min: Vec::new(),
-            current_max: Vec::new(),
-            current_sum: Vec::new(),
-            current_sum_squares: Vec::new(),
-            current_samples: 0,
-            current_crossing_count: 0,
+            accumulators: Vec::new(),
+            sample_count: 0,
+            crossing_count: 0,
             first_crossing_time: None,
             last_crossing_time: None,
-            bucket_prev_sample: None,
-            bucket_prev_time: 0.0,
+            prev_sample: None,
+            prev_time: 0.0,
             prefilters: Vec::new(),
-            track_average: clamped.downsample == DownsampleStrategy::Average,
-            last_snapshot_write_column: 0,
-            last_snapshot_column_count: 0,
-            preview_update_stride: 1,
-            samples_since_preview_update: 0,
-            raw_history_capacity: 0,
-            raw_history: Vec::new(),
+            use_average: clamped.downsample == DownsampleStrategy::Average,
+            snapshot_dirty: false,
         };
         processor.rebuild_for_config();
         processor
@@ -264,73 +189,40 @@ impl WaveformProcessor {
         &self.snapshot
     }
 
-    fn target_columns(&self) -> usize {
-        self.config.max_columns.max(1)
-    }
-
-    fn nominal_frames_per_column(&self) -> f32 {
-        nominal_frames_per_column(&self.config)
-    }
-
-    fn update_preview_stride(&mut self) {
-        let nominal_frames = self.nominal_frames_per_column();
-        let stride = (nominal_frames / 4.0).round() as usize;
-        self.preview_update_stride = stride.max(1);
-    }
-
     fn rebuild_for_config(&mut self) {
-        self.track_average = self.config.downsample == DownsampleStrategy::Average;
-        self.column_period_seconds = calculate_column_period_seconds(&self.config);
-        self.update_preview_stride();
+        self.use_average = self.config.downsample == DownsampleStrategy::Average;
+        self.column_period_seconds = column_period_seconds(&self.config);
         self.resize_columns();
         self.bucket_elapsed_seconds = 0.0;
-        self.reset_current_bucket();
-        self.ensure_raw_history();
-        self.populate_snapshot();
+        self.reset_bucket();
     }
 
     fn resize_columns(&mut self) {
         let channels = self.channels.max(1);
-        let capacity = self.target_columns();
-        let total = channels * capacity;
+        let capacity = self.config.max_columns.max(1);
 
-        self.min_columns = vec![0.0; total];
-        self.max_columns = vec![0.0; total];
+        self.min_columns = vec![0.0; channels * capacity];
+        self.max_columns = vec![0.0; channels * capacity];
         self.freq_columns = vec![0.0; capacity];
         self.column_count = 0;
         self.write_column = 0;
         self.total_columns_written = 0;
-        self.bucket_prev_sample = None;
-        self.bucket_prev_time = 0.0;
-        self.bucket_elapsed_seconds = 0.0;
-        self.prefilters.resize(channels, PrefilterState::default());
-
-        self.reset_current_bucket();
-        self.ensure_raw_history();
+        self.prefilters.resize(channels, Prefilter::default());
+        self.reset_bucket();
     }
 
-    fn ensure_raw_history(&mut self) {
-        let channels = self.channels.max(1);
-        let target_capacity = self.compute_raw_history_capacity();
-
-        if self.raw_history_capacity != target_capacity || self.raw_history.len() != channels {
-            self.raw_history_capacity = target_capacity;
-            self.raw_history = (0..channels)
-                .map(|_| RawChannelHistory::new(target_capacity))
-                .collect();
-        } else {
-            for history in &mut self.raw_history {
-                history.ensure_capacity(target_capacity);
-            }
+    fn reset_bucket(&mut self) {
+        self.accumulators
+            .resize(self.channels, ChannelAccumulator::default());
+        for acc in &mut self.accumulators {
+            acc.reset();
         }
-    }
-
-    fn compute_raw_history_capacity(&self) -> usize {
-        let sample_rate = self.config.sample_rate.max(1.0);
-        let frames_from_seconds = (sample_rate * RAW_HISTORY_SECONDS).ceil() as usize;
-        let min_frames = RAW_HISTORY_MIN_FRAMES;
-        let max_frames = RAW_HISTORY_MAX_FRAMES;
-        frames_from_seconds.max(min_frames).min(max_frames).max(1)
+        self.sample_count = 0;
+        self.crossing_count = 0;
+        self.first_crossing_time = None;
+        self.last_crossing_time = None;
+        self.prev_sample = None;
+        self.prev_time = 0.0;
     }
 
     fn adjust_capacity(&mut self, old_capacity: usize, new_capacity: usize) {
@@ -338,53 +230,48 @@ impl WaveformProcessor {
             return;
         }
 
-        let new_capacity = new_capacity.max(1);
         let channels = self.channels.max(1);
+        let new_cap = new_capacity.max(1);
         let stored = self.column_count.min(old_capacity);
-        let keep = stored.min(new_capacity);
+        let keep = stored.min(new_cap);
 
-        let mut new_min = vec![0.0; channels * new_capacity];
-        let mut new_max = vec![0.0; channels * new_capacity];
-        let mut new_freq = vec![0.0; new_capacity];
+        let mut new_min = vec![0.0; channels * new_cap];
+        let mut new_max = vec![0.0; channels * new_cap];
+        let mut new_freq = vec![0.0; new_cap];
 
         if keep > 0 {
-            let continuous = stored < old_capacity;
-            let start_index = if continuous {
-                stored.saturating_sub(keep)
-            } else {
+            let ring_wrap = stored >= old_capacity;
+            let start = if ring_wrap {
                 (self.write_column + old_capacity - keep) % old_capacity
+            } else {
+                stored.saturating_sub(keep)
             };
 
-            for (channel, (dest_min_chunk, dest_max_chunk)) in new_min
-                .chunks_mut(new_capacity)
-                .zip(new_max.chunks_mut(new_capacity))
+            for (ch, (min_dst, max_dst)) in new_min
+                .chunks_mut(new_cap)
+                .zip(new_max.chunks_mut(new_cap))
                 .enumerate()
                 .take(channels)
             {
-                let src_base = channel * old_capacity;
-                for (offset, (dest_min, dest_max)) in dest_min_chunk
-                    .iter_mut()
-                    .zip(dest_max_chunk.iter_mut())
-                    .take(keep)
-                    .enumerate()
-                {
-                    let src_idx = if continuous {
-                        start_index + offset
+                let src_base = ch * old_capacity;
+                for (i, (min, max)) in min_dst.iter_mut().zip(max_dst).take(keep).enumerate() {
+                    let src = if ring_wrap {
+                        (start + i) % old_capacity
                     } else {
-                        (start_index + offset) % old_capacity
+                        start + i
                     };
-                    *dest_min = self.min_columns[src_base + src_idx];
-                    *dest_max = self.max_columns[src_base + src_idx];
+                    *min = self.min_columns[src_base + src];
+                    *max = self.max_columns[src_base + src];
                 }
             }
 
-            for (offset, dest) in new_freq.iter_mut().take(keep).enumerate() {
-                let src_idx = if continuous {
-                    start_index + offset
+            for (i, dst) in new_freq.iter_mut().take(keep).enumerate() {
+                let src = if ring_wrap {
+                    (start + i) % old_capacity
                 } else {
-                    (start_index + offset) % old_capacity
+                    start + i
                 };
-                *dest = self.freq_columns[src_idx];
+                *dst = self.freq_columns[src];
             }
         }
 
@@ -392,210 +279,110 @@ impl WaveformProcessor {
         self.max_columns = new_max;
         self.freq_columns = new_freq;
         self.column_count = keep;
-        self.write_column = if keep >= new_capacity { 0 } else { keep };
+        self.write_column = if keep >= new_cap { 0 } else { keep };
         self.bucket_elapsed_seconds = self
             .bucket_elapsed_seconds
             .min(self.column_period_seconds as f64);
-
-        self.populate_snapshot();
+        self.snapshot_dirty = true;
     }
 
-    fn reset_current_bucket(&mut self) {
-        ensure_len(&mut self.current_min, self.channels, f32::MAX);
-        ensure_len(&mut self.current_max, self.channels, f32::MIN);
-        ensure_len(&mut self.current_sum, self.channels, 0.0);
-        ensure_len(&mut self.current_sum_squares, self.channels, 0.0);
-        self.current_samples = 0;
-        self.current_crossing_count = 0;
-        self.first_crossing_time = None;
-        self.last_crossing_time = None;
-        self.bucket_prev_sample = None;
-        self.bucket_prev_time = 0.0;
-        self.samples_since_preview_update = 0;
-    }
-
-    fn flush_current_bucket(&mut self) {
-        if self.current_samples == 0 {
+    fn flush_bucket(&mut self) {
+        if self.sample_count == 0 {
             return;
         }
 
-        let capacity = self.target_columns();
+        let capacity = self.config.max_columns.max(1);
         let channels = self.channels.max(1);
-        let index = self.write_column;
-        let frames = self.current_samples as f32;
+        let idx = self.write_column;
 
-        for channel in 0..channels {
-            let mean = self.current_sum[channel] / frames;
-            let offset = channel * capacity + index;
-
-            if self.track_average {
-                let mean_square = self.current_sum_squares[channel] / frames;
-                let variance = (mean_square - mean * mean).max(0.0);
-                let amplitude = variance.sqrt();
-                self.min_columns[offset] = mean - amplitude;
-                self.max_columns[offset] = mean + amplitude;
-            } else {
-                let min_val = if self.current_min[channel] == f32::MAX {
-                    0.0
-                } else {
-                    self.current_min[channel]
-                };
-                let max_val = if self.current_max[channel] == f32::MIN {
-                    0.0
-                } else {
-                    self.current_max[channel]
-                };
-                self.min_columns[offset] = min_val;
-                self.max_columns[offset] = max_val;
-            }
+        for (ch, acc) in self.accumulators.iter().take(channels).enumerate() {
+            let (min, max) = acc.compute_range(self.sample_count, self.use_average);
+            let offset = ch * capacity + idx;
+            self.min_columns[offset] = min;
+            self.max_columns[offset] = max;
         }
 
-        let frequency = if self.current_crossing_count >= 2 {
-            if let (Some(first), Some(last)) = (self.first_crossing_time, self.last_crossing_time) {
-                let span = last - first;
-                if span > f64::EPSILON {
-                    let cycles = (self.current_crossing_count - 1) as f64 / 2.0;
-                    (cycles / span) as f32
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            }
-        } else {
-            0.0
-        };
-        self.freq_columns[index] = normalize_frequency(frequency);
+        self.freq_columns[idx] = compute_frequency(self);
 
         self.write_column = (self.write_column + 1) % capacity;
         if self.column_count < capacity {
             self.column_count += 1;
         }
         self.total_columns_written = self.total_columns_written.saturating_add(1);
-
-        self.reset_current_bucket();
+        self.snapshot_dirty = true;
+        self.reset_bucket();
     }
 
-    fn prefilter_sample(&mut self, channel: usize, sample: f32) -> f32 {
-        if self.prefilters.len() <= channel {
-            self.prefilters
-                .resize(channel + 1, PrefilterState::default());
-        }
-
-        self.prefilters[channel].filter(sample)
-    }
-
-    fn push_samples(&mut self, samples: &[f32], channels: usize) {
+    fn process_samples(&mut self, samples: &[f32], channels: usize) {
         if samples.is_empty() || channels == 0 {
             return;
         }
 
-        let sample_rate = self.config.sample_rate.max(1.0);
-        let sample_period = 1.0 / sample_rate;
-        let sample_period_f64 = sample_period as f64;
+        let sample_period = (1.0 / self.config.sample_rate.max(1.0)) as f64;
 
         for frame in samples.chunks_exact(channels) {
             let current_time = self.bucket_elapsed_seconds;
 
-            frame
-                .iter()
-                .take(channels)
-                .enumerate()
-                .for_each(|(channel, sample)| {
-                    if let Some(history) = self.raw_history.get_mut(channel) {
-                        history.push(*sample);
-                    }
-                });
+            // Primary channel: filtering + zero-crossing + accumulation
+            let raw = frame[0];
+            let filtered = self.prefilters[0].process(raw);
+            self.accumulators[0].accumulate(raw);
 
-            let raw_primary = frame[0];
-            let filtered = self.prefilter_sample(0, raw_primary);
-            self.current_min[0] = self.current_min[0].min(raw_primary);
-            self.current_max[0] = self.current_max[0].max(raw_primary);
-            self.current_sum[0] += raw_primary;
-            self.current_sum_squares[0] += raw_primary * raw_primary;
-
-            if let Some(prev) = self.bucket_prev_sample {
-                let prev_time = self.bucket_prev_time;
-                let prev_f64 = prev as f64;
-                let filtered_f64 = filtered as f64;
-                let denom = filtered_f64 - prev_f64;
+            // Zero-crossing detection
+            if let Some(prev) = self.prev_sample {
+                let prev_time = self.prev_time;
+                let denom = (filtered - prev) as f64;
                 if denom.abs() > f64::EPSILON {
-                    let t = (-prev_f64) / denom;
+                    let t = (-prev as f64) / denom;
                     if (0.0..=1.0).contains(&t) {
-                        let crossing_time = prev_time + t * sample_period_f64;
+                        let crossing_time = prev_time + t * sample_period;
                         if self.first_crossing_time.is_none() {
                             self.first_crossing_time = Some(crossing_time);
                         }
                         self.last_crossing_time = Some(crossing_time);
-                        self.current_crossing_count = self.current_crossing_count.saturating_add(1);
+                        self.crossing_count = self.crossing_count.saturating_add(1);
                     }
                 }
             }
-            self.bucket_prev_sample = Some(filtered);
-            self.bucket_prev_time = current_time;
+            self.prev_sample = Some(filtered);
+            self.prev_time = current_time;
 
-            frame
-                .iter()
-                .enumerate()
-                .skip(1)
-                .take(channels.saturating_sub(1))
-                .for_each(|(channel, sample)| {
-                    let raw = *sample;
-                    self.prefilter_sample(channel, raw);
-                    self.current_min[channel] = self.current_min[channel].min(raw);
-                    self.current_max[channel] = self.current_max[channel].max(raw);
-                    self.current_sum[channel] += raw;
-                    self.current_sum_squares[channel] += raw * raw;
-                });
-
-            self.current_samples += 1;
-            self.bucket_elapsed_seconds += sample_period_f64;
-            self.samples_since_preview_update = self.samples_since_preview_update.saturating_add(1);
-
-            if self.preview_update_stride == 0
-                || self.samples_since_preview_update >= self.preview_update_stride
-            {
-                self.update_preview_snapshot();
-                self.samples_since_preview_update = 0;
+            // Other channels
+            for (ch, &sample) in frame.iter().enumerate().skip(1).take(channels - 1) {
+                self.prefilters[ch].process(sample);
+                self.accumulators[ch].accumulate(sample);
             }
 
-            let flush_threshold =
-                (self.column_period_seconds as f64 - sample_period_f64 * 0.5).max(0.0);
-            if self.bucket_elapsed_seconds >= flush_threshold && self.current_samples > 0 {
-                self.flush_current_bucket();
+            self.sample_count += 1;
+            self.bucket_elapsed_seconds += sample_period;
+
+            // Flush bucket when period is complete
+            if self.bucket_elapsed_seconds
+                >= (self.column_period_seconds as f64 - sample_period * 0.5).max(0.0)
+                && self.sample_count > 0
+            {
+                self.flush_bucket();
                 self.bucket_elapsed_seconds =
                     (self.bucket_elapsed_seconds - self.column_period_seconds as f64).max(0.0);
-                self.update_preview_snapshot();
             }
         }
     }
 
-    fn populate_snapshot(&mut self) {
+    fn update_snapshot(&mut self) {
         let channels = self.channels.max(1);
-        let capacity = self.target_columns();
+        let capacity = self.config.max_columns.max(1);
         let columns = self.column_count.min(capacity);
-        let spacing_seconds = self.column_period_seconds;
-        self.populate_raw_snapshot(channels);
+        let spacing = self.column_period_seconds;
 
-        let min_values = Arc::make_mut(&mut self.snapshot.min_values);
-        let max_values = Arc::make_mut(&mut self.snapshot.max_values);
-        let freq_values = Arc::make_mut(&mut self.snapshot.frequency_normalized);
-
-        resize_vec(min_values, columns * channels);
-        resize_vec(max_values, columns * channels);
-        resize_vec(freq_values, columns);
+        self.snapshot.min_values.resize(columns * channels, 0.0);
+        self.snapshot.max_values.resize(columns * channels, 0.0);
+        self.snapshot.frequency_normalized.resize(columns, 0.0);
 
         if columns == 0 {
-            min_values.fill(0.0);
-            max_values.fill(0.0);
-            freq_values.fill(0.0);
             self.snapshot.channels = channels;
             self.snapshot.columns = 0;
-            self.snapshot.column_spacing_seconds = spacing_seconds;
-            self.snapshot.scroll_position = self.total_columns_written as f32;
+            self.snapshot.column_spacing_seconds = spacing;
             self.snapshot.downsample = self.config.downsample;
-            self.last_snapshot_write_column = self.write_column;
-            self.last_snapshot_column_count = self.column_count;
             return;
         }
 
@@ -605,145 +392,67 @@ impl WaveformProcessor {
             self.write_column
         };
 
-        for (channel, (dest_min_chunk, dest_max_chunk)) in min_values
+        for (ch, (min_dst, max_dst)) in self
+            .snapshot
+            .min_values
             .chunks_mut(columns)
-            .zip(max_values.chunks_mut(columns))
+            .zip(self.snapshot.max_values.chunks_mut(columns))
             .enumerate()
             .take(channels)
         {
-            let src_base = channel * capacity;
-            for (offset, (dest_min, dest_max)) in dest_min_chunk
-                .iter_mut()
-                .zip(dest_max_chunk.iter_mut())
-                .take(columns)
-                .enumerate()
-            {
-                let src = (start + offset) % capacity;
-                *dest_min = self.min_columns[src_base + src];
-                *dest_max = self.max_columns[src_base + src];
+            let src_base = ch * capacity;
+            for (i, (min, max)) in min_dst.iter_mut().zip(max_dst).take(columns).enumerate() {
+                let src = (start + i) % capacity;
+                *min = self.min_columns[src_base + src];
+                *max = self.max_columns[src_base + src];
             }
         }
 
-        for (offset, dest) in freq_values.iter_mut().take(columns).enumerate() {
-            let src = (start + offset) % capacity;
-            *dest = self.freq_columns[src];
+        for (i, dst) in self
+            .snapshot
+            .frequency_normalized
+            .iter_mut()
+            .take(columns)
+            .enumerate()
+        {
+            let src = (start + i) % capacity;
+            *dst = self.freq_columns[src];
         }
 
         self.snapshot.channels = channels;
         self.snapshot.columns = columns;
-        self.snapshot.column_spacing_seconds = spacing_seconds;
-        self.snapshot.scroll_position = self.total_columns_written as f32;
+        self.snapshot.column_spacing_seconds = spacing;
         self.snapshot.downsample = self.config.downsample;
-        self.last_snapshot_write_column = self.write_column;
-        self.last_snapshot_column_count = self.column_count;
+        self.snapshot_dirty = false;
     }
 
-    fn populate_raw_snapshot(&mut self, channels: usize) {
-        let raw_frames = self
-            .raw_history
-            .first()
-            .map(|history| history.len())
-            .unwrap_or(0);
-        let raw_frame_count = raw_frames.min(self.raw_history_capacity);
-        let samples = Arc::make_mut(&mut self.snapshot.raw.samples);
-
-        if raw_frame_count == 0 {
-            samples.clear();
-        } else {
-            let required = raw_frame_count * channels;
-            if samples.len() < required {
-                samples.resize(required, 0.0);
-            } else {
-                samples[..required].fill(0.0);
-                samples.truncate(required);
-            }
-
-            for (channel_index, history) in self.raw_history.iter().enumerate() {
-                if channel_index >= channels {
-                    break;
-                }
-                history.write_interleaved(samples, channels, channel_index);
-            }
-        }
-
-        self.snapshot.raw.channels = channels;
-        self.snapshot.raw.frames = raw_frame_count;
-        self.snapshot.raw.sample_rate = self.config.sample_rate;
-    }
-
-    fn update_preview_snapshot(&mut self) {
+    fn update_preview(&mut self) {
         let channels = self.channels.max(1);
-        if self.current_samples == 0 {
-            let preview_min = Arc::make_mut(&mut self.snapshot.preview.min_values);
-            let preview_max = Arc::make_mut(&mut self.snapshot.preview.max_values);
-            self.snapshot.preview.progress = if self.column_period_seconds > 0.0 {
-                (self.bucket_elapsed_seconds as f32 / self.column_period_seconds).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            preview_min.clear();
-            preview_max.clear();
-            self.snapshot.preview.frequency_normalized = 0.0;
-            return;
-        }
-
-        let frames = self.current_samples as f32;
-        let preview_min = Arc::make_mut(&mut self.snapshot.preview.min_values);
-        let preview_max = Arc::make_mut(&mut self.snapshot.preview.max_values);
-        resize_vec(preview_min, channels);
-        resize_vec(preview_max, channels);
-
-        preview_min
-            .iter_mut()
-            .zip(preview_max.iter_mut())
-            .enumerate()
-            .take(channels)
-            .for_each(|(channel, (min_slot, max_slot))| {
-                let mean = self.current_sum[channel] / frames;
-                let (min_value, max_value) = if self.track_average {
-                    let mean_square = self.current_sum_squares[channel] / frames;
-                    let variance = (mean_square - mean * mean).max(0.0);
-                    let amplitude = variance.sqrt();
-                    (mean - amplitude, mean + amplitude)
-                } else {
-                    let min_val = if self.current_min[channel] == f32::MAX {
-                        0.0
-                    } else {
-                        self.current_min[channel]
-                    };
-                    let max_val = if self.current_max[channel] == f32::MIN {
-                        0.0
-                    } else {
-                        self.current_max[channel]
-                    };
-                    (min_val, max_val)
-                };
-
-                *min_slot = min_value;
-                *max_slot = max_value;
-            });
-
-        let frequency = if self.current_crossing_count >= 2 {
-            if let (Some(first), Some(last)) = (self.first_crossing_time, self.last_crossing_time) {
-                let span = last - first;
-                if span > f64::EPSILON {
-                    let cycles = (self.current_crossing_count - 1) as f64 / 2.0;
-                    (cycles / span) as f32
-                } else {
-                    0.0
-                }
-            } else {
-                0.0
-            }
-        } else {
-            0.0
-        };
-        self.snapshot.preview.frequency_normalized = normalize_frequency(frequency);
-        self.snapshot.preview.progress = if self.column_period_seconds > 0.0 {
+        let progress = if self.column_period_seconds > 0.0 {
             (self.bucket_elapsed_seconds as f32 / self.column_period_seconds).clamp(0.0, 1.0)
         } else {
             0.0
         };
+
+        self.snapshot.preview.progress = progress;
+
+        if self.sample_count == 0 {
+            self.snapshot.preview.min_values.clear();
+            self.snapshot.preview.max_values.clear();
+            self.snapshot.preview.frequency_normalized = 0.0;
+            return;
+        }
+
+        self.snapshot.preview.min_values.resize(channels, 0.0);
+        self.snapshot.preview.max_values.resize(channels, 0.0);
+
+        for (ch, acc) in self.accumulators.iter().take(channels).enumerate() {
+            let (min, max) = acc.compute_range(self.sample_count, self.use_average);
+            self.snapshot.preview.min_values[ch] = min;
+            self.snapshot.preview.max_values[ch] = max;
+        }
+
+        self.snapshot.preview.frequency_normalized = compute_frequency(self);
     }
 }
 
@@ -767,22 +476,13 @@ impl AudioProcessor for WaveformProcessor {
             self.rebuild_for_config();
         }
 
-        self.push_samples(block.samples, channels);
+        self.process_samples(block.samples, channels);
 
-        let raw_frames_available = self
-            .raw_history
-            .first()
-            .map(|history| history.len())
-            .unwrap_or(0);
-
-        if self.write_column != self.last_snapshot_write_column
-            || self.column_count != self.last_snapshot_column_count
-            || raw_frames_available != self.snapshot.raw.frames
-        {
-            self.populate_snapshot();
+        if self.snapshot_dirty {
+            self.update_snapshot();
         }
 
-        self.update_preview_snapshot();
+        self.update_preview();
 
         let progress = if self.column_period_seconds > 0.0 {
             (self.bucket_elapsed_seconds as f32 / self.column_period_seconds).clamp(0.0, 1.0)
@@ -803,28 +503,9 @@ impl AudioProcessor for WaveformProcessor {
         self.min_columns.clear();
         self.max_columns.clear();
         self.freq_columns.clear();
-        self.current_min.clear();
-        self.current_max.clear();
-        self.current_sum.clear();
-        self.current_sum_squares.clear();
-        self.current_samples = 0;
-        self.current_crossing_count = 0;
-        self.first_crossing_time = None;
-        self.last_crossing_time = None;
-        self.bucket_prev_sample = None;
-        self.bucket_prev_time = 0.0;
-        self.bucket_elapsed_seconds = 0.0;
         self.prefilters.clear();
-        self.last_snapshot_write_column = 0;
-        self.last_snapshot_column_count = 0;
-        self.preview_update_stride = 1;
-        self.samples_since_preview_update = 0;
-        for history in &mut self.raw_history {
-            history.clear();
-        }
-        self.raw_history_capacity = self.compute_raw_history_capacity();
-        self.ensure_raw_history();
-
+        self.bucket_elapsed_seconds = 0.0;
+        self.snapshot_dirty = false;
         self.rebuild_for_config();
     }
 }
@@ -834,12 +515,12 @@ impl Reconfigurable<WaveformConfig> for WaveformProcessor {
         let clamped = clamp_config(config);
         let old_capacity = self.config.max_columns;
         let max_changed = old_capacity != clamped.max_columns;
-        let requires_rebuild = (self.config.sample_rate - clamped.sample_rate).abs() > f32::EPSILON
+        let needs_rebuild = (self.config.sample_rate - clamped.sample_rate).abs() > f32::EPSILON
             || (self.config.scroll_speed - clamped.scroll_speed).abs() > f32::EPSILON
             || self.config.downsample != clamped.downsample;
 
         self.config = clamped;
-        if requires_rebuild {
+        if needs_rebuild {
             self.rebuild_for_config();
         } else if max_changed {
             self.adjust_capacity(old_capacity, self.config.max_columns);
@@ -858,54 +539,55 @@ fn clamp_config(mut config: WaveformConfig) -> WaveformConfig {
     config
 }
 
-fn calculate_column_period_seconds(config: &WaveformConfig) -> f32 {
-    let speed = config.scroll_speed.max(MIN_SCROLL_SPEED);
-    1.0 / speed
+#[inline]
+fn column_period_seconds(config: &WaveformConfig) -> f32 {
+    1.0 / config.scroll_speed.max(MIN_SCROLL_SPEED)
 }
 
-fn nominal_frames_per_column(config: &WaveformConfig) -> f32 {
-    let sample_rate = config.sample_rate.max(1.0);
-    let speed = config.scroll_speed.max(MIN_SCROLL_SPEED);
-    sample_rate / speed
-}
-
-fn resize_vec(vec: &mut Vec<f32>, len: usize) {
-    if vec.len() > len {
-        vec.truncate(len);
-    } else if vec.len() < len {
-        vec.resize(len, 0.0);
-    }
-}
-
-fn ensure_len(vec: &mut Vec<f32>, len: usize, fill: f32) {
-    if vec.len() != len {
-        vec.resize(len, fill);
-    } else {
-        vec.fill(fill);
-    }
-}
-
-fn normalize_frequency(value: f32) -> f32 {
-    if value <= MIN_FREQUENCY_HZ {
+#[inline]
+fn compute_frequency(processor: &WaveformProcessor) -> f32 {
+    if processor.crossing_count < 2 {
         return 0.0;
     }
 
-    let clamped = value.clamp(MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ);
-    let min_log = MIN_FREQUENCY_HZ.log10();
-    let max_log = MAX_FREQUENCY_HZ.log10();
-    let normalized = (clamped.log10() - min_log) / (max_log - min_log);
-    normalized.clamp(0.0, 1.0)
+    if let (Some(first), Some(last)) = (processor.first_crossing_time, processor.last_crossing_time)
+    {
+        let span = last - first;
+        if span > f64::EPSILON {
+            let cycles = (processor.crossing_count - 1) as f64 / 2.0;
+            let freq = (cycles / span) as f32;
+            normalize_frequency(freq)
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    }
+}
+
+#[inline]
+fn normalize_frequency(freq: f32) -> f32 {
+    if freq <= MIN_FREQUENCY_HZ {
+        return 0.0;
+    }
+    let clamped = freq.clamp(MIN_FREQUENCY_HZ, MAX_FREQUENCY_HZ);
+    ((clamped.log10() - MIN_FREQUENCY_HZ.log10())
+        / (MAX_FREQUENCY_HZ.log10() - MIN_FREQUENCY_HZ.log10()))
+    .clamp(0.0, 1.0)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsp::{AudioBlock, ProcessorUpdate};
     use std::f32::consts::PI;
     use std::time::Instant;
 
     fn make_block<'a>(samples: &'a [f32], channels: usize, sample_rate: f32) -> AudioBlock<'a> {
         AudioBlock::new(samples, channels, sample_rate, Instant::now())
+    }
+
+    fn nominal_frames_per_column(config: &WaveformConfig) -> f32 {
+        config.sample_rate.max(1.0) / config.scroll_speed.max(MIN_SCROLL_SPEED)
     }
 
     #[test]
@@ -941,8 +623,6 @@ mod tests {
         assert!(min_value < -0.24, "expected to preserve negative troughs");
         assert!((max_value - 0.5).abs() < 1e-3);
         assert!((min_value + 0.25).abs() < 1e-3);
-        assert_eq!(snapshot.raw.channels, channels);
-        assert!(snapshot.raw.frames > 0);
     }
 
     #[test]
@@ -976,8 +656,6 @@ mod tests {
         let min_value = snapshot.min_values[0];
         assert!((max_value - 0.6).abs() < 1e-3);
         assert!((min_value + 0.2).abs() < 1e-3);
-        assert_eq!(snapshot.raw.channels, channels);
-        assert!(snapshot.raw.frames > 0);
     }
 
     #[test]
@@ -1011,24 +689,24 @@ mod tests {
             .copied()
             .unwrap_or_default();
         assert!(last_frequency > 0.44 && last_frequency < 0.46);
-        assert_eq!(snapshot.raw.channels, channels);
-        assert!(snapshot.raw.frames > 0);
     }
 
     #[test]
-    fn raw_history_preserves_recent_samples() {
+    fn produces_columns_over_time() {
         let mut processor = WaveformProcessor::new(WaveformConfig {
             sample_rate: 48_000.0,
-            scroll_speed: MIN_SCROLL_SPEED,
+            scroll_speed: 100.0,
             downsample: DownsampleStrategy::MinMax,
             max_columns: DEFAULT_COLUMN_CAPACITY,
         });
 
-        let channels = 1;
-        let total_frames = 4_096;
-        let mut samples = Vec::with_capacity(total_frames);
-        for n in 0..total_frames {
-            samples.push(n as f32 / total_frames as f32);
+        let channels = 2;
+        let frames_per_column = nominal_frames_per_column(&processor.config).ceil() as usize;
+        let total_frames = frames_per_column * 5;
+        let mut samples = Vec::with_capacity(total_frames * channels);
+        for _n in 0..total_frames {
+            samples.push(0.1);
+            samples.push(-0.1);
         }
 
         let block = make_block(&samples, channels, processor.config.sample_rate);
@@ -1037,17 +715,9 @@ mod tests {
             ProcessorUpdate::None => panic!("expected snapshot"),
         };
 
-        assert_eq!(snapshot.raw.channels, channels);
-        assert!(snapshot.raw.frames > 0);
-        let expected_tail = samples.last().copied().unwrap_or_default();
-        let actual_tail = snapshot
-            .raw
-            .samples
-            .chunks(channels)
-            .last()
-            .and_then(|chunk| chunk.first())
-            .copied()
-            .unwrap_or_default();
-        assert!((actual_tail - expected_tail).abs() < 1e-6);
+        assert_eq!(snapshot.channels, channels);
+        assert!(snapshot.columns >= 4, "should produce multiple columns");
+        assert_eq!(snapshot.min_values.len(), snapshot.columns * channels);
+        assert_eq!(snapshot.max_values.len(), snapshot.columns * channels);
     }
 }

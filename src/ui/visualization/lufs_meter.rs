@@ -1,3 +1,5 @@
+//! UI wrapper around the loudness DSP processor and renderer.
+
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::loudness::{
     LoudnessConfig, LoudnessProcessor as CoreLoudnessProcessor, LoudnessSnapshot,
@@ -24,47 +26,48 @@ use std::cell::RefCell;
 use std::time::Instant;
 
 const CHANNELS: usize = 2;
-const DEFAULT_MIN_LUFS: f32 = -60.0;
-const DEFAULT_MAX_LUFS: f32 = 0.0;
+const DEFAULT_RANGE: (f32, f32) = (-60.0, 0.0);
 const DEFAULT_HEIGHT: f32 = 300.0;
 const DEFAULT_WIDTH: f32 = 140.0;
-const DEFAULT_SHORT_TERM_WINDOW_SECS: f32 = 3.0;
-const DEFAULT_RMS_FAST_WINDOW_SECS: f32 = 0.03;
-const GUIDE_LABEL_CHAR_WIDTH: f32 = 7.0;
+const GUIDE_LEVELS: [f32; 5] = [-6.0, -12.0, -18.0, -24.0, -36.0];
+const VALUE_SCALE_MIX: f32 = 0.6;
+const METER_VERTICAL_PADDING: f32 = 0.0;
+const CHANNEL_GAP_FRACTION: f32 = 0.1;
+const CHANNEL_WIDTH_SCALE: f32 = 0.6;
+
 const GUIDE_LABEL_FONT_SIZE: f32 = 10.0;
 const GUIDE_LABEL_HEIGHT: f32 = 22.0;
+const GUIDE_LABEL_CHAR_WIDTH: f32 = 7.0;
 const GUIDE_LABEL_MIN_WIDTH: f32 = 52.0;
 const GUIDE_LABEL_MAX_WIDTH: f32 = 116.0;
 const GUIDE_LABEL_GAP: f32 = 7.0;
 const GUIDE_LABEL_MARGIN: f32 = 8.0;
 const GUIDE_LABEL_BAR_MARGIN: f32 = 3.0;
-const GUIDE_LEVELS: [f32; 5] = [-6.0, -12.0, -18.0, -24.0, -36.0];
 const GUIDE_LINE_LENGTH: f32 = 4.0;
-const GUIDE_LINE_THICKNESS: f32 = 1.2;
+const GUIDE_LINE_THICKNESS: f32 = 1.0;
 const GUIDE_LINE_PADDING: f32 = 3.0;
-const VALUE_SCALE_MIX: f32 = 0.6;
-const METER_VERTICAL_PADDING: f32 = 0.0;
-const CHANNEL_GAP_FRACTION: f32 = 0.1;
-const CHANNEL_WIDTH_SCALE: f32 = 0.6;
-const LIVE_VALUE_LABEL_GAP: f32 = GUIDE_LABEL_BAR_MARGIN;
-const LIVE_VALUE_LABEL_MARGIN: f32 = 6.0;
-const LIVE_VALUE_LABEL_HEIGHT: f32 = 20.0;
-const LIVE_VALUE_LABEL_TEMPLATE: &str = "-99.9LUFS";
+
 const LIVE_VALUE_LABEL_FONT_SIZE: f32 = 12.0;
+const LIVE_VALUE_LABEL_HEIGHT: f32 = 20.0;
 const LIVE_VALUE_LABEL_CHAR_WIDTH: f32 = 7.0;
-const LIVE_VALUE_LABEL_HORIZONTAL_PADDING: f32 = 2.0;
+const LIVE_VALUE_LABEL_TEMPLATE: &str = "-99.9LUFS";
 const LIVE_VALUE_LABEL_MIN_WIDTH: f32 = 21.0;
 const LIVE_VALUE_LABEL_MAX_WIDTH: f32 = 128.0;
+const LIVE_VALUE_LABEL_HORIZONTAL_PADDING: f32 = 2.0;
+const LIVE_VALUE_LABEL_GAP: f32 = GUIDE_LABEL_BAR_MARGIN;
+const LIVE_VALUE_LABEL_MARGIN: f32 = 6.0;
 
 const fn clamp_width(value: f32, min: f32, max: f32) -> f32 {
-    let mut v = if value < min { min } else { value };
-    if v > max {
-        v = max;
+    if value < min {
+        min
+    } else if value > max {
+        max
+    } else {
+        value
     }
-    v
 }
 
-const LIVE_VALUE_LABEL_TEMPLATE_WIDTH: f32 = clamp_width(
+const LIVE_VALUE_LABEL_WIDTH: f32 = clamp_width(
     LIVE_VALUE_LABEL_TEMPLATE.len() as f32 * LIVE_VALUE_LABEL_CHAR_WIDTH
         + LIVE_VALUE_LABEL_HORIZONTAL_PADDING * 2.0,
     LIVE_VALUE_LABEL_MIN_WIDTH,
@@ -72,27 +75,24 @@ const LIVE_VALUE_LABEL_TEMPLATE_WIDTH: f32 = clamp_width(
 );
 
 const LIVE_VALUE_LABEL_RESERVE: f32 =
-    LIVE_VALUE_LABEL_GAP + LIVE_VALUE_LABEL_MARGIN + LIVE_VALUE_LABEL_TEMPLATE_WIDTH;
+    LIVE_VALUE_LABEL_GAP + LIVE_VALUE_LABEL_MARGIN + LIVE_VALUE_LABEL_WIDTH;
 
 fn guide_line_color() -> Color {
-    let secondary = theme::text_secondary();
-    let surface = theme::surface_color();
-    theme::with_alpha(theme::mix_colors(secondary, surface, 0.35), 0.88)
+    theme::with_alpha(
+        theme::mix_colors(theme::text_secondary(), theme::surface_color(), 0.35),
+        0.88,
+    )
 }
 
 fn guide_label_color() -> Color {
     theme::mix_colors(theme::text_color(), theme::surface_color(), 0.2)
 }
 
-fn live_label_background_color() -> Color {
+fn live_label_background() -> Color {
     theme::with_alpha(
         theme::mix_colors(theme::surface_color(), theme::accent_primary(), 0.25),
         0.92,
     )
-}
-
-fn live_label_text_color() -> Color {
-    theme::text_color()
 }
 
 /// UI wrapper around the shared loudness processor.
@@ -106,9 +106,7 @@ impl LufsProcessor {
     pub fn new(sample_rate: f32) -> Self {
         let config = LoudnessConfig {
             sample_rate,
-            short_term_window: DEFAULT_SHORT_TERM_WINDOW_SECS,
-            rms_fast_window: DEFAULT_RMS_FAST_WINDOW_SECS,
-            floor_lufs: DEFAULT_MIN_LUFS,
+            ..Default::default()
         };
         Self {
             inner: CoreLoudnessProcessor::new(config),
@@ -154,9 +152,9 @@ pub struct LufsMeterState {
 impl LufsMeterState {
     pub fn new() -> Self {
         Self {
-            short_term_lufs: [DEFAULT_MIN_LUFS; CHANNELS],
-            true_peak_db: [DEFAULT_MIN_LUFS; CHANNELS],
-            range: (DEFAULT_MIN_LUFS, DEFAULT_MAX_LUFS),
+            short_term_lufs: [DEFAULT_RANGE.0; CHANNELS],
+            true_peak_db: [DEFAULT_RANGE.0; CHANNELS],
+            range: DEFAULT_RANGE,
             style: VisualStyle::default(),
         }
     }
@@ -191,16 +189,51 @@ impl LufsMeterState {
         let (min, max) = range;
         let style = *self.style();
         let short_term = self.short_term_average();
-        let peak_channel = self.peak_channel(style);
-        let short_term_channel = Self::short_term_channel(style, short_term);
-        let (guides, max_label_width) = Self::build_guides((min, max));
-        let channels = vec![peak_channel, short_term_channel];
+        let guide_color = theme::color_to_rgba(guide_line_color());
+        let bg_color = theme::color_to_rgba(style.background);
 
-        let left_padding = GUIDE_LABEL_MARGIN
-            + max_label_width
-            + GUIDE_LABEL_GAP
-            + GUIDE_LINE_LENGTH
-            + GUIDE_LINE_PADDING;
+        let peak_fills: Vec<_> = self
+            .true_peak_db
+            .iter()
+            .zip([style.raw_peak_left_fill, style.raw_peak_right_fill])
+            .map(|(&value, color)| FillVisual {
+                value_lufs: value,
+                color: theme::color_to_rgba(color),
+            })
+            .collect();
+
+        let channels = vec![
+            ChannelVisual {
+                background_color: bg_color,
+                fills: peak_fills,
+            },
+            ChannelVisual {
+                background_color: bg_color,
+                fills: vec![FillVisual {
+                    value_lufs: short_term,
+                    color: theme::color_to_rgba(style.short_term_fill),
+                }],
+            },
+        ];
+
+        let mut max_label_width = 0.0f32;
+        let guides: Vec<_> = GUIDE_LEVELS
+            .iter()
+            .filter(|&&level| level >= min && level <= max)
+            .map(|&level| {
+                let label = format!("{:.1}", level.abs());
+                let label_width = guide_label_width(&label);
+                max_label_width = max_label_width.max(label_width);
+                GuideLine {
+                    value_lufs: level,
+                    color: guide_color,
+                    length: GUIDE_LINE_LENGTH,
+                    thickness: GUIDE_LINE_THICKNESS,
+                    label: Some(label),
+                    label_width,
+                }
+            })
+            .collect();
 
         VisualParams {
             min_lufs: min,
@@ -210,67 +243,16 @@ impl LufsMeterState {
             channel_width_scale: CHANNEL_WIDTH_SCALE,
             short_term_value: short_term,
             guides,
-            left_padding,
+            left_padding: GUIDE_LABEL_MARGIN
+                + max_label_width
+                + GUIDE_LABEL_GAP
+                + GUIDE_LINE_LENGTH
+                + GUIDE_LINE_PADDING,
             right_padding: LIVE_VALUE_LABEL_RESERVE,
             guide_padding: GUIDE_LINE_PADDING,
             value_scale_bias: VALUE_SCALE_MIX,
             vertical_padding: METER_VERTICAL_PADDING,
         }
-    }
-
-    fn peak_channel(&self, style: VisualStyle) -> ChannelVisual {
-        let mut fills = Vec::with_capacity(CHANNELS);
-        for (value, color) in self.true_peak_db.iter().zip([
-            theme::color_to_rgba(style.raw_peak_left_fill),
-            theme::color_to_rgba(style.raw_peak_right_fill),
-        ]) {
-            fills.push(FillVisual {
-                value_lufs: *value,
-                color,
-            });
-        }
-
-        ChannelVisual {
-            background_color: theme::color_to_rgba(style.background),
-            fills,
-        }
-    }
-
-    fn short_term_channel(style: VisualStyle, short_term: f32) -> ChannelVisual {
-        ChannelVisual {
-            background_color: theme::color_to_rgba(style.background),
-            fills: vec![FillVisual {
-                value_lufs: short_term,
-                color: theme::color_to_rgba(style.short_term_fill),
-            }],
-        }
-    }
-
-    fn build_guides(range: (f32, f32)) -> (Vec<GuideLine>, f32) {
-        let (min, max) = range;
-        let mut guides = Vec::with_capacity(GUIDE_LEVELS.len());
-        let mut max_label_width = 0.0f32;
-        let guide_color = theme::color_to_rgba(guide_line_color());
-
-        for level in GUIDE_LEVELS.iter().copied() {
-            if level > max || level < min {
-                continue;
-            }
-
-            let label = format!("{:.1}", level.abs());
-            let label_width = guide_label_width(label.as_str());
-            max_label_width = max_label_width.max(label_width);
-            guides.push(GuideLine {
-                value_lufs: level,
-                color: guide_color,
-                length: GUIDE_LINE_LENGTH,
-                thickness: GUIDE_LINE_THICKNESS,
-                label: Some(label),
-                label_width,
-            });
-        }
-
-        (guides, max_label_width)
     }
 }
 
@@ -301,11 +283,10 @@ impl Default for VisualStyle {
     }
 }
 
-/// Declare a LUFS meter widget that renders using the iced_wgpu backend.
 #[derive(Debug)]
 pub struct LufsMeter<'a> {
     state: &'a LufsMeterState,
-    explicit_range: Option<(f32, f32)>,
+    range: Option<(f32, f32)>,
     height: f32,
     width: f32,
     fill_height: bool,
@@ -315,7 +296,7 @@ impl<'a> LufsMeter<'a> {
     pub fn new(state: &'a LufsMeterState) -> Self {
         Self {
             state,
-            explicit_range: None,
+            range: None,
             height: DEFAULT_HEIGHT,
             width: DEFAULT_WIDTH,
             fill_height: false,
@@ -323,7 +304,7 @@ impl<'a> LufsMeter<'a> {
     }
 
     pub fn with_range(mut self, min: f32, max: f32) -> Self {
-        self.explicit_range = Some((min, max));
+        self.range = Some((min, max));
         self
     }
 
@@ -343,7 +324,7 @@ impl<'a> LufsMeter<'a> {
     }
 
     fn active_range(&self) -> (f32, f32) {
-        self.explicit_range.unwrap_or_else(|| self.state.range())
+        self.range.unwrap_or_else(|| self.state.range())
     }
 
     fn total_width(&self) -> f32 {
@@ -361,14 +342,14 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LufsMeter<'a> {
     }
 
     fn size(&self) -> Size<Length> {
-        let width = self.total_width();
-        let height = if self.fill_height {
-            Length::Fill
-        } else {
-            Length::Fixed(self.height)
-        };
-
-        Size::new(Length::Fixed(width), height)
+        Size::new(
+            Length::Fixed(self.total_width()),
+            if self.fill_height {
+                Length::Fill
+            } else {
+                Length::Fixed(self.height)
+            },
+        )
     }
 
     fn layout(
@@ -377,22 +358,15 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LufsMeter<'a> {
         _renderer: &iced::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        let width = self.total_width();
-        let height = if self.fill_height {
-            Length::Fill
-        } else {
-            Length::Fixed(self.height)
-        };
-
-        let fallback_height = self.height;
-
-        let size = limits.resolve(
-            Length::Fixed(width),
-            height,
-            Size::new(width, fallback_height),
-        );
-
-        layout::Node::new(size)
+        layout::Node::new(limits.resolve(
+            Length::Fixed(self.total_width()),
+            if self.fill_height {
+                Length::Fill
+            } else {
+                Length::Fixed(self.height)
+            },
+            Size::new(0.0, self.height),
+        ))
     }
 
     fn draw(
@@ -454,16 +428,16 @@ struct CachedParagraph {
 impl CachedParagraph {
     fn new(label: &str, bounds: Size) -> Self {
         Self {
-            label: label.to_owned(),
+            label: label.to_string(),
             bounds,
-            paragraph: build_label_paragraph(label, bounds),
+            paragraph: build_paragraph(label, bounds, GUIDE_LABEL_FONT_SIZE, false),
         }
     }
 
     fn ensure(&mut self, bounds: Size) {
         if !size_eq(self.bounds, bounds) {
-            self.paragraph.resize(bounds);
             self.bounds = bounds;
+            self.paragraph = build_paragraph(&self.label, bounds, GUIDE_LABEL_FONT_SIZE, false);
         }
     }
 }
@@ -477,29 +451,23 @@ struct LiveLabelParagraph {
 impl LiveLabelParagraph {
     fn new(label: &str, bounds: Size) -> Self {
         Self {
-            label: label.to_owned(),
+            label: label.to_string(),
             bounds,
-            paragraph: build_live_label_paragraph(label, bounds),
+            paragraph: build_paragraph(label, bounds, LIVE_VALUE_LABEL_FONT_SIZE, true),
         }
     }
 
     fn ensure(&mut self, label: &str, bounds: Size) {
-        if self.label != label {
-            *self = Self::new(label, bounds);
-        } else if !size_eq(self.bounds, bounds) {
-            self.paragraph.resize(bounds);
+        if self.label != label || !size_eq(self.bounds, bounds) {
+            self.label = label.to_string();
             self.bounds = bounds;
+            self.paragraph = build_paragraph(label, bounds, LIVE_VALUE_LABEL_FONT_SIZE, true);
         }
     }
 }
-
 fn ensure_label_paragraph(entries: &mut Vec<CachedParagraph>, label: &str, bounds: Size) -> usize {
-    if let Some((index, entry)) = entries
-        .iter_mut()
-        .enumerate()
-        .find(|(_, entry)| entry.label == label)
-    {
-        entry.ensure(bounds);
+    if let Some(index) = entries.iter().position(|entry| entry.label == label) {
+        entries[index].ensure(bounds);
         index
     } else {
         entries.push(CachedParagraph::new(label, bounds));
@@ -508,22 +476,28 @@ fn ensure_label_paragraph(entries: &mut Vec<CachedParagraph>, label: &str, bound
 }
 
 fn prune_label_paragraphs(entries: &mut Vec<CachedParagraph>, active: &[&str]) {
-    if active.is_empty() {
-        entries.clear();
-        return;
-    }
-
-    entries.retain(|entry| active.iter().any(|label| *label == entry.label));
+    entries.retain(|entry| active.contains(&entry.label.as_str()));
 }
 
-fn build_label_paragraph(label: &str, bounds: Size) -> RenderParagraph {
+fn build_paragraph(label: &str, bounds: Size, font_size: f32, bold: bool) -> RenderParagraph {
     RenderParagraph::with_text(Text {
         content: label,
         bounds,
-        size: Pixels(GUIDE_LABEL_FONT_SIZE),
+        size: Pixels(font_size),
         line_height: LineHeight::Relative(1.0),
-        font: iced::Font::default(),
-        horizontal_alignment: Horizontal::Left,
+        font: if bold {
+            Font {
+                weight: FontWeight::Bold,
+                ..Font::DEFAULT
+            }
+        } else {
+            Font::default()
+        },
+        horizontal_alignment: if bold {
+            Horizontal::Center
+        } else {
+            Horizontal::Left
+        },
         vertical_alignment: Vertical::Center,
         shaping: Shaping::Advanced,
         wrapping: Wrapping::None,
@@ -552,26 +526,30 @@ fn draw_guide_labels(
         entries.clear();
         return;
     };
-    let label_height = GUIDE_LABEL_HEIGHT;
+
     let label_color = guide_label_color();
     let mut active_labels = Vec::with_capacity(params.guides.len());
 
     for guide in &params.guides {
-        let Some(label) = guide.label.as_deref() else {
+        let Some(ref label_text) = guide.label else {
             continue;
         };
 
-        let label_bounds = Size::new(guide.label_width, label_height);
-        let index = ensure_label_paragraph(&mut entries, label, label_bounds);
-        let paragraph = &entries[index].paragraph;
+        let ratio = params.clamp_ratio(guide.value_lufs);
+        let center_y = context.center(ratio);
+        let label_bounds = Size::new(guide.label_width, GUIDE_LABEL_HEIGHT);
+        let index = ensure_label_paragraph(&mut entries, label_text, label_bounds);
+        let text_bounds = entries[index].paragraph.min_bounds();
+        let (clip_bounds, position) =
+            context.label_clip(center_y, GUIDE_LABEL_HEIGHT, text_bounds.width);
 
-        let text_bounds = paragraph.min_bounds();
-        let text_width = text_bounds.width.max(1.0);
-        let center_y = context.center(params.meter_ratio(guide.value_lufs));
-        let (clip_bounds, position) = context.label_clip(center_y, label_height, text_width);
-
-        renderer.fill_paragraph(paragraph, position, label_color, clip_bounds);
-        active_labels.push(label);
+        renderer.fill_paragraph(
+            &entries[index].paragraph,
+            position,
+            label_color,
+            clip_bounds,
+        );
+        active_labels.push(label_text.as_str());
     }
 
     prune_label_paragraphs(&mut entries, &active_labels);
@@ -597,10 +575,8 @@ fn draw_live_value_label(
     };
 
     let label = format!("{:.1}LUFS", params.short_term_value);
-    let label_height = LIVE_VALUE_LABEL_HEIGHT.max(12.0);
     let available_width = context.available_width();
-
-    let minimum_width = live_label_min_width(label.as_str());
+    let minimum_width = live_label_min_width(&label);
 
     if available_width < minimum_width {
         live_entry.take();
@@ -608,43 +584,36 @@ fn draw_live_value_label(
     }
 
     let label_width = minimum_width.min(available_width);
-    let label_bounds = Size::new(label_width, label_height);
+    let label_bounds = Size::new(label_width, LIVE_VALUE_LABEL_HEIGHT);
 
     if let Some(entry) = live_entry.as_mut() {
-        entry.ensure(label.as_str(), label_bounds);
+        entry.ensure(&label, label_bounds);
     } else {
-        *live_entry = Some(LiveLabelParagraph::new(label.as_str(), label_bounds));
+        *live_entry = Some(LiveLabelParagraph::new(&label, label_bounds));
     }
 
     let Some(entry) = live_entry.as_ref() else {
         return;
     };
 
-    let text_bounds = entry.paragraph.min_bounds();
-    let text_width = text_bounds.width.max(1.0);
+    let text_width = entry.paragraph.min_bounds().width;
     if text_width > label_width + f32::EPSILON {
         live_entry.take();
         return;
     }
 
-    let (clip_bounds, position) = context.clip(label_height, label_width);
+    let (clip_bounds, position) = context.clip(LIVE_VALUE_LABEL_HEIGHT, label_width);
 
-    let label_background = live_label_background_color();
     renderer.fill_quad(
         Quad {
             bounds: clip_bounds,
             border: Border::default(),
             shadow: Default::default(),
         },
-        Background::Color(label_background),
+        Background::Color(live_label_background()),
     );
 
-    renderer.fill_paragraph(
-        &entry.paragraph,
-        position,
-        live_label_text_color(),
-        clip_bounds,
-    );
+    renderer.fill_paragraph(&entry.paragraph, position, theme::text_color(), clip_bounds);
 }
 
 struct GuideRenderContext {
@@ -769,23 +738,6 @@ fn guide_label_width(label: &str) -> f32 {
         GUIDE_LABEL_MIN_WIDTH,
         GUIDE_LABEL_MAX_WIDTH,
     )
-}
-
-fn build_live_label_paragraph(label: &str, bounds: Size) -> RenderParagraph {
-    RenderParagraph::with_text(Text {
-        content: label,
-        bounds,
-        size: Pixels(LIVE_VALUE_LABEL_FONT_SIZE),
-        line_height: LineHeight::Relative(1.0),
-        font: Font {
-            weight: FontWeight::Bold,
-            ..Font::DEFAULT
-        },
-        horizontal_alignment: Horizontal::Center,
-        vertical_alignment: Vertical::Center,
-        shaping: Shaping::Advanced,
-        wrapping: Wrapping::None,
-    })
 }
 
 fn live_label_min_width(label: &str) -> f32 {

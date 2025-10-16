@@ -100,28 +100,33 @@ pub enum WindowKind {
 
 impl WindowKind {
     pub(crate) fn coefficients(self, len: usize) -> Vec<f32> {
+        if len == 0 {
+            return Vec::new();
+        }
+        if len == 1 {
+            return vec![1.0];
+        }
+
         match self {
             WindowKind::Rectangular => vec![1.0; len],
-            WindowKind::Hann => (0..len)
-                .map(|n| {
-                    let phase = (n as f32) * core::f32::consts::TAU / (len as f32);
-                    0.5 * (1.0 - phase.cos())
-                })
-                .collect(),
-            WindowKind::Hamming => (0..len)
-                .map(|n| {
-                    let phase = (n as f32) * core::f32::consts::TAU / (len as f32);
-                    0.54 - 0.46 * phase.cos()
-                })
-                .collect(),
+            WindowKind::Hann => {
+                let scale = core::f32::consts::TAU / len as f32;
+                (0..len)
+                    .map(|n| 0.5 * (1.0 - (n as f32 * scale).cos()))
+                    .collect()
+            }
+            WindowKind::Hamming => {
+                let scale = core::f32::consts::TAU / len as f32;
+                (0..len)
+                    .map(|n| 0.54 - 0.46 * (n as f32 * scale).cos())
+                    .collect()
+            }
             WindowKind::Blackman => {
-                let a0 = 0.42;
-                let a1 = 0.5;
-                let a2 = 0.08;
+                let scale = core::f32::consts::TAU / len as f32;
                 (0..len)
                     .map(|n| {
-                        let phase = (n as f32) * core::f32::consts::TAU / (len as f32);
-                        a0 - a1 * phase.cos() + a2 * (2.0 * phase).cos()
+                        let phase = n as f32 * scale;
+                        0.42 - 0.5 * phase.cos() + 0.08 * (2.0 * phase).cos()
                     })
                     .collect()
             }
@@ -189,7 +194,7 @@ impl WindowCache {
     fn global() -> &'static WindowCache {
         static INSTANCE: OnceLock<WindowCache> = OnceLock::new();
         INSTANCE.get_or_init(|| WindowCache {
-            entries: RwLock::new(rustc_hash::FxHashMap::default()),
+            entries: RwLock::new(FxHashMap::default()),
         })
     }
 
@@ -199,13 +204,16 @@ impl WindowCache {
         }
 
         let key = WindowKey { kind, len };
+
+        // Fast path: check if already cached
         if let Some(existing) = self.entries.read().get(&key) {
             return Arc::clone(existing);
         }
 
-        let mut write = self.entries.write();
+        // Slow path: compute and cache
+        let mut entries = self.entries.write();
         Arc::clone(
-            write
+            entries
                 .entry(key)
                 .or_insert_with(|| Arc::from(kind.coefficients(len))),
         )
@@ -231,10 +239,10 @@ fn kaiser_coefficients(len: usize, beta: f32) -> Vec<f32> {
         return vec![1.0];
     }
 
-    let beta = if beta.is_finite() { beta.max(0.0) } else { 0.0 };
-
+    let beta = beta.max(0.0);
     let denom = modified_bessel_i0(beta as f64);
-    let span = (len.saturating_sub(1)) as f32;
+    let span = (len - 1) as f32;
+
     (0..len)
         .map(|n| {
             let ratio = if span > 0.0 {
@@ -257,12 +265,7 @@ fn planck_bessel_coefficients(len: usize, epsilon: f32, beta: f32) -> Vec<f32> {
         return vec![1.0];
     }
 
-    let epsilon = if epsilon.is_finite() {
-        epsilon.clamp(1.0e-6, 0.5 - 1.0e-6)
-    } else {
-        0.1
-    };
-
+    let epsilon = epsilon.clamp(1.0e-6, 0.5 - 1.0e-6);
     let planck = planck_taper_coefficients(len, epsilon);
     let kaiser = kaiser_coefficients(len, beta);
     planck.into_iter().zip(kaiser).map(|(p, k)| p * k).collect()
@@ -276,19 +279,11 @@ fn planck_taper_coefficients(len: usize, epsilon: f32) -> Vec<f32> {
         return vec![1.0];
     }
 
-    let epsilon = if epsilon.is_finite() {
-        epsilon.clamp(1.0e-6, 0.5 - 1.0e-6)
-    } else {
-        0.1
-    };
-
-    let n_max = (len.saturating_sub(1)) as f32;
-    if n_max <= 0.0 {
-        return vec![1.0; len];
-    }
-
+    let epsilon = epsilon.clamp(1.0e-6, 0.5 - 1.0e-6);
+    let n_max = (len - 1) as f32;
     let half = n_max * 0.5;
-    let taper_span = (epsilon * n_max).min(half.max(0.0));
+    let taper_span = (epsilon * n_max).min(half);
+
     if taper_span <= 0.0 {
         return vec![1.0; len];
     }
@@ -458,20 +453,18 @@ impl SpectrogramHistory {
             return;
         }
 
-        let mut drained = Vec::new();
-        self.clear_into(&mut drained);
-        evicted.clear();
         self.capacity = capacity;
 
         if capacity == 0 {
-            evicted.extend(drained);
+            evicted.clear();
+            evicted.extend(self.slots.drain(..));
             return;
         }
 
-        let retain_start = drained.len().saturating_sub(capacity);
-        evicted.extend(drained.drain(..retain_start));
-        for column in drained.drain(..) {
-            debug_assert!(self.push(column).is_none());
+        while self.slots.len() > capacity {
+            if let Some(column) = self.slots.pop_front() {
+                evicted.push(column);
+            }
         }
     }
 
@@ -522,7 +515,7 @@ impl SampleBuffer {
     }
 
     fn extend_from_slice(&mut self, samples: &[f32]) {
-        self.data.extend(samples.iter().copied());
+        self.data.extend(samples);
     }
 
     fn reserve_additional(&mut self, additional: usize) {
@@ -530,17 +523,18 @@ impl SampleBuffer {
     }
 
     fn consume(&mut self, count: usize) {
-        assert!(count <= self.data.len());
-        if count == 0 {
-            return;
-        }
-        self.data.drain(..count);
+        self.data.drain(..count.min(self.data.len()));
     }
 
     fn copy_front_into(&self, target: &mut [f32]) {
-        assert!(target.len() <= self.data.len());
-        for (slot, sample) in target.iter_mut().zip(self.data.iter()) {
-            *slot = *sample;
+        let (front, back) = self.data.as_slices();
+        let copy_len = target.len().min(self.data.len());
+
+        if copy_len <= front.len() {
+            target[..copy_len].copy_from_slice(&front[..copy_len]);
+        } else {
+            target[..front.len()].copy_from_slice(front);
+            target[front.len()..copy_len].copy_from_slice(&back[..copy_len - front.len()]);
         }
     }
 
@@ -555,15 +549,11 @@ impl SampleBuffer {
             return;
         }
 
-        if capacity < self.data.len() {
-            let drop = self.data.len() - capacity;
-            self.data.drain(..drop);
+        if self.data.len() > capacity {
+            self.data.drain(..self.data.len() - capacity);
         }
 
-        let additional = capacity.saturating_sub(self.data.len());
-        if additional > 0 {
-            self.data.reserve(additional);
-        }
+        self.data.reserve(capacity.saturating_sub(self.data.len()));
     }
 }
 
@@ -641,17 +631,12 @@ impl SynchroState {
     }
 
     fn bins_arc(&self) -> Option<Arc<[f32]>> {
-        if self.enabled && !self.bin_frequencies.is_empty() {
-            Some(Arc::clone(&self.bin_frequencies))
-        } else {
-            None
-        }
+        (self.enabled && !self.bin_frequencies.is_empty())
+            .then(|| Arc::clone(&self.bin_frequencies))
     }
 
     fn reset_power(&mut self) {
-        for slot in &mut self.power_buffer {
-            *slot = 0.0;
-        }
+        self.power_buffer.fill(0.0);
     }
 
     fn accumulate(&mut self, freq_hz: f64, display_power: f32) {
@@ -736,11 +721,9 @@ impl SynchroState {
 
     fn reset_temporal(&mut self) {
         if self.enabled {
-            self.temporal_buffer
-                .resize(self.magnitude_buffer.len(), DB_FLOOR);
-            for slot in &mut self.temporal_buffer {
-                *slot = DB_FLOOR;
-            }
+            let len = self.magnitude_buffer.len();
+            self.temporal_buffer.clear();
+            self.temporal_buffer.resize(len, DB_FLOOR);
         } else {
             self.temporal_buffer.clear();
         }
@@ -903,14 +886,12 @@ impl SpectrogramProcessor {
         self.bin_normalization = Self::compute_bin_normalization(self.window.as_ref(), fft_size);
         self.energy_normalization =
             Self::compute_energy_normalization(self.window.as_ref(), fft_size);
+
+        // Initialize smoothing buffers
+        self.temporal_smoothing_buffer.clear();
         self.temporal_smoothing_buffer.resize(bins, DB_FLOOR);
-        for slot in &mut self.temporal_smoothing_buffer {
-            *slot = DB_FLOOR;
-        }
+        self.frequency_scratch_buffer.clear();
         self.frequency_scratch_buffer.resize(bins, 0.0);
-        for slot in &mut self.frequency_scratch_buffer {
-            *slot = 0.0;
-        }
 
         self.synchro
             .reconfigure(&self.config, fft_size, self.config.sample_rate);
@@ -923,17 +904,21 @@ impl SpectrogramProcessor {
         self.magnitude_pool.retain(|buffer| buffer.len() == bins);
         self.pcm_buffer
             .resize_capacity(window_size.saturating_mul(2).max(1));
+
+        // Clear history and recycle columns
         let mut evicted = std::mem::take(&mut self.evicted_columns);
         self.history.clear_into(&mut evicted);
         evicted
             .drain(..)
             .for_each(|column| self.recycle_column(column));
+
         self.history
             .set_capacity(self.config.history_length, &mut evicted);
         evicted
             .drain(..)
             .for_each(|column| self.recycle_column(column));
         self.evicted_columns = evicted;
+
         self.pcm_buffer.clear();
         self.buffer_start_index = 0;
         self.start_instant = None;
@@ -1346,24 +1331,24 @@ impl AudioProcessor for SpectrogramProcessor {
     fn reset(&mut self) {
         let mut evicted = std::mem::take(&mut self.evicted_columns);
         self.history.clear_into(&mut evicted);
-        for column in evicted.drain(..) {
-            self.recycle_column(column);
-        }
+        evicted
+            .drain(..)
+            .for_each(|column| self.recycle_column(column));
         self.evicted_columns = evicted;
+
         let target_capacity = self.window_size.saturating_mul(2).max(1);
         self.pcm_buffer.resize_capacity(target_capacity);
         self.pcm_buffer.clear();
         self.buffer_start_index = 0;
         self.start_instant = None;
         self.pending_reset = true;
-        for slot in &mut self.temporal_smoothing_buffer {
-            *slot = DB_FLOOR;
-        }
-        let bins = self.magnitude_buffer.len();
-        self.frequency_scratch_buffer.resize(bins, 0.0);
-        for slot in &mut self.frequency_scratch_buffer {
-            *slot = 0.0;
-        }
+
+        // Reset smoothing state
+        self.temporal_smoothing_buffer.fill(DB_FLOOR);
+        self.frequency_scratch_buffer
+            .resize(self.magnitude_buffer.len(), 0.0);
+        self.frequency_scratch_buffer.fill(0.0);
+
         self.synchro.reset_temporal();
         self.synchro.reset_power();
     }
@@ -1372,37 +1357,23 @@ impl AudioProcessor for SpectrogramProcessor {
 impl SpectrogramProcessor {
     #[inline]
     fn mixdown_interleaved(&mut self, samples: &[f32], channels: usize) {
-        match channels {
-            1 => Self::push_all(&mut self.pcm_buffer, samples),
-            2 => self.mixdown_stereo(samples),
-            _ => self.mixdown_generic(samples, channels),
+        if channels == 1 {
+            self.pcm_buffer.extend_from_slice(samples);
+            return;
         }
-    }
 
-    #[inline(always)]
-    fn push_all(buffer: &mut SampleBuffer, samples: &[f32]) {
-        buffer.extend_from_slice(samples);
-    }
+        let scale = 1.0 / channels as f32;
+        let chunks = samples.chunks_exact(channels);
+        let remainder = chunks.remainder();
 
-    #[inline]
-    fn mixdown_stereo(&mut self, samples: &[f32]) {
-        for chunk in samples.chunks(2) {
-            let value = if chunk.len() == 2 {
-                0.5 * (chunk[0] + chunk[1])
-            } else {
-                0.5 * chunk[0]
-            };
-            self.pcm_buffer.push(value);
-        }
-    }
-
-    #[inline]
-    fn mixdown_generic(&mut self, samples: &[f32], channels: usize) {
-        debug_assert!(channels > 2);
-        let inv = 1.0 / channels as f32;
-        for chunk in samples.chunks(channels) {
+        for chunk in chunks {
             let sum: f32 = chunk.iter().sum();
-            self.pcm_buffer.push(sum * inv);
+            self.pcm_buffer.push(sum * scale);
+        }
+
+        if !remainder.is_empty() {
+            let sum: f32 = remainder.iter().sum();
+            self.pcm_buffer.push(sum * scale);
         }
     }
 
@@ -1431,82 +1402,56 @@ impl SpectrogramProcessor {
     }
 
     fn compute_bin_normalization(window: &[f32], fft_size: usize) -> Vec<f32> {
-        let bins = fft_size / 2 + 1;
-        if bins == 0 {
-            return Vec::new();
-        }
-
         let window_sum: f32 = window.iter().sum();
-        if !window_sum.is_finite() || window_sum.abs() <= f32::EPSILON {
-            return vec![0.0; bins];
-        }
-
-        let inv_sum = 1.0 / window_sum;
-        let dc_scale = inv_sum * inv_sum;
-        let interior_scale = (2.0 * inv_sum) * (2.0 * inv_sum);
-        let mut norms = vec![interior_scale; bins];
-        if !norms.is_empty() {
-            norms[0] = dc_scale;
-            if bins > 1 {
-                norms[bins - 1] = dc_scale;
-            }
-        }
-        norms
+        Self::compute_normalization(fft_size, window_sum, |sum| {
+            let inv_sum = 1.0 / sum;
+            (inv_sum * inv_sum, (2.0 * inv_sum) * (2.0 * inv_sum))
+        })
     }
 
     fn compute_energy_normalization(window: &[f32], fft_size: usize) -> Vec<f32> {
-        let bins = fft_size / 2 + 1;
-        if bins == 0 {
-            return Vec::new();
-        }
-
         let energy: f32 = window.iter().map(|&coeff| coeff * coeff).sum();
-        if !energy.is_finite() || energy <= f32::EPSILON {
-            return vec![0.0; bins];
+        Self::compute_normalization(fft_size, energy, |e| {
+            let inv_energy = 1.0 / e;
+            (inv_energy, 2.0 * inv_energy)
+        })
+    }
+
+    fn compute_normalization<F>(fft_size: usize, metric: f32, scale_fn: F) -> Vec<f32>
+    where
+        F: FnOnce(f32) -> (f32, f32),
+    {
+        let bins = fft_size / 2 + 1;
+        if bins == 0 || !metric.is_finite() || metric <= f32::EPSILON {
+            return vec![0.0; bins.max(0)];
         }
 
-        let inv_energy = 1.0 / energy;
-        let interior_scale = 2.0 * inv_energy;
+        let (dc_scale, interior_scale) = scale_fn(metric);
         let mut norms = vec![interior_scale; bins];
-        if !norms.is_empty() {
-            norms[0] = inv_energy;
-            if bins > 1 {
-                norms[bins - 1] = inv_energy;
-            }
+        norms[0] = dc_scale;
+        if bins > 1 {
+            norms[bins - 1] = dc_scale;
         }
         norms
     }
 
     fn acquire_magnitude_storage(&mut self, bins: usize) -> Arc<[f32]> {
-        if bins == 0 {
-            return Arc::from([]);
-        }
-
-        if let Some(index) = self
-            .magnitude_pool
-            .iter()
-            .rposition(|buffer| buffer.len() == bins)
-        {
-            self.magnitude_pool.swap_remove(index)
-        } else {
-            Arc::<[f32]>::from(vec![0.0f32; bins])
-        }
+        Self::acquire_storage(&mut self.magnitude_pool, bins, 0.0)
     }
 
     fn acquire_synchro_storage(&mut self, bins: usize) -> Arc<[f32]> {
+        Self::acquire_storage(&mut self.synchro_pool, bins, DB_FLOOR)
+    }
+
+    fn acquire_storage(pool: &mut Vec<Arc<[f32]>>, bins: usize, default: f32) -> Arc<[f32]> {
         if bins == 0 {
             return Arc::from([]);
         }
 
-        if let Some(index) = self
-            .synchro_pool
-            .iter()
+        pool.iter()
             .rposition(|buffer| buffer.len() == bins)
-        {
-            self.synchro_pool.swap_remove(index)
-        } else {
-            Arc::<[f32]>::from(vec![DB_FLOOR; bins])
-        }
+            .map(|index| pool.swap_remove(index))
+            .unwrap_or_else(|| Arc::from(vec![default; bins]))
     }
 
     fn fill_arc(mut storage: Arc<[f32]>, data: &[f32]) -> Arc<[f32]> {
@@ -1565,83 +1510,66 @@ fn compute_derivative_window(kind: WindowKind, window: &[f32], _sample_rate: f32
 }
 
 fn compute_numeric_derivative(window: &[f32]) -> Vec<f32> {
-    let len = window.len();
-    if len == 0 {
+    if window.is_empty() {
         return Vec::new();
     }
-    if len == 1 {
+    if window.len() == 1 {
         return vec![0.0];
     }
 
-    let mut derivative = vec![0.0f32; len];
-    for i in 0..len {
-        let prev = if i == 0 { window[0] } else { window[i - 1] };
-        let next = if i + 1 < len {
-            window[i + 1]
-        } else {
-            window[len - 1]
-        };
-        derivative[i] = 0.5 * (next - prev);
-    }
-    derivative
+    let len = window.len();
+    (0..len)
+        .map(|i| {
+            let prev = if i == 0 { window[0] } else { window[i - 1] };
+            let next = window.get(i + 1).copied().unwrap_or(window[len - 1]);
+            0.5 * (next - prev)
+        })
+        .collect()
 }
 
 fn compute_planck_bessel_derivative(window: &[f32], epsilon: f32, beta: f32) -> Vec<f32> {
-    let len = window.len();
-    if len == 0 {
+    if window.is_empty() {
         return Vec::new();
     }
-    if len == 1 {
+    if window.len() == 1 {
         return vec![0.0];
     }
 
-    let epsilon = if epsilon.is_finite() {
-        epsilon.clamp(1.0e-6, 0.5 - 1.0e-6)
-    } else {
-        0.1
-    };
-
-    let n_max = (len.saturating_sub(1)) as f32;
-    if n_max <= 0.0 {
-        return vec![0.0; len];
-    }
-
+    let len = window.len();
+    let epsilon = epsilon.clamp(1.0e-6, 0.5 - 1.0e-6);
+    let n_max = (len - 1) as f32;
     let half = n_max * 0.5;
-    let taper_span = (epsilon * n_max).min(half.max(0.0));
+    let taper_span = (epsilon * n_max).min(half);
+
     if taper_span <= 0.0 {
         return compute_numeric_derivative(window);
     }
 
     let denom = modified_bessel_i0(beta as f64);
-    let mut derivative = vec![0.0f32; len];
+    (0..len)
+        .map(|idx| {
+            let position = idx as f32;
+            let (mirrored, sign) = if position < half {
+                (position, 1.0)
+            } else if position > half {
+                (n_max - position, -1.0)
+            } else {
+                (position, 0.0)
+            };
 
-    for idx in 0..len {
-        let position = idx as f32;
-        let mirrored = if position <= half {
-            position
-        } else {
-            n_max - position
-        };
-        let sign = if position < half {
-            1.0
-        } else if position > half {
-            -1.0
-        } else {
-            0.0
-        };
+            let (kaiser_value, kaiser_derivative) =
+                kaiser_value_and_derivative(idx, len, beta, denom);
+            let planck_value =
+                if beta.abs() > f32::EPSILON && kaiser_value.abs() > f32::MIN_POSITIVE {
+                    window[idx] / kaiser_value
+                } else {
+                    planck_taper_value(mirrored, taper_span)
+                };
+            let planck_derivative = planck_taper_derivative(mirrored, taper_span) * sign;
 
-        let (kaiser_value, kaiser_derivative) = kaiser_value_and_derivative(idx, len, beta, denom);
-        let planck_value = if beta.abs() > f32::EPSILON && kaiser_value.abs() > f32::MIN_POSITIVE {
-            window[idx] / kaiser_value
-        } else {
-            planck_taper_value(mirrored, taper_span)
-        };
-        let planck_derivative = planck_taper_derivative(mirrored, taper_span) * sign;
-
-        derivative[idx] = planck_derivative * kaiser_value + planck_value * kaiser_derivative;
-    }
-
-    derivative
+            planck_derivative * kaiser_value + planck_value * kaiser_derivative
+        })
+        .collect()
 }
 
 fn planck_taper_derivative(distance: f32, taper_span: f32) -> f32 {

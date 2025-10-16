@@ -8,8 +8,7 @@ use iced::Element;
 use iced::widget::{column, pick_list, row, slider, text};
 use std::fmt;
 
-const SCROLL_SPEED_MIN: f32 = MIN_SCROLL_SPEED;
-const SCROLL_SPEED_MAX: f32 = MAX_SCROLL_SPEED;
+const SCROLL_SPEED_RANGE: (f32, f32, f32) = (MIN_SCROLL_SPEED, MAX_SCROLL_SPEED, 1.0);
 
 #[derive(Debug)]
 pub struct WaveformSettingsPane {
@@ -19,10 +18,11 @@ pub struct WaveformSettingsPane {
 
 impl fmt::Display for DownsampleStrategy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DownsampleStrategy::MinMax => write!(f, "Min/Max"),
-            DownsampleStrategy::Average => write!(f, "Average"),
-        }
+        let label = match self {
+            DownsampleStrategy::MinMax => "Min/Max",
+            DownsampleStrategy::Average => "Average",
+        };
+        write!(f, "{}", label)
     }
 }
 
@@ -36,14 +36,31 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Wave
     let config = visual_manager
         .borrow()
         .module_settings(VisualKind::WAVEFORM)
-        .and_then(|stored| stored.waveform().cloned())
-        .map_or_else(WaveformConfig::default, |stored| {
-            let mut config = WaveformConfig::default();
-            stored.apply_to(&mut config);
-            config
-        });
+        .and_then(|stored| {
+            stored.waveform().map(|settings| {
+                let mut config = WaveformConfig::default();
+                settings.apply_to(&mut config);
+                config
+            })
+        })
+        .unwrap_or_default();
 
     WaveformSettingsPane { visual_id, config }
+}
+
+fn labeled_slider<'a>(
+    label: &'static str,
+    value: f32,
+    format: String,
+    range: (f32, f32, f32),
+    on_change: impl Fn(f32) -> SettingsMessage + 'a,
+) -> iced::widget::Column<'a, SettingsMessage> {
+    let (min, max, step) = range;
+    column![
+        row![text(label), text(format).size(12)].spacing(8),
+        slider::Slider::new(min..=max, value, on_change).step(step),
+    ]
+    .spacing(8)
 }
 
 impl ModuleSettingsPane for WaveformSettingsPane {
@@ -52,28 +69,20 @@ impl ModuleSettingsPane for WaveformSettingsPane {
     }
 
     fn view(&self) -> Element<'_, SettingsMessage> {
+        let scroll_speed = labeled_slider(
+            "Scroll speed",
+            self.config.scroll_speed,
+            format!("{:.0} px/s", self.config.scroll_speed),
+            SCROLL_SPEED_RANGE,
+            |value| SettingsMessage::Waveform(Message::ScrollSpeed(value)),
+        );
+
         let strategies = [DownsampleStrategy::MinMax, DownsampleStrategy::Average];
-
-        let scroll_speed = column![
-            row![
-                text("Scroll speed"),
-                text(format!("{:.0} px/s", self.config.scroll_speed)).size(12)
-            ]
-            .spacing(8),
-            slider::Slider::new(
-                SCROLL_SPEED_MIN..=SCROLL_SPEED_MAX,
-                self.config.scroll_speed,
-                |value| SettingsMessage::Waveform(Message::ScrollSpeed(value)),
-            )
-            .step(1.0)
-        ]
-        .spacing(8);
-
         let downsample = column![
             text("Downsampling strategy"),
             pick_list(strategies.to_vec(), Some(self.config.downsample), |value| {
                 SettingsMessage::Waveform(Message::Downsample(value))
-            },)
+            })
             .text_size(14)
         ]
         .spacing(8);
@@ -91,35 +100,46 @@ impl ModuleSettingsPane for WaveformSettingsPane {
             return;
         };
 
-        let mut changed = false;
-        match msg {
-            Message::ScrollSpeed(value) => {
-                let clamped = value.clamp(SCROLL_SPEED_MIN, SCROLL_SPEED_MAX);
-                if (self.config.scroll_speed - clamped).abs() > f32::EPSILON {
-                    self.config.scroll_speed = clamped;
-                    changed = true;
-                }
-            }
+        let changed = match msg {
+            Message::ScrollSpeed(value) => update_if_changed(
+                &mut self.config.scroll_speed,
+                value.clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED),
+            ),
             Message::Downsample(strategy) => {
-                if self.config.downsample != *strategy {
-                    self.config.downsample = *strategy;
-                    changed = true;
-                }
+                update_if_changed(&mut self.config.downsample, *strategy)
             }
-        }
+        };
 
         if changed {
-            let mut module_settings = ModuleSettings::default();
-            module_settings.set_waveform(WaveformSettings::from_config(&self.config));
-
-            if visual_manager
-                .borrow_mut()
-                .apply_module_settings(VisualKind::WAVEFORM, &module_settings)
-            {
-                settings.update(|settings| {
-                    settings.set_waveform_settings(VisualKind::WAVEFORM, &self.config)
-                });
-            }
+            apply_waveform_config(&self.config, visual_manager, settings);
         }
+    }
+}
+
+#[inline]
+fn update_if_changed<T: PartialEq + Copy>(target: &mut T, new_value: T) -> bool {
+    if *target != new_value {
+        *target = new_value;
+        true
+    } else {
+        false
+    }
+}
+
+fn apply_waveform_config(
+    config: &WaveformConfig,
+    visual_manager: &VisualManagerHandle,
+    settings: &SettingsHandle,
+) {
+    let mut module_settings = ModuleSettings::default();
+    module_settings.set_waveform(WaveformSettings::from_config(config));
+
+    if visual_manager
+        .borrow_mut()
+        .apply_module_settings(VisualKind::WAVEFORM, &module_settings)
+    {
+        settings.update(|mgr| {
+            mgr.set_waveform_settings(VisualKind::WAVEFORM, config);
+        });
     }
 }

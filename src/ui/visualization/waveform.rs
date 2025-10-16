@@ -196,8 +196,8 @@ impl WaveformState {
 
         let mut min_values = vec![0.0; visible * channels];
         let mut max_values = vec![0.0; visible * channels];
-        let min_source = self.snapshot.min_values.as_ref();
-        let max_source = self.snapshot.max_values.as_ref();
+        let min_source = &self.snapshot.min_values;
+        let max_source = &self.snapshot.max_values;
         for channel in 0..channels {
             let src_base = channel * columns + start;
             let dest_base = channel * visible;
@@ -208,27 +208,18 @@ impl WaveformState {
         }
 
         let mut frequency = vec![0.0; visible];
-        let freq_source = self.snapshot.frequency_normalized.as_ref();
+        let freq_source = &self.snapshot.frequency_normalized;
         frequency.copy_from_slice(&freq_source[start..start + visible]);
 
         let preview_active = self.preview_progress > 0.0;
-        let preview_min = if preview_active {
-            let mut values = self.preview_min.clone();
-            if values.len() < channels {
-                values.resize(channels, 0.0);
-            }
-            values
+        let (preview_min, preview_max) = if preview_active {
+            let mut min = self.preview_min.clone();
+            let mut max = self.preview_max.clone();
+            min.resize(channels, 0.0);
+            max.resize(channels, 0.0);
+            (min, max)
         } else {
-            Vec::new()
-        };
-        let preview_max = if preview_active {
-            let mut values = self.preview_max.clone();
-            if values.len() < channels {
-                values.resize(channels, 0.0);
-            }
-            values
-        } else {
-            Vec::new()
+            (Vec::new(), Vec::new())
         };
         let preview_progress = if preview_active { 1.0 } else { 0.0 };
 
@@ -247,8 +238,8 @@ impl WaveformState {
 
     fn update_preview_state(&mut self) {
         let channels = self.snapshot.channels.max(1);
-        ensure_len(&mut self.preview_min, channels);
-        ensure_len(&mut self.preview_max, channels);
+        self.preview_min.resize(channels, 0.0);
+        self.preview_max.resize(channels, 0.0);
 
         let progress = self.snapshot.preview.progress.clamp(0.0, 1.0);
         if progress > 0.0
@@ -282,16 +273,12 @@ impl WaveformState {
     }
 
     fn update_frequency_hint(&mut self) {
-        if let Some(freq) = self.snapshot.frequency_normalized.as_ref().last().copied() {
-            self.frequency_hint = freq;
-        } else {
-            self.frequency_hint = self.snapshot.preview.frequency_normalized;
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn style_mut(&mut self) -> &mut WaveformStyle {
-        &mut self.style
+        self.frequency_hint = self
+            .snapshot
+            .frequency_normalized
+            .last()
+            .copied()
+            .unwrap_or(self.snapshot.preview.frequency_normalized);
     }
 
     pub fn desired_columns(&self) -> usize {
@@ -328,7 +315,7 @@ impl WaveformStyle {
             if clamped <= end.position {
                 let span = (end.position - start.position).max(f32::EPSILON);
                 let alpha = (clamped - start.position).clamp(0.0, span) / span;
-                return lerp_color(start.color, end.color, alpha);
+                return theme::mix_colors(start.color, end.color, alpha);
             }
         }
 
@@ -348,27 +335,24 @@ impl Default for WaveformStyle {
     fn default() -> Self {
         let background = theme::with_alpha(theme::base_color(), 0.0);
         let palette = theme::waveform_palette();
-        let gradient = if palette.len() <= 1 {
-            palette
-                .first()
-                .copied()
-                .map(|color| {
-                    vec![GradientStop {
-                        position: 0.0,
+
+        let gradient = match palette.len() {
+            0 => Vec::new(),
+            1 => vec![GradientStop {
+                position: 0.0,
+                color: palette[0],
+            }],
+            len => {
+                let last_index = (len - 1) as f32;
+                palette
+                    .iter()
+                    .enumerate()
+                    .map(|(index, &color)| GradientStop {
+                        position: index as f32 / last_index,
                         color,
-                    }]
-                })
-                .unwrap_or_default()
-        } else {
-            let last_index = (palette.len() - 1) as f32;
-            palette
-                .iter()
-                .enumerate()
-                .map(|(index, color)| GradientStop {
-                    position: index as f32 / last_index,
-                    color: *color,
-                })
-                .collect()
+                    })
+                    .collect()
+            }
         };
 
         Self {
@@ -466,19 +450,4 @@ where
     Message: 'a,
 {
     Element::new(Waveform::new(state))
-}
-
-fn ensure_len(vec: &mut Vec<f32>, len: usize) {
-    if vec.len() != len {
-        vec.resize(len, 0.0);
-    }
-}
-
-fn lerp_color(a: Color, b: Color, alpha: f32) -> Color {
-    Color::from_rgba(
-        a.r + (b.r - a.r) * alpha,
-        a.g + (b.g - a.g) * alpha,
-        a.b + (b.b - a.b) * alpha,
-        a.a + (b.a - a.a) * alpha,
-    )
 }

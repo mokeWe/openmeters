@@ -8,9 +8,7 @@
 use crate::dsp::oscilloscope::OscilloscopeConfig;
 use crate::dsp::spectrogram::{SpectrogramConfig, WindowKind};
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
-use crate::dsp::waveform::{
-    DownsampleStrategy, MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, WaveformConfig,
-};
+use crate::dsp::waveform::{DownsampleStrategy, WaveformConfig};
 use crate::ui::visualization::visual_manager::VisualKind;
 use serde::de::{self, Deserializer};
 use serde::ser::Serializer;
@@ -102,26 +100,17 @@ impl ModuleSettings {
     }
 
     pub fn retain_only(&mut self, kind: VisualKind) {
-        let configurable = kind == VisualKind::SPECTROGRAM
-            || kind == VisualKind::SPECTRUM
-            || kind == VisualKind::OSCILLOSCOPE
-            || kind == VisualKind::WAVEFORM;
+        let is_configurable = matches!(
+            kind,
+            VisualKind::SPECTROGRAM
+                | VisualKind::SPECTRUM
+                | VisualKind::OSCILLOSCOPE
+                | VisualKind::WAVEFORM
+        );
 
-        if configurable {
-            if self
-                .config
-                .as_ref()
-                .is_some_and(|config| config.kind() != kind)
-            {
-                self.clear_config();
-            }
-        } else {
-            self.clear_config();
+        if !is_configurable || self.config.as_ref().is_some_and(|cfg| cfg.kind() != kind) {
+            self.config = None;
         }
-    }
-
-    fn clear_config(&mut self) {
-        self.config = None;
     }
 }
 
@@ -256,16 +245,14 @@ impl Default for WaveformSettings {
 impl WaveformSettings {
     pub fn from_config(config: &WaveformConfig) -> Self {
         Self {
-            scroll_speed: config
-                .scroll_speed
-                .clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED),
+            scroll_speed: config.scroll_speed,
             downsample: config.downsample,
             _legacy_max_columns: None,
         }
     }
 
     pub fn apply_to(&self, config: &mut WaveformConfig) {
-        config.scroll_speed = self.scroll_speed.clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED);
+        config.scroll_speed = self.scroll_speed;
         config.downsample = self.downsample;
     }
 }
