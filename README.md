@@ -24,9 +24,9 @@ Checked features are implemented, unchecked features are planned.
   - [ ] XY mode
 - [x] **spectrogram**
   - [x] Reassignment for better low-frequency resolution
-  - [ ] mel, log, and linear scales
+  - [x] mel, log, and linear scales
 - [x] **spectrum analyzer**
-  - [ ] mel, log, and linear scales
+  - [x] mel, log, and linear scales
 - [ ] **stereometer**
 - [x] **waveform**
 - [x] configurability

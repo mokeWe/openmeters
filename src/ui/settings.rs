@@ -263,6 +263,7 @@ pub struct SpectrumSettings {
     pub fft_size: usize,
     pub hop_size: usize,
     pub averaging_factor: f32,
+    pub frequency_scale: FrequencyScale,
 }
 
 impl Default for SpectrumSettings {
@@ -276,6 +277,7 @@ impl Default for SpectrumSettings {
             fft_size: config.fft_size,
             hop_size: config.hop_size,
             averaging_factor: factor,
+            frequency_scale: config.frequency_scale,
         }
     }
 }
@@ -290,6 +292,7 @@ impl SpectrumSettings {
             fft_size: config.fft_size,
             hop_size: config.hop_size,
             averaging_factor: factor,
+            frequency_scale: config.frequency_scale,
         }
     }
 
@@ -299,6 +302,7 @@ impl SpectrumSettings {
         config.averaging = AveragingMode::Exponential {
             factor: self.averaging_factor.clamp(0.0, 0.9999),
         };
+        config.frequency_scale = self.frequency_scale;
     }
 }
 

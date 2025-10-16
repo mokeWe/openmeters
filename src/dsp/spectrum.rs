@@ -1,7 +1,7 @@
 //! Spectrum analyser DSP scaffolding.
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
-use crate::dsp::spectrogram::WindowKind;
+use crate::dsp::spectrogram::{FrequencyScale, WindowKind};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
@@ -32,6 +32,7 @@ pub struct SpectrumConfig {
     pub hop_size: usize,
     pub window: WindowKind,
     pub averaging: AveragingMode,
+    pub frequency_scale: FrequencyScale,
 }
 
 impl Default for SpectrumConfig {
@@ -42,6 +43,7 @@ impl Default for SpectrumConfig {
             hop_size: 512,
             window: WindowKind::Hann,
             averaging: AveragingMode::Exponential { factor: 0.5 },
+            frequency_scale: FrequencyScale::Logarithmic,
         }
     }
 }

@@ -26,7 +26,7 @@ pub struct SpectrogramSettingsPane {
     visual_id: VisualId,
     config: SpectrogramConfig,
     window: WindowPreset,
-    frequency_scale: FrequencyScalePreset,
+    frequency_scale: FrequencyScale,
     hop_ratio: HopRatio,
 }
 
@@ -36,7 +36,7 @@ pub enum Message {
     HopRatio(HopRatio),
     HistoryLength(f32),
     Window(WindowPreset),
-    FrequencyScale(FrequencyScalePreset),
+    FrequencyScale(FrequencyScale),
     UseReassignment(bool),
     ReassignmentFloor(f32),
     ReassignmentLowBinLimit(usize),
@@ -68,7 +68,7 @@ pub fn create(
         .unwrap_or_default();
 
     let window = WindowPreset::from_kind(config.window);
-    let frequency_scale = FrequencyScalePreset::from_scale(config.frequency_scale);
+    let frequency_scale = config.frequency_scale;
     let hop_ratio = HopRatio::from_config(config.fft_size, config.hop_size);
 
     SpectrogramSettingsPane {
@@ -121,7 +121,12 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
         });
 
         let frequency_scale_pick = pick_list(
-            FrequencyScalePreset::ALL.to_vec(),
+            [
+                FrequencyScale::Linear,
+                FrequencyScale::Logarithmic,
+                FrequencyScale::Mel,
+            ]
+            .to_vec(),
             Some(self.frequency_scale),
             |scale| SettingsMessage::Spectrogram(Message::FrequencyScale(scale)),
         );
@@ -292,7 +297,7 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             Message::FrequencyScale(scale) => {
                 if self.frequency_scale != *scale {
                     self.frequency_scale = *scale;
-                    self.config.frequency_scale = scale.to_scale();
+                    self.config.frequency_scale = *scale;
                     changed = true;
                 }
             }
@@ -518,44 +523,12 @@ impl fmt::Display for HopRatio {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FrequencyScalePreset {
-    Linear,
-    Logarithmic,
-    Mel,
-}
-
-impl FrequencyScalePreset {
-    const ALL: [FrequencyScalePreset; 3] = [
-        FrequencyScalePreset::Linear,
-        FrequencyScalePreset::Logarithmic,
-        FrequencyScalePreset::Mel,
-    ];
-
-    fn from_scale(scale: FrequencyScale) -> Self {
-        match scale {
-            FrequencyScale::Linear => FrequencyScalePreset::Linear,
-            FrequencyScale::Logarithmic => FrequencyScalePreset::Logarithmic,
-            FrequencyScale::Mel => FrequencyScalePreset::Mel,
-        }
-    }
-
-    fn to_scale(self) -> FrequencyScale {
-        match self {
-            FrequencyScalePreset::Linear => FrequencyScale::Linear,
-            FrequencyScalePreset::Logarithmic => FrequencyScale::Logarithmic,
-            FrequencyScalePreset::Mel => FrequencyScale::Mel,
-        }
-    }
-}
-
-impl fmt::Display for FrequencyScalePreset {
+impl fmt::Display for FrequencyScale {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            FrequencyScalePreset::Linear => "Linear",
-            FrequencyScalePreset::Logarithmic => "Logarithmic",
-            FrequencyScalePreset::Mel => "Mel",
-        };
-        write!(f, "{}", label)
+        match self {
+            FrequencyScale::Linear => write!(f, "Linear"),
+            FrequencyScale::Logarithmic => write!(f, "Logarithmic"),
+            FrequencyScale::Mel => write!(f, "Mel"),
+        }
     }
 }

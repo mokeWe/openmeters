@@ -1748,11 +1748,11 @@ fn apply_temporal_smoothing_with_weights(
     }
 }
 
-fn hz_to_mel(hz: f32) -> f32 {
+pub fn hz_to_mel(hz: f32) -> f32 {
     2595.0 * (1.0 + hz / 700.0).log10()
 }
 
-fn mel_to_hz(mel: f32) -> f32 {
+pub fn mel_to_hz(mel: f32) -> f32 {
     700.0 * (10.0f32.powf(mel / 2595.0) - 1.0)
 }
 

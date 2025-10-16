@@ -1,4 +1,5 @@
 use crate::audio::meter_tap::MeterFormat;
+use crate::dsp::spectrogram::{FrequencyScale, hz_to_mel, mel_to_hz};
 use crate::dsp::spectrum::{
     SpectrumConfig, SpectrumProcessor as CoreSpectrumProcessor, SpectrumSnapshot,
 };
@@ -103,6 +104,7 @@ pub struct SpectrumStyle {
     pub smoothing_passes: usize,
     pub highlight_threshold: f32,
     pub highlight_color: Color,
+    pub frequency_scale: FrequencyScale,
 }
 
 impl Default for SpectrumStyle {
@@ -127,6 +129,7 @@ impl Default for SpectrumStyle {
             smoothing_passes: 2,
             highlight_threshold: 0.65,
             highlight_color: theme::with_alpha(theme::accent_primary(), 0.9),
+            frequency_scale: FrequencyScale::Logarithmic,
         }
     }
 }
@@ -214,9 +217,14 @@ impl SpectrumState {
         self.weighted_points.clear();
         self.unweighted_points.clear();
 
+        // Precompute scale-specific parameters
         let log_min = min_freq.max(EPSILON).log10();
         let log_max = max_freq.max(min_freq * 1.01).log10();
-        let denom = (log_max - log_min).max(EPSILON);
+        let log_range = (log_max - log_min).max(EPSILON);
+
+        let mel_min = hz_to_mel(min_freq);
+        let mel_max = hz_to_mel(max_freq);
+        let mel_range = (mel_max - mel_min).max(EPSILON);
 
         for i in 0..resolution {
             let t = if resolution == 1 {
@@ -224,7 +232,17 @@ impl SpectrumState {
             } else {
                 i as f32 / (resolution - 1) as f32
             };
-            let freq = 10.0f32.powf(log_min + denom * t);
+
+            // Map normalized position to frequency based on selected scale
+            let freq = match self.style.frequency_scale {
+                FrequencyScale::Linear => min_freq + (max_freq - min_freq) * t,
+                FrequencyScale::Logarithmic => 10.0f32.powf(log_min + log_range * t),
+                FrequencyScale::Mel => {
+                    let mel = mel_min + mel_range * t;
+                    mel_to_hz(mel)
+                }
+            };
+
             let magnitude_weighted =
                 interpolate_magnitude(&snapshot.frequency_bins, &snapshot.magnitudes_db, freq);
             let magnitude_unweighted = interpolate_magnitude(
@@ -240,7 +258,12 @@ impl SpectrumState {
             self.unweighted_points.push([t, normalized_unweighted]);
         }
 
-        self.frequency_grid = build_frequency_grid(min_freq, max_freq, self.style.grid_major_color);
+        self.frequency_grid = build_frequency_grid(
+            min_freq,
+            max_freq,
+            self.style.grid_major_color,
+            self.style.frequency_scale,
+        );
         if self.style.smoothing_radius > 0 && self.style.smoothing_passes > 0 {
             smooth_points(
                 &mut self.weighted_points,
@@ -470,21 +493,42 @@ fn interpolate_magnitude(bins: &[f32], magnitudes: &[f32], target: f32) -> f32 {
     }
 }
 
-fn build_frequency_grid(min_freq: f32, max_freq: f32, major_color: Color) -> Vec<GridLineSpec> {
+fn build_frequency_grid(
+    min_freq: f32,
+    max_freq: f32,
+    major_color: Color,
+    scale: FrequencyScale,
+) -> Vec<GridLineSpec> {
     const STANDARD_FREQUENCIES: &[f32] = &[
         31.5, 63.0, 125.0, 250.0, 500.0, 1_000.0, 2_000.0, 4_000.0, 8_000.0, 16_000.0,
     ];
 
+    const MIN_LABEL_SPACING: f32 = 0.08;
+
+    // Precompute scale parameters
     let log_min = min_freq.max(EPSILON).log10();
     let log_max = max_freq.max(min_freq * 1.01).log10();
-    let denom = (log_max - log_min).max(EPSILON);
+    let log_range = (log_max - log_min).max(EPSILON);
+
+    let mel_min = hz_to_mel(min_freq);
+    let mel_max = hz_to_mel(max_freq);
+    let mel_range = (mel_max - mel_min).max(EPSILON);
 
     let mut lines: Vec<GridLineSpec> = STANDARD_FREQUENCIES
         .iter()
         .copied()
         .filter(|f| *f >= min_freq && *f <= max_freq)
         .map(|frequency| {
-            let ratio = (frequency.log10() - log_min) / denom;
+            // Calculate position based on the selected scale
+            let ratio = match scale {
+                FrequencyScale::Linear => (frequency - min_freq) / (max_freq - min_freq),
+                FrequencyScale::Logarithmic => (frequency.log10() - log_min) / log_range,
+                FrequencyScale::Mel => {
+                    let mel = hz_to_mel(frequency);
+                    (mel - mel_min) / mel_range
+                }
+            };
+
             GridLineSpec {
                 position: ratio.clamp(0.0, 1.0),
                 frequency_hz: frequency,
@@ -507,9 +551,24 @@ fn build_frequency_grid(min_freq: f32, max_freq: f32, major_color: Color) -> Vec
             color: major_color,
             thickness: 1.5,
         });
+        return lines;
     }
 
-    lines
+    lines.sort_by(|a, b| {
+        a.position
+            .partial_cmp(&b.position)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    let mut filtered_lines = Vec::with_capacity(lines.len());
+
+    for line in lines {
+        if line.position >= MIN_LABEL_SPACING {
+            filtered_lines.push(line);
+        }
+    }
+
+    filtered_lines
 }
 
 fn ensure_grid_label(entries: &mut Vec<GridLabelParagraph>, label: &str, bounds: Size) -> usize {

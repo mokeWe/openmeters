@@ -1,4 +1,5 @@
 use super::{ModuleSettingsPane, SettingsMessage};
+use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
 use crate::ui::settings::{ModuleSettings, SettingsHandle, SpectrumSettings};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
@@ -8,6 +9,11 @@ use iced::widget::{column, pick_list, row, slider, text};
 const AVERAGING_MIN: f32 = 0.0;
 const AVERAGING_MAX: f32 = 0.95;
 const FFT_OPTIONS: [usize; 4] = [1024, 2048, 4096, 8192];
+const SCALE_OPTIONS: [FrequencyScale; 3] = [
+    FrequencyScale::Linear,
+    FrequencyScale::Logarithmic,
+    FrequencyScale::Mel,
+];
 
 #[derive(Debug)]
 pub struct SpectrumSettingsPane {
@@ -20,6 +26,7 @@ pub struct SpectrumSettingsPane {
 pub enum Message {
     FftSize(usize),
     Averaging(f32),
+    FrequencyScale(FrequencyScale),
 }
 
 pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> SpectrumSettingsPane {
@@ -59,6 +66,14 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
 
         let fft_row = row![text("FFT size"), fft_pick].spacing(12);
 
+        let scale_pick = pick_list(
+            SCALE_OPTIONS.to_vec(),
+            Some(self.config.frequency_scale),
+            |scale| SettingsMessage::Spectrum(Message::FrequencyScale(scale)),
+        );
+
+        let scale_row = row![text("Frequency scale"), scale_pick].spacing(12);
+
         let averaging = column![
             row![
                 text("Averaging"),
@@ -74,7 +89,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
         ]
         .spacing(8);
 
-        column![fft_row, averaging].spacing(16).into()
+        column![fft_row, scale_row, averaging].spacing(16).into()
     }
 
     fn handle(
@@ -104,6 +119,10 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 } else {
                     false
                 }
+            }
+            Message::FrequencyScale(scale) if self.config.frequency_scale != *scale => {
+                self.config.frequency_scale = *scale;
+                true
             }
             _ => false,
         };

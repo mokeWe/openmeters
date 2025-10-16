@@ -489,6 +489,7 @@ impl VisualModule for SpectrumVisual {
             let mut config = self.processor.config();
             stored.apply_to(&mut config);
             self.processor.update_config(config);
+            self.state.style_mut().frequency_scale = config.frequency_scale;
         }
     }
 
