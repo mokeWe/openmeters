@@ -6,7 +6,7 @@
 //! - converting between internal config structs and serializable settings structs
 
 use crate::dsp::oscilloscope::OscilloscopeConfig;
-use crate::dsp::spectrogram::{SpectrogramConfig, WindowKind};
+use crate::dsp::spectrogram::{FrequencyScale, SpectrogramConfig, WindowKind};
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
 use crate::dsp::waveform::{DownsampleStrategy, WaveformConfig};
 use crate::ui::visualization::visual_manager::VisualKind;
@@ -309,6 +309,7 @@ pub struct SpectrogramSettings {
     pub hop_size: usize,
     pub history_length: usize,
     pub window: WindowKind,
+    pub frequency_scale: FrequencyScale,
     pub use_reassignment: bool,
     pub reassignment_power_floor_db: f32,
     pub reassignment_low_bin_limit: usize,
@@ -337,6 +338,7 @@ impl SpectrogramSettings {
             hop_size: config.hop_size,
             history_length: config.history_length,
             window: config.window,
+            frequency_scale: config.frequency_scale,
             use_reassignment: config.use_reassignment,
             reassignment_power_floor_db: config.reassignment_power_floor_db,
             reassignment_low_bin_limit: config.reassignment_low_bin_limit,
@@ -358,6 +360,7 @@ impl SpectrogramSettings {
         config.hop_size = self.hop_size.max(1);
         config.history_length = self.history_length.max(1);
         config.window = self.window;
+        config.frequency_scale = self.frequency_scale;
         config.use_reassignment = self.use_reassignment;
         config.reassignment_power_floor_db = self.reassignment_power_floor_db.clamp(-160.0, 0.0);
         config.reassignment_low_bin_limit = self.reassignment_low_bin_limit;

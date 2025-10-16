@@ -1,5 +1,5 @@
 use super::{ModuleSettingsPane, SettingsMessage};
-use crate::dsp::spectrogram::{SpectrogramConfig, WindowKind};
+use crate::dsp::spectrogram::{FrequencyScale, SpectrogramConfig, WindowKind};
 use crate::ui::settings::{ModuleSettings, SettingsHandle, SpectrogramSettings};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
@@ -26,6 +26,7 @@ pub struct SpectrogramSettingsPane {
     visual_id: VisualId,
     config: SpectrogramConfig,
     window: WindowPreset,
+    frequency_scale: FrequencyScalePreset,
     hop_ratio: HopRatio,
 }
 
@@ -35,6 +36,7 @@ pub enum Message {
     HopRatio(HopRatio),
     HistoryLength(f32),
     Window(WindowPreset),
+    FrequencyScale(FrequencyScalePreset),
     UseReassignment(bool),
     ReassignmentFloor(f32),
     ReassignmentLowBinLimit(usize),
@@ -66,12 +68,14 @@ pub fn create(
         .unwrap_or_default();
 
     let window = WindowPreset::from_kind(config.window);
+    let frequency_scale = FrequencyScalePreset::from_scale(config.frequency_scale);
     let hop_ratio = HopRatio::from_config(config.fft_size, config.hop_size);
 
     SpectrogramSettingsPane {
         visual_id,
         config,
         window,
+        frequency_scale,
         hop_ratio,
     }
 }
@@ -115,6 +119,12 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
         let window_pick = pick_list(WindowPreset::ALL.to_vec(), Some(self.window), |preset| {
             SettingsMessage::Spectrogram(Message::Window(preset))
         });
+
+        let frequency_scale_pick = pick_list(
+            FrequencyScalePreset::ALL.to_vec(),
+            Some(self.frequency_scale),
+            |scale| SettingsMessage::Spectrogram(Message::FrequencyScale(scale)),
+        );
 
         let history_slider = labeled_slider(
             "History length",
@@ -210,6 +220,7 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                     row![text("FFT size"), fft_pick].spacing(12),
                     row![text("Hop overlap"), hop_pick].spacing(12),
                     row![text("Window"), window_pick].spacing(12),
+                    row![text("Frequency scale"), frequency_scale_pick].spacing(12),
                     row![text("Zero padding"), zero_padding_pick].spacing(12),
                 ]
                 .spacing(12)
@@ -275,6 +286,13 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                 if self.window != *preset {
                     self.window = *preset;
                     self.config.window = preset.to_window_kind();
+                    changed = true;
+                }
+            }
+            Message::FrequencyScale(scale) => {
+                if self.frequency_scale != *scale {
+                    self.frequency_scale = *scale;
+                    self.config.frequency_scale = scale.to_scale();
                     changed = true;
                 }
             }
@@ -495,6 +513,48 @@ impl fmt::Display for HopRatio {
             HopRatio::Quarter => "75% overlap",
             HopRatio::Sixth => "83% overlap",
             HopRatio::Eighth => "87% overlap",
+        };
+        write!(f, "{}", label)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FrequencyScalePreset {
+    Linear,
+    Logarithmic,
+    Mel,
+}
+
+impl FrequencyScalePreset {
+    const ALL: [FrequencyScalePreset; 3] = [
+        FrequencyScalePreset::Linear,
+        FrequencyScalePreset::Logarithmic,
+        FrequencyScalePreset::Mel,
+    ];
+
+    fn from_scale(scale: FrequencyScale) -> Self {
+        match scale {
+            FrequencyScale::Linear => FrequencyScalePreset::Linear,
+            FrequencyScale::Logarithmic => FrequencyScalePreset::Logarithmic,
+            FrequencyScale::Mel => FrequencyScalePreset::Mel,
+        }
+    }
+
+    fn to_scale(self) -> FrequencyScale {
+        match self {
+            FrequencyScalePreset::Linear => FrequencyScale::Linear,
+            FrequencyScalePreset::Logarithmic => FrequencyScale::Logarithmic,
+            FrequencyScalePreset::Mel => FrequencyScale::Mel,
+        }
+    }
+}
+
+impl fmt::Display for FrequencyScalePreset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let label = match self {
+            FrequencyScalePreset::Linear => "Linear",
+            FrequencyScalePreset::Logarithmic => "Logarithmic",
+            FrequencyScalePreset::Mel => "Mel",
         };
         write!(f, "{}", label)
     }

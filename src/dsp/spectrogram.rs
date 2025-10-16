@@ -27,6 +27,8 @@ pub struct SpectrogramConfig {
     pub hop_size: usize,
     /// Window selection controlling spectral leakage characteristics.
     pub window: WindowKind,
+    /// Frequency scaling mode for display.
+    pub frequency_scale: FrequencyScale,
     /// Maximum retained history columns.
     pub history_length: usize,
     /// Enable time-frequency reassignment for sharper spectral localization.
@@ -69,6 +71,7 @@ impl Default for SpectrogramConfig {
                 epsilon: 0.1,
                 beta: 5.5,
             },
+            frequency_scale: FrequencyScale::default(),
             history_length: 480,
             use_reassignment: true,
             reassignment_power_floor_db: -90.0,
@@ -84,6 +87,20 @@ impl Default for SpectrogramConfig {
             frequency_smoothing_max_hz: 350.0,
             frequency_smoothing_blend_hz: 150.0,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FrequencyScale {
+    Linear,
+    Logarithmic,
+    Mel,
+}
+
+impl Default for FrequencyScale {
+    fn default() -> Self {
+        Self::Logarithmic
     }
 }
 
@@ -426,6 +443,7 @@ pub struct SpectrogramUpdate {
     pub fft_size: usize,
     pub hop_size: usize,
     pub sample_rate: f32,
+    pub frequency_scale: FrequencyScale,
     pub history_length: usize,
     pub reset: bool,
     pub reassignment_enabled: bool,
@@ -560,6 +578,7 @@ impl SampleBuffer {
 #[derive(Default)]
 struct SynchroState {
     enabled: bool,
+    scale: FrequencyScale,
     bin_frequencies: Arc<[f32]>,
     power_buffer: Vec<f32>,
     magnitude_buffer: Vec<f32>,
@@ -568,6 +587,8 @@ struct SynchroState {
     max_hz: f32,
     log_min: f64,
     log_range: f64,
+    mel_min: f64,
+    mel_range: f64,
 }
 
 impl SynchroState {
@@ -590,15 +611,21 @@ impl SynchroState {
             return;
         }
 
+        let scale = config.frequency_scale;
         let min_hz = config
             .synchrosqueezing_min_hz
             .max(1.0)
             .min(sample_rate * 0.5);
         let nyquist = (sample_rate * 0.5).max(min_hz * 1.001);
         let bin_count = config.synchrosqueezing_bin_count.max(2);
+
         let log_min = (min_hz as f64).ln();
         let log_max = (nyquist as f64).ln();
         let log_range = (log_max - log_min).max(1.0e-9);
+
+        let mel_min = hz_to_mel(min_hz) as f64;
+        let mel_max = hz_to_mel(nyquist) as f64;
+        let mel_range = (mel_max - mel_min).max(1.0e-9);
 
         let mut freqs = Vec::with_capacity(bin_count);
         if bin_count == 1 {
@@ -606,13 +633,27 @@ impl SynchroState {
         } else {
             for idx in 0..bin_count {
                 let t = idx as f64 / (bin_count as f64 - 1.0);
-                let freq = (log_min + log_range * t).exp() as f32;
+                let freq = match scale {
+                    FrequencyScale::Linear => {
+                        let linear_freq = min_hz as f64 + (nyquist as f64 - min_hz as f64) * t;
+                        linear_freq as f32
+                    }
+                    FrequencyScale::Logarithmic => {
+                        let log_freq = (log_min + log_range * t).exp();
+                        log_freq as f32
+                    }
+                    FrequencyScale::Mel => {
+                        let mel_freq = mel_min + mel_range * t;
+                        mel_to_hz(mel_freq as f32)
+                    }
+                };
                 freqs.push(freq);
             }
             freqs.reverse();
         }
 
         self.enabled = true;
+        self.scale = scale;
         self.bin_frequencies = Arc::from(freqs.into_boxed_slice());
         self.power_buffer = vec![0.0; bin_count];
         self.magnitude_buffer = vec![DB_FLOOR; bin_count];
@@ -621,6 +662,8 @@ impl SynchroState {
         self.max_hz = nyquist;
         self.log_min = log_min;
         self.log_range = log_range;
+        self.mel_min = mel_min;
+        self.mel_range = mel_range;
     }
 
     fn is_active(&self) -> bool {
@@ -652,8 +695,22 @@ impl SynchroState {
         let clamped = freq_hz
             .max(f64::from(self.min_hz))
             .min(f64::from(self.max_hz));
-        let log_freq = clamped.ln();
-        let mut normalized = (log_freq - self.log_min) / self.log_range;
+
+        let mut normalized = match self.scale {
+            FrequencyScale::Linear => {
+                (clamped - f64::from(self.min_hz))
+                    / (f64::from(self.max_hz) - f64::from(self.min_hz))
+            }
+            FrequencyScale::Logarithmic => {
+                let log_freq = clamped.ln();
+                (log_freq - self.log_min) / self.log_range
+            }
+            FrequencyScale::Mel => {
+                let mel_freq = hz_to_mel(clamped as f32) as f64;
+                (mel_freq - self.mel_min) / self.mel_range
+            }
+        };
+
         if !normalized.is_finite() {
             normalized = 0.0;
         }
@@ -1319,6 +1376,7 @@ impl AudioProcessor for SpectrogramProcessor {
                 fft_size: self.fft_size,
                 hop_size: self.config.hop_size,
                 sample_rate: self.config.sample_rate,
+                frequency_scale: self.config.frequency_scale,
                 history_length: self.config.history_length,
                 reset,
                 reassignment_enabled: self.config.use_reassignment,
@@ -1688,6 +1746,14 @@ fn apply_temporal_smoothing_with_weights(
         history[idx] = updated;
         *value = updated;
     }
+}
+
+fn hz_to_mel(hz: f32) -> f32 {
+    2595.0 * (1.0 + hz / 700.0).log10()
+}
+
+fn mel_to_hz(mel: f32) -> f32 {
+    700.0 * (10.0f32.powf(mel / 2595.0) - 1.0)
 }
 
 impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
@@ -2067,6 +2133,41 @@ mod tests {
         for (lhs, rhs) in coeffs.iter().zip(reference.iter()) {
             assert!((lhs - rhs).abs() < 1.0e-6);
         }
+    }
+
+    #[test]
+    fn mel_conversions_are_invertible() {
+        let test_frequencies = [20.0, 100.0, 440.0, 1000.0, 4000.0, 10000.0];
+        for &hz in &test_frequencies {
+            let mel = hz_to_mel(hz);
+            let reconstructed = mel_to_hz(mel);
+            assert!(
+                (hz - reconstructed).abs() < 0.01,
+                "Failed roundtrip for {} Hz",
+                hz
+            );
+        }
+    }
+
+    #[test]
+    fn mel_scale_is_monotonic() {
+        let frequencies = [20.0, 100.0, 500.0, 1000.0, 5000.0, 10000.0];
+        let mels: Vec<f32> = frequencies.iter().map(|&f| hz_to_mel(f)).collect();
+        for i in 1..mels.len() {
+            assert!(
+                mels[i] > mels[i - 1],
+                "Mel scale should be strictly increasing"
+            );
+        }
+    }
+
+    #[test]
+    fn mel_scale_known_values() {
+        assert!((hz_to_mel(1000.0) - 1000.0).abs() < 1.0);
+        let mel_2k = hz_to_mel(2000.0);
+        let mel_1k = hz_to_mel(1000.0);
+        assert!(mel_2k > mel_1k);
+        assert!(mel_2k < mel_1k * 2.0);
     }
 
     #[test]

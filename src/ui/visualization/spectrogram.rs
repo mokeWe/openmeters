@@ -2,8 +2,8 @@
 
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::spectrogram::{
-    SpectrogramColumn, SpectrogramConfig, SpectrogramProcessor as CoreSpectrogramProcessor,
-    SpectrogramUpdate,
+    FrequencyScale, SpectrogramColumn, SpectrogramConfig,
+    SpectrogramProcessor as CoreSpectrogramProcessor, SpectrogramUpdate,
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::spectrogram::{
@@ -43,6 +43,14 @@ static NEXT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
 fn next_instance_id() -> u64 {
     NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+fn hz_to_mel(hz: f32) -> f32 {
+    2595.0 * (1.0 + hz / 700.0).log10()
+}
+
+fn mel_to_hz(mel: f32) -> f32 {
+    700.0 * (10.0f32.powf(mel / 2595.0) - 1.0)
 }
 
 /// Bridges the DSP spectrogram processor into the UI layer by
@@ -122,6 +130,7 @@ pub struct SpectrogramState {
     fft_size: usize,
     hop_size: usize,
     sample_rate: f32,
+    frequency_scale: FrequencyScale,
     history_length: usize,
     synchro_bins_hz: Option<Arc<[f32]>>,
     instance_id: u64,
@@ -144,6 +153,7 @@ impl SpectrogramState {
             fft_size: default_cfg.fft_size,
             hop_size: default_cfg.hop_size,
             sample_rate: default_cfg.sample_rate,
+            frequency_scale: default_cfg.frequency_scale,
             history_length: default_cfg.history_length,
             synchro_bins_hz: None,
             instance_id: next_instance_id(),
@@ -180,6 +190,7 @@ impl SpectrogramState {
                     history_length: self.history_length,
                     sample_rate: self.sample_rate,
                     fft_size: self.fft_size,
+                    frequency_scale: self.frequency_scale,
                     use_synchro,
                     synchro_bins_hz: synchro_bins,
                 },
@@ -265,6 +276,7 @@ impl SpectrogramState {
                     history_length: update.history_length,
                     sample_rate: update.sample_rate,
                     fft_size: update.fft_size,
+                    frequency_scale: update.frequency_scale,
                     use_synchro,
                     synchro_bins_hz: synchro_bins,
                 },
@@ -277,6 +289,7 @@ impl SpectrogramState {
         self.fft_size = update.fft_size;
         self.hop_size = update.hop_size;
         self.sample_rate = update.sample_rate;
+        self.frequency_scale = update.frequency_scale;
 
         if let Some(last) = update.new_columns.last() {
             self.last_timestamp = Some(last.timestamp);
@@ -423,6 +436,7 @@ struct SpectrogramBuffer {
     pending_updates: Vec<SpectrogramColumnUpdate>,
     sample_rate: f32,
     fft_size: usize,
+    frequency_scale: FrequencyScale,
     row_bin_positions: Vec<f32>,
     row_lower_bins: Vec<usize>,
     row_upper_bins: Vec<usize>,
@@ -439,6 +453,7 @@ struct RebuildContext<'a> {
     history_length: usize,
     sample_rate: f32,
     fft_size: usize,
+    frequency_scale: FrequencyScale,
     use_synchro: bool,
     synchro_bins_hz: Option<&'a [f32]>,
 }
@@ -456,6 +471,7 @@ impl Clone for SpectrogramBuffer {
             pending_updates: self.pending_updates.clone(),
             sample_rate: self.sample_rate,
             fft_size: self.fft_size,
+            frequency_scale: self.frequency_scale,
             row_bin_positions: self.row_bin_positions.clone(),
             row_lower_bins: self.row_lower_bins.clone(),
             row_upper_bins: self.row_upper_bins.clone(),
@@ -480,6 +496,7 @@ impl SpectrogramBuffer {
             pending_updates: Vec::new(),
             sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: 0,
+            frequency_scale: FrequencyScale::default(),
             row_bin_positions: Vec::new(),
             row_lower_bins: Vec::new(),
             row_upper_bins: Vec::new(),
@@ -605,6 +622,7 @@ impl SpectrogramBuffer {
             history_length,
             sample_rate,
             fft_size,
+            frequency_scale,
             use_synchro,
             synchro_bins_hz,
         } = params;
@@ -618,6 +636,7 @@ impl SpectrogramBuffer {
             sample_rate
         };
         self.fft_size = fft_size.max(1);
+        self.frequency_scale = frequency_scale;
         self.using_synchro = use_synchro;
 
         let requested_height = history
@@ -797,17 +816,6 @@ impl SpectrogramBuffer {
         }
 
         let nyquist = (self.sample_rate / 2.0).max(1.0);
-        let mut min_freq = self.sample_rate / self.fft_size as f32;
-        if min_freq < 20.0 {
-            min_freq = 20.0;
-        }
-
-        let use_log_scale = min_freq < nyquist;
-        let ratio = if use_log_scale {
-            (nyquist / min_freq).max(1.0)
-        } else {
-            1.0
-        };
 
         for row in 0..height {
             let normalized_top = if height <= 1 {
@@ -815,13 +823,28 @@ impl SpectrogramBuffer {
             } else {
                 row as f32 / (height as f32 - 1.0)
             };
-            let frequency = if use_log_scale {
-                let exponent = 1.0 - normalized_top;
-                min_freq * ratio.powf(exponent)
-            } else {
-                let span = (bin_count - 1) as f32;
-                let linear_bin = normalized_top * span;
-                (linear_bin * self.sample_rate) / self.fft_size as f32
+
+            let frequency = match self.frequency_scale {
+                FrequencyScale::Linear => nyquist * (1.0 - normalized_top),
+                FrequencyScale::Logarithmic => {
+                    let mut min_freq = self.sample_rate / self.fft_size as f32;
+                    if min_freq < 20.0 {
+                        min_freq = 20.0;
+                    }
+                    let ratio = (nyquist / min_freq).max(1.0);
+                    let exponent = 1.0 - normalized_top;
+                    min_freq * ratio.powf(exponent)
+                }
+                FrequencyScale::Mel => {
+                    let mut min_freq = self.sample_rate / self.fft_size as f32;
+                    if min_freq < 20.0 {
+                        min_freq = 20.0;
+                    }
+                    let min_mel = hz_to_mel(min_freq);
+                    let max_mel = hz_to_mel(nyquist);
+                    let mel = min_mel + (max_mel - min_mel) * (1.0 - normalized_top);
+                    mel_to_hz(mel)
+                }
             };
 
             let mut bin_position = (frequency * self.fft_size as f32) / self.sample_rate;
@@ -962,6 +985,7 @@ mod tests {
             fft_size: 1024,
             hop_size: 256,
             sample_rate: DEFAULT_SAMPLE_RATE,
+            frequency_scale: FrequencyScale::default(),
             history_length: 4,
             reset: true,
             reassignment_enabled: true,
@@ -992,6 +1016,7 @@ mod tests {
             fft_size: 1024,
             hop_size: 256,
             sample_rate: DEFAULT_SAMPLE_RATE,
+            frequency_scale: FrequencyScale::default(),
             history_length: 4,
             reset: true,
             reassignment_enabled: true,
@@ -1037,6 +1062,7 @@ mod tests {
             fft_size: 16_384,
             hop_size: 2_048,
             sample_rate: DEFAULT_SAMPLE_RATE,
+            frequency_scale: FrequencyScale::default(),
             history_length: 8,
             reset: true,
             reassignment_enabled: false,
