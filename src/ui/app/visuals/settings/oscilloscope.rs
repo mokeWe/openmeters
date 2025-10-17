@@ -2,8 +2,8 @@ use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::oscilloscope::{DisplayMode, OscilloscopeConfig};
 use crate::ui::settings::{ModuleSettings, OscilloscopeSettings, SettingsHandle};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
-use iced::{Element, Length};
 use iced::widget::{column, pick_list, row, slider, text, toggler};
+use iced::{Element, Length};
 
 #[derive(Debug)]
 pub struct OscilloscopeSettingsPane {

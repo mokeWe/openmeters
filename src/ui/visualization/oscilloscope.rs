@@ -96,10 +96,7 @@ impl OscilloscopeState {
             self.display_samples = snapshot.samples.clone();
         } else {
             let fresh = 1.0 - persistence;
-            for (current, incoming) in self
-                .display_samples
-                .iter_mut()
-                .zip(snapshot.samples.iter())
+            for (current, incoming) in self.display_samples.iter_mut().zip(snapshot.samples.iter())
             {
                 *current = (*current * persistence) + (*incoming * fresh);
             }
