@@ -50,7 +50,7 @@ const GUIDE_LINE_PADDING: f32 = 3.0;
 const LIVE_VALUE_LABEL_FONT_SIZE: f32 = 12.0;
 const LIVE_VALUE_LABEL_HEIGHT: f32 = 20.0;
 const LIVE_VALUE_LABEL_CHAR_WIDTH: f32 = 7.0;
-const LIVE_VALUE_LABEL_TEMPLATE: &str = "-99.9 dB";
+const LIVE_VALUE_LABEL_TEMPLATE: &str = "-99.9 LUFS";
 const LIVE_VALUE_LABEL_MIN_WIDTH: f32 = 21.0;
 const LIVE_VALUE_LABEL_MAX_WIDTH: f32 = 128.0;
 const LIVE_VALUE_LABEL_HORIZONTAL_PADDING: f32 = 2.0;
@@ -578,7 +578,7 @@ fn draw_live_value_label(
         return;
     };
 
-    let label = format!("{:.1} dB", params.short_term_value);
+    let label = format!("{:.1} LUFS", params.short_term_value);
     let available_width = context.available_width();
     let minimum_width = live_label_min_width(&label);
 
