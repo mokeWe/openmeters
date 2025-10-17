@@ -21,7 +21,7 @@ Checked features are implemented, unchecked features are planned.
     - [ ] Slow
   - [ ] True Peak
 - [x] **oscilloscope**
-  - [ ] XY mode
+  - [x] XY mode
 - [x] **spectrogram**
   - [x] Reassignment for better low-frequency resolution
   - [x] mel, log, and linear scales
