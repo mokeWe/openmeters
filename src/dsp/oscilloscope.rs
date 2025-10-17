@@ -1,22 +1,49 @@
-//! Oscilloscope/triggered waveform DSP scaffolding.
+//! Oscilloscope/triggered waveform DSP implementation.
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
+use serde::{Deserialize, Serialize};
+use std::{collections::VecDeque, fmt};
 
-/// Options controlling oscilloscope behaviour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DisplayMode {
+    LR,
+    XY,
+}
+
+impl Default for DisplayMode {
+    fn default() -> Self {
+        Self::LR
+    }
+}
+
+impl DisplayMode {
+    pub const ALL: [Self; 2] = [Self::LR, Self::XY];
+
+    #[inline]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LR => "LR",
+            Self::XY => "XY",
+        }
+    }
+}
+
+impl fmt::Display for DisplayMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct OscilloscopeConfig {
     pub sample_rate: f32,
-    /// Duration of the captured segment in seconds.
     pub segment_duration: f32,
-    /// Trigger level expressed in linear amplitude.
     pub trigger_level: f32,
-    /// Whether to use rising-edge or falling-edge detection.
     pub trigger_rising: bool,
-    /// Target number of samples per channel in the emitted snapshot.
     pub target_sample_count: usize,
-    /// Persistence factor applied by the renderer (0 = full clear, 1 = infinite trail).
     pub persistence: f32,
+    pub display_mode: DisplayMode,
 }
 
 impl Default for OscilloscopeConfig {
@@ -28,17 +55,18 @@ impl Default for OscilloscopeConfig {
             trigger_rising: true,
             target_sample_count: 1_024,
             persistence: 0.85,
+            display_mode: DisplayMode::default(),
         }
     }
 }
 
-/// Snapshot handed to the renderer containing oscilloscope samples.
 #[derive(Debug, Clone)]
 pub struct OscilloscopeSnapshot {
     pub channels: usize,
     pub samples: Vec<f32>,
     pub samples_per_channel: usize,
     pub persistence: f32,
+    pub display_mode: DisplayMode,
 }
 
 impl Default for OscilloscopeSnapshot {
@@ -48,6 +76,7 @@ impl Default for OscilloscopeSnapshot {
             samples: Vec::new(),
             samples_per_channel: 0,
             persistence: 0.85,
+            display_mode: DisplayMode::default(),
         }
     }
 }
@@ -56,7 +85,8 @@ impl Default for OscilloscopeSnapshot {
 pub struct OscilloscopeProcessor {
     config: OscilloscopeConfig,
     snapshot: OscilloscopeSnapshot,
-    history: std::collections::VecDeque<f32>,
+    history: VecDeque<f32>,
+    history_channels: usize,
 }
 
 impl OscilloscopeProcessor {
@@ -64,7 +94,8 @@ impl OscilloscopeProcessor {
         Self {
             config,
             snapshot: OscilloscopeSnapshot::default(),
-            history: std::collections::VecDeque::new(),
+            history: VecDeque::new(),
+            history_channels: 0,
         }
     }
 
@@ -76,63 +107,10 @@ impl OscilloscopeProcessor {
         &self.snapshot
     }
 
-    fn segment_frame_count(&self) -> usize {
-        let frames = (self.config.sample_rate * self.config.segment_duration)
+    fn segment_frames(&self) -> usize {
+        (self.config.sample_rate * self.config.segment_duration)
             .round()
-            .max(1.0) as usize;
-        frames.max(1)
-    }
-
-    fn capacity(&self, channels: usize) -> usize {
-        self.segment_frame_count() * channels.max(1)
-    }
-
-    fn ensure_history_capacity(&mut self, channels: usize) {
-        let capacity = self.capacity(channels);
-        if self.history.capacity() < capacity {
-            self.history = std::collections::VecDeque::with_capacity(capacity);
-        }
-    }
-
-    fn update_snapshot(&mut self, channels: usize) {
-        let frames = self.segment_frame_count();
-        if channels == 0 {
-            return;
-        }
-
-        if self.history.len() < frames * channels {
-            return;
-        }
-
-        let mut contiguous = Vec::with_capacity(frames * channels);
-        contiguous.extend(self.history.iter().copied());
-
-        let trigger_frame = find_trigger_index(
-            &contiguous,
-            channels,
-            self.config.trigger_level,
-            self.config.trigger_rising,
-        )
-        .unwrap_or(frames / 2);
-
-        let rotated = rotate_frames(&contiguous, channels, trigger_frame);
-
-        let target = self.config.target_sample_count.max(1).min(frames);
-
-        let mut samples = Vec::with_capacity(channels * target);
-
-        for channel in 0..channels {
-            for index in 0..target {
-                let src_frame = index * frames / target;
-                let value = rotated[src_frame * channels + channel];
-                samples.push(value);
-            }
-        }
-
-        self.snapshot.channels = channels;
-        self.snapshot.samples_per_channel = target;
-        self.snapshot.samples = samples;
-        self.snapshot.persistence = self.config.persistence.clamp(0.0, 1.0);
+            .max(1.0) as usize
     }
 }
 
@@ -145,27 +123,92 @@ impl AudioProcessor for OscilloscopeProcessor {
             return ProcessorUpdate::None;
         }
 
-        self.ensure_history_capacity(channels);
+        if self.history_channels != channels {
+            self.history.clear();
+            self.history_channels = channels;
+        }
 
-        let capacity = self.capacity(channels);
-        for sample in block.samples.iter().copied() {
-            if self.history.len() == capacity {
-                self.history.pop_front();
+        let frames = self.segment_frames();
+        let capacity = frames * channels;
+
+        if block.samples.len() >= capacity {
+            self.history.clear();
+            self.history.extend(
+                block.samples[block.samples.len() - capacity..]
+                    .iter()
+                    .copied(),
+            );
+        } else {
+            let overflow = self.history.len() + block.samples.len();
+            if overflow > capacity {
+                let remove =
+                    (overflow - capacity).div_ceil(channels) * channels.min(self.history.len());
+                self.history.drain(..remove);
             }
-            self.history.push_back(sample);
+            self.history.extend(block.samples.iter().copied());
         }
 
         if self.history.len() < capacity {
             return ProcessorUpdate::None;
         }
 
-        self.update_snapshot(channels);
+        let data = self.history.make_contiguous();
+        let target = self.config.target_sample_count.clamp(1, frames);
+        let output_channels =
+            if matches!(self.config.display_mode, DisplayMode::XY) && channels == 2 {
+                2
+            } else {
+                channels
+            };
+
+        self.snapshot.samples.clear();
+        self.snapshot.samples.reserve(target * output_channels);
+
+        match (self.config.display_mode, channels) {
+            (DisplayMode::LR, _) => {
+                let trigger = find_trigger(
+                    data,
+                    frames,
+                    channels,
+                    self.config.trigger_level,
+                    self.config.trigger_rising,
+                );
+                downsample_interleaved(
+                    &mut self.snapshot.samples,
+                    data,
+                    frames,
+                    channels,
+                    target,
+                    trigger,
+                );
+            }
+            (DisplayMode::XY, 2) => {
+                downsample_xy(&mut self.snapshot.samples, data, frames, target);
+            }
+            _ => {
+                downsample_interleaved(
+                    &mut self.snapshot.samples,
+                    data,
+                    frames,
+                    channels,
+                    target,
+                    0,
+                );
+            }
+        }
+
+        self.snapshot.channels = channels;
+        self.snapshot.samples_per_channel = target;
+        self.snapshot.persistence = self.config.persistence.clamp(0.0, 1.0);
+        self.snapshot.display_mode = self.config.display_mode;
+
         ProcessorUpdate::Snapshot(self.snapshot.clone())
     }
 
     fn reset(&mut self) {
         self.snapshot = OscilloscopeSnapshot::default();
         self.history.clear();
+        self.history_channels = 0;
     }
 }
 
@@ -176,47 +219,59 @@ impl Reconfigurable<OscilloscopeConfig> for OscilloscopeProcessor {
     }
 }
 
-fn find_trigger_index(samples: &[f32], channels: usize, level: f32, rising: bool) -> Option<usize> {
-    if channels == 0 || samples.len() < channels * 2 {
-        return None;
+fn find_trigger(data: &[f32], frames: usize, channels: usize, level: f32, rising: bool) -> usize {
+    if frames < 2 || channels == 0 {
+        return 0;
     }
 
-    let mut prev = samples[0];
-    for frame in 1..(samples.len() / channels) {
-        let current = samples[frame * channels];
-        if rising {
-            if prev < level && current >= level {
-                return Some(frame);
-            }
-        } else if prev > level && current <= level {
-            return Some(frame);
+    let mut prev = data[0];
+    for frame in 1..frames {
+        let current = data[frame * channels];
+        let crossed = if rising {
+            prev < level && current >= level
+        } else {
+            prev > level && current <= level
+        };
+        if crossed {
+            return frame;
         }
         prev = current;
     }
-    None
+
+    frames / 2
 }
 
-fn rotate_frames(samples: &[f32], channels: usize, start_frame: usize) -> Vec<f32> {
-    if channels == 0 {
-        return Vec::new();
+fn downsample_interleaved(
+    output: &mut Vec<f32>,
+    data: &[f32],
+    frames: usize,
+    channels: usize,
+    target: usize,
+    start_frame: usize,
+) {
+    if frames == 0 || channels == 0 || target == 0 {
+        return;
     }
 
-    let total_frames = samples.len() / channels;
-    let mut rotated = Vec::with_capacity(samples.len());
+    let base = start_frame % frames;
+    for channel in 0..channels {
+        for index in 0..target {
+            let frame = (base + index * frames / target) % frames;
+            output.push(data[frame * channels + channel]);
+        }
+    }
+}
 
-    for frame in start_frame..total_frames {
-        let begin = frame * channels;
-        let end = begin + channels;
-        rotated.extend_from_slice(&samples[begin..end]);
+fn downsample_xy(output: &mut Vec<f32>, data: &[f32], frames: usize, target: usize) {
+    if frames == 0 || target == 0 {
+        return;
     }
 
-    for frame in 0..start_frame {
-        let begin = frame * channels;
-        let end = begin + channels;
-        rotated.extend_from_slice(&samples[begin..end]);
+    for index in 0..target {
+        let frame = (index * frames / target).min(frames.saturating_sub(1));
+        let offset = frame * 2;
+        output.extend_from_slice(&data[offset..offset + 2]);
     }
-
-    rotated
 }
 
 #[cfg(test)]
@@ -238,7 +293,7 @@ mod tests {
             ..Default::default()
         });
 
-        let frames = processor.segment_frame_count();
+        let frames = processor.segment_frames();
         let mut samples = Vec::with_capacity(frames * 2);
         for frame in 0..frames {
             let t = frame as f32 / frames as f32;
@@ -266,7 +321,7 @@ mod tests {
             ..Default::default()
         });
 
-        let frames = processor.segment_frame_count();
+        let frames = processor.segment_frames();
         let mut samples = Vec::with_capacity(frames * 2);
         for frame in 0..frames {
             let value = if frame < frames / 2 { -1.0 } else { 1.0 };

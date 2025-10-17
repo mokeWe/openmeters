@@ -5,6 +5,7 @@ use iced_wgpu::primitive::{Primitive, Storage};
 use std::collections::HashMap;
 use std::mem;
 
+use crate::dsp::oscilloscope::DisplayMode;
 use crate::ui::render::geometry::compute_normals;
 
 #[derive(Debug, Clone)]
@@ -20,6 +21,7 @@ pub struct OscilloscopeParams {
     pub channel_gap: f32,
     pub amplitude_scale: f32,
     pub stroke_width: f32,
+    pub display_mode: DisplayMode,
 }
 
 #[derive(Debug)]
@@ -39,18 +41,36 @@ impl OscilloscopePrimitive {
     fn build_vertices(&self, viewport: &Viewport) -> Vec<Vertex> {
         let samples_per_channel = self.params.samples_per_channel;
         let channels = self.params.channels.max(1);
-        let total_samples = channels * samples_per_channel;
-        if samples_per_channel < 2 || self.params.samples.len() < total_samples {
+
+        if samples_per_channel < 2 {
             return Vec::new();
         }
 
+        match self.params.display_mode {
+            DisplayMode::LR if self.params.samples.len() >= channels * samples_per_channel => {
+                self.build_lr_vertices(viewport, samples_per_channel, channels)
+            }
+            DisplayMode::XY
+                if channels == 2 && self.params.samples.len() >= samples_per_channel * 2 =>
+            {
+                self.build_xy_vertices(viewport, samples_per_channel)
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    fn build_lr_vertices(
+        &self,
+        viewport: &Viewport,
+        samples_per_channel: usize,
+        channels: usize,
+    ) -> Vec<Vertex> {
         let bounds = self.params.bounds;
         let clip = ClipTransform::new(
             viewport.logical_size().width.max(1.0),
             viewport.logical_size().height.max(1.0),
         );
 
-        let width = bounds.width.max(1.0);
         let vertical_padding = self.params.vertical_padding.max(0.0);
         let channel_gap = self.params.channel_gap.max(0.0);
         let usable_height = (bounds.height
@@ -59,56 +79,48 @@ impl OscilloscopePrimitive {
             .max(1.0);
         let channel_height = usable_height / channels as f32;
         let amplitude_scale = channel_height * 0.5 * self.params.amplitude_scale.max(0.01);
-        let step = width / (samples_per_channel.saturating_sub(1) as f32).max(1.0);
+        let step = bounds.width.max(1.0) / (samples_per_channel.saturating_sub(1) as f32).max(1.0);
+
+        let half = self.params.stroke_width.max(0.1) * 0.5;
+        let feather = 1.0f32;
+        let outer = half + feather;
 
         let mut vertices = Vec::with_capacity(samples_per_channel * 2 * channels);
-        let half_thickness = (self.params.stroke_width.max(0.1)) * 0.5;
         let mut previous_last: Option<Vertex> = None;
-        for channel in 0..channels {
+
+        for (channel, channel_samples) in self
+            .params
+            .samples
+            .chunks_exact(samples_per_channel)
+            .take(channels)
+            .enumerate()
+        {
             let color = self
                 .params
                 .colors
                 .get(channel)
-                .cloned()
+                .copied()
                 .unwrap_or([0.6, 0.8, 0.9, 1.0]);
             let color = [color[0], color[1], color[2], self.params.line_alpha];
+            let center = bounds.y
+                + vertical_padding
+                + channel as f32 * (channel_height + channel_gap)
+                + channel_height * 0.5;
 
-            let top = bounds.y + vertical_padding + channel as f32 * (channel_height + channel_gap);
-            let center = top + channel_height * 0.5;
-
-            let mut channel_vertices = Vec::with_capacity(samples_per_channel * 2);
-            let mut positions = Vec::with_capacity(samples_per_channel);
-
-            for index in 0..samples_per_channel {
-                let sample_index = channel * samples_per_channel + index;
-                if let Some(sample) = self.params.samples.get(sample_index) {
-                    let x = bounds.x + step * index as f32;
-                    let y = center - sample * amplitude_scale;
-                    positions.push((x, y));
-                }
-            }
-
-            if positions.len() < 2 {
-                continue;
-            }
+            let positions: Vec<_> = channel_samples
+                .iter()
+                .enumerate()
+                .map(|(i, s)| {
+                    (
+                        bounds.x + i as f32 * step,
+                        center - s.clamp(-1.0, 1.0) * amplitude_scale,
+                    )
+                })
+                .collect();
 
             let normals = compute_normals(&positions);
-
-            for (pos, normal) in positions.iter().zip(normals.iter()) {
-                let offset_x = normal.0 * half_thickness;
-                let offset_y = normal.1 * half_thickness;
-                let left = clip.to_clip(pos.0 - offset_x, pos.1 - offset_y);
-                let right = clip.to_clip(pos.0 + offset_x, pos.1 + offset_y);
-
-                channel_vertices.push(Vertex {
-                    position: left,
-                    color,
-                });
-                channel_vertices.push(Vertex {
-                    position: right,
-                    color,
-                });
-            }
+            let channel_vertices =
+                build_line_strip(&positions, &normals, color, outer, half, feather, &clip);
 
             if let (Some(last), Some(first)) = (previous_last, channel_vertices.first().cloned()) {
                 vertices.push(last);
@@ -121,6 +133,75 @@ impl OscilloscopePrimitive {
 
         vertices
     }
+
+    fn build_xy_vertices(&self, viewport: &Viewport, samples_per_channel: usize) -> Vec<Vertex> {
+        let bounds = self.params.bounds;
+        let clip = ClipTransform::new(
+            viewport.logical_size().width.max(1.0),
+            viewport.logical_size().height.max(1.0),
+        );
+
+        let center_x = bounds.x + bounds.width * 0.5;
+        let center_y = bounds.y + bounds.height * 0.5;
+        let scale = 0.9 * self.params.amplitude_scale.max(0.01);
+        let scale_x = bounds.width * 0.5 * scale;
+        let scale_y = bounds.height * 0.5 * scale;
+
+        let color = self
+            .params
+            .colors
+            .first()
+            .copied()
+            .unwrap_or([0.6, 0.8, 0.9, 1.0]);
+        let color = [color[0], color[1], color[2], self.params.line_alpha];
+
+        let positions: Vec<_> = self
+            .params
+            .samples
+            .chunks_exact(2)
+            .take(samples_per_channel)
+            .map(|pair| {
+                (
+                    center_x + pair[0].clamp(-1.0, 1.0) * scale_x,
+                    center_y - pair[1].clamp(-1.0, 1.0) * scale_y,
+                )
+            })
+            .collect();
+
+        let normals = compute_normals(&positions);
+        let half = self.params.stroke_width.max(0.1) * 0.5;
+        let feather = 1.0f32;
+        let outer = half + feather;
+
+        build_line_strip(&positions, &normals, color, outer, half, feather, &clip)
+    }
+}
+
+fn build_line_strip(
+    positions: &[(f32, f32)],
+    normals: &[(f32, f32)],
+    color: [f32; 4],
+    outer: f32,
+    half: f32,
+    feather: f32,
+    clip: &ClipTransform,
+) -> Vec<Vertex> {
+    let mut vertices = Vec::with_capacity(positions.len() * 2);
+    for (pos, normal) in positions.iter().zip(normals.iter()) {
+        let offset_x = normal.0 * outer;
+        let offset_y = normal.1 * outer;
+        vertices.push(Vertex {
+            position: clip.to_clip(pos.0 - offset_x, pos.1 - offset_y),
+            color,
+            params: [-outer, half, feather, 0.0],
+        });
+        vertices.push(Vertex {
+            position: clip.to_clip(pos.0 + offset_x, pos.1 + offset_y),
+            color,
+            params: [outer, half, feather, 0.0],
+        });
+    }
+    vertices
 }
 
 impl Primitive for OscilloscopePrimitive {
@@ -196,6 +277,7 @@ impl Primitive for OscilloscopePrimitive {
 struct Vertex {
     position: [f32; 2],
     color: [f32; 4],
+    params: [f32; 4],
 }
 
 impl Vertex {
@@ -212,6 +294,11 @@ impl Vertex {
                 wgpu::VertexAttribute {
                     offset: 8,
                     shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 2,
                     format: wgpu::VertexFormat::Float32x4,
                 },
             ],

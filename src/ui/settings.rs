@@ -5,7 +5,7 @@
 //! - providing access to settings for other parts of the UI
 //! - converting between internal config structs and serializable settings structs
 
-use crate::dsp::oscilloscope::OscilloscopeConfig;
+use crate::dsp::oscilloscope::{DisplayMode, OscilloscopeConfig};
 use crate::dsp::spectrogram::{FrequencyScale, SpectrogramConfig, WindowKind};
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
 use crate::dsp::waveform::{DownsampleStrategy, WaveformConfig};
@@ -199,6 +199,8 @@ pub struct OscilloscopeSettings {
     pub trigger_rising: bool,
     pub target_sample_count: usize,
     pub persistence: f32,
+    #[serde(default)]
+    pub display_mode: DisplayMode,
 }
 
 impl Default for OscilloscopeSettings {
@@ -215,6 +217,7 @@ impl OscilloscopeSettings {
             trigger_rising: config.trigger_rising,
             target_sample_count: config.target_sample_count,
             persistence: config.persistence,
+            display_mode: config.display_mode,
         }
     }
 
@@ -224,6 +227,7 @@ impl OscilloscopeSettings {
         config.trigger_rising = self.trigger_rising;
         config.target_sample_count = self.target_sample_count;
         config.persistence = self.persistence;
+        config.display_mode = self.display_mode;
     }
 }
 
