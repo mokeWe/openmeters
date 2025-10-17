@@ -2,8 +2,8 @@ use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::oscilloscope::{DisplayMode, OscilloscopeConfig};
 use crate::ui::settings::{ModuleSettings, OscilloscopeSettings, SettingsHandle};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
-use iced::Element;
-use iced::widget::{checkbox, column, pick_list, row, slider, text};
+use iced::{Element, Length};
+use iced::widget::{column, pick_list, row, slider, text, toggler};
 
 #[derive(Debug)]
 pub struct OscilloscopeSettingsPane {
@@ -45,6 +45,12 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
     }
 
     fn view(&self) -> Element<'_, SettingsMessage> {
+        let trigger_label = if self.config.trigger_rising {
+            "Rising edge"
+        } else {
+            "Falling edge"
+        };
+
         column![
             column![
                 text("Display mode"),
@@ -69,18 +75,6 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             .spacing(8),
             column![
                 row![
-                    text("Trigger level"),
-                    text(format!("{:.2}", self.config.trigger_level)).size(12)
-                ]
-                .spacing(8),
-                slider(0.0..=1.0, self.config.trigger_level, |value| {
-                    SettingsMessage::Oscilloscope(Message::TriggerLevel(value))
-                })
-                .step(0.01)
-            ]
-            .spacing(8),
-            column![
-                row![
                     text("Persistence"),
                     text(format!("{:.2}", self.config.persistence)).size(12)
                 ]
@@ -91,8 +85,26 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
                 .step(0.01)
             ]
             .spacing(8),
-            checkbox("Rising-edge trigger", self.config.trigger_rising)
-                .on_toggle(|value| SettingsMessage::Oscilloscope(Message::TriggerMode(value)))
+            column![
+                text("Trigger"),
+                row![
+                    slider(0.0..=1.0, self.config.trigger_level, |value| {
+                        SettingsMessage::Oscilloscope(Message::TriggerLevel(value))
+                    })
+                    .step(0.01)
+                    .width(Length::Fill),
+                    toggler(self.config.trigger_rising)
+                        .label(trigger_label)
+                        .spacing(4)
+                        .text_size(12)
+                        .on_toggle(|value| {
+                            SettingsMessage::Oscilloscope(Message::TriggerMode(value))
+                        })
+                ]
+                .spacing(12),
+                text(format!("Level {:.2}", self.config.trigger_level)).size(12)
+            ]
+            .spacing(8)
         ]
         .spacing(16)
         .into()

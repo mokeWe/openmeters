@@ -2,7 +2,8 @@
 
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::oscilloscope::{
-    OscilloscopeConfig, OscilloscopeProcessor as CoreOscilloscopeProcessor, OscilloscopeSnapshot,
+    DisplayMode, OscilloscopeConfig, OscilloscopeProcessor as CoreOscilloscopeProcessor,
+    OscilloscopeSnapshot,
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::oscilloscope::{OscilloscopeParams, OscilloscopePrimitive};
@@ -63,6 +64,8 @@ impl OscilloscopeProcessor {
 pub struct OscilloscopeState {
     snapshot: OscilloscopeSnapshot,
     style: OscilloscopeStyle,
+    display_samples: Vec<f32>,
+    fade_alpha: f32,
 }
 
 impl OscilloscopeState {
@@ -70,11 +73,45 @@ impl OscilloscopeState {
         Self {
             snapshot: OscilloscopeSnapshot::default(),
             style: OscilloscopeStyle::default(),
+            display_samples: Vec::new(),
+            fade_alpha: 1.0,
         }
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &OscilloscopeSnapshot) {
+        if snapshot.samples.is_empty() {
+            self.snapshot = snapshot.clone();
+            self.display_samples.clear();
+            self.fade_alpha = 1.0;
+            return;
+        }
+
+        let mut persistence = snapshot.persistence.clamp(0.0, 0.98);
+        if snapshot.display_mode == DisplayMode::XY {
+            // XY persistence that is too aggressive makes the trace unreadable.
+            persistence = persistence.min(0.9);
+        }
+
+        if self.display_samples.len() != snapshot.samples.len() {
+            self.display_samples = snapshot.samples.clone();
+        } else {
+            let fresh = 1.0 - persistence;
+            for (current, incoming) in self
+                .display_samples
+                .iter_mut()
+                .zip(snapshot.samples.iter())
+            {
+                *current = (*current * persistence) + (*incoming * fresh);
+            }
+        }
+
+        self.fade_alpha = (1.0 - persistence).sqrt().clamp(0.05, 1.0);
+
         self.snapshot = snapshot.clone();
+        self.snapshot.samples.clear();
+        self.snapshot
+            .samples
+            .extend_from_slice(&self.display_samples);
     }
 
     fn visual_params(&self, bounds: Rectangle) -> OscilloscopeParams {
@@ -95,7 +132,7 @@ impl OscilloscopeState {
             samples: self.snapshot.samples.clone(),
             colors,
             line_alpha: self.style.line_alpha,
-            fade_alpha: (1.0 - self.snapshot.persistence.clamp(0.0, 1.0)) * 0.25,
+            fade_alpha: self.fade_alpha,
             vertical_padding: self.style.vertical_padding,
             channel_gap: self.style.channel_gap,
             amplitude_scale: self.style.amplitude_scale,
