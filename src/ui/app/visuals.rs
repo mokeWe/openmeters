@@ -7,7 +7,7 @@ use crate::ui::visualization::visual_manager::{
     VisualContent, VisualId, VisualKind, VisualLayoutHint, VisualManagerHandle, VisualMetadata,
     VisualSlotSnapshot, VisualSnapshot,
 };
-use crate::ui::visualization::{lufs_meter, oscilloscope, spectrogram, spectrum, waveform};
+use crate::ui::visualization::{loudness, oscilloscope, spectrogram, spectrum, waveform};
 mod settings;
 
 pub use settings::{ActiveSettings, SettingsMessage, create_panel as create_settings_panel};
@@ -50,8 +50,8 @@ impl VisualPane {
 
     fn view(&self) -> PaneContent<'_, VisualsMessage> {
         let content: Element<'_, VisualsMessage> = match &self.content {
-            VisualContent::LufsMeter { state } => {
-                let meter = lufs_meter::widget_with_layout(
+            VisualContent::LoudnessMeter { state } => {
+                let meter = loudness::widget_with_layout(
                     state,
                     self.layout_hint.preferred_width,
                     self.layout_hint.preferred_height,

@@ -1,5 +1,5 @@
 pub mod geometry;
-pub mod lufs_meter;
+pub mod loudness;
 pub mod oscilloscope;
 pub mod spectrogram;
 pub mod spectrum;

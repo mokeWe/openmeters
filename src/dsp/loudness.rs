@@ -7,12 +7,12 @@ use std::collections::VecDeque;
 const MIN_MEAN_SQUARE: f64 = 1e-12;
 const LOG10_FACTOR: f64 = 10.0;
 const DB_FACTOR: f32 = 20.0;
-const LUFS_OFFSET: f64 = -0.691;
+const LOUDNESS_OFFSET: f64 = -0.691;
 const NOMINAL_SAMPLE_RATE: f32 = DEFAULT_SAMPLE_RATE;
 const SAMPLE_RATE_TOLERANCE: f32 = 0.1;
 const DEFAULT_SHORT_TERM_WINDOW: f32 = 3.0;
 const DEFAULT_RMS_FAST_WINDOW: f32 = 0.3;
-const DEFAULT_FLOOR_LUFS: f32 = -99.9;
+const DEFAULT_FLOOR_DB: f32 = -99.9;
 
 // ITU-R BS.1770-5: https://www.itu.int/rec/R-REC-BS.1770
 const PRE_B_COEFFS_48K: [f64; 3] = [
@@ -29,7 +29,7 @@ fn mean_square_to_db(mean_square: f64, floor: f32) -> f32 {
     if mean_square <= MIN_MEAN_SQUARE {
         floor
     } else {
-        (LOG10_FACTOR * mean_square.log10() + LUFS_OFFSET).max(floor as f64) as f32
+        (LOG10_FACTOR * mean_square.log10() + LOUDNESS_OFFSET).max(floor as f64) as f32
     }
 }
 
@@ -106,17 +106,17 @@ impl ChannelState {
 /// Combined loudness statistics produced by the loudness processor.
 #[derive(Debug, Clone, Default)]
 pub struct LoudnessSnapshot {
-    pub short_term_lufs: Vec<f32>,
+    pub short_term_loudness: Vec<f32>,
     pub rms_fast_db: Vec<f32>,
     pub true_peak_db: Vec<f32>,
 }
 
 impl LoudnessSnapshot {
-    fn with_channels(channels: usize, floor_lufs: f32) -> Self {
+    fn with_channels(channels: usize, floor_db: f32) -> Self {
         Self {
-            short_term_lufs: vec![floor_lufs; channels],
-            rms_fast_db: vec![floor_lufs; channels],
-            true_peak_db: vec![floor_lufs; channels],
+            short_term_loudness: vec![floor_db; channels],
+            rms_fast_db: vec![floor_db; channels],
+            true_peak_db: vec![floor_db; channels],
         }
     }
 }
@@ -125,12 +125,12 @@ impl LoudnessSnapshot {
 #[derive(Debug, Clone, Copy)]
 pub struct LoudnessConfig {
     pub sample_rate: f32,
-    /// Window size in seconds for LUFS short-term (~3.0s).
+    /// Window size in seconds for short-term loudness (~3.0s).
     pub short_term_window: f32,
     /// Window size in seconds for RMS fast (~0.3s).
     pub rms_fast_window: f32,
-    /// Floor applied to LUFS/peak values to avoid `-inf`.
-    pub floor_lufs: f32,
+    /// Floor applied to loudness/peak values to avoid `-inf`.
+    pub floor_db: f32,
 }
 
 impl Default for LoudnessConfig {
@@ -139,7 +139,7 @@ impl Default for LoudnessConfig {
             sample_rate: DEFAULT_SAMPLE_RATE,
             short_term_window: DEFAULT_SHORT_TERM_WINDOW,
             rms_fast_window: DEFAULT_RMS_FAST_WINDOW,
-            floor_lufs: DEFAULT_FLOOR_LUFS,
+            floor_db: DEFAULT_FLOOR_DB,
         }
     }
 }
@@ -192,7 +192,7 @@ impl LoudnessProcessor {
         self.channels = (0..channels)
             .map(|_| ChannelState::new(short_term_capacity, rms_capacity, self.config.sample_rate))
             .collect();
-        self.snapshot = LoudnessSnapshot::with_channels(channels, self.config.floor_lufs);
+        self.snapshot = LoudnessSnapshot::with_channels(channels, self.config.floor_db);
     }
 }
 
@@ -231,15 +231,17 @@ impl AudioProcessor for LoudnessProcessor {
             let rms_mean = channel_state.rms_fast.mean().max(MIN_MEAN_SQUARE);
 
             combined_short_term_energy += short_term_mean;
-            self.snapshot.rms_fast_db[index] = mean_square_to_db(rms_mean, self.config.floor_lufs);
+            self.snapshot.rms_fast_db[index] = mean_square_to_db(rms_mean, self.config.floor_db);
             self.snapshot.true_peak_db[index] =
-                peak_to_db(channel_state.peak_linear, self.config.floor_lufs);
+                peak_to_db(channel_state.peak_linear, self.config.floor_db);
         }
 
-        let combined_short_term_lufs =
-            mean_square_to_db(combined_short_term_energy, self.config.floor_lufs);
+        let combined_short_term_loudness =
+            mean_square_to_db(combined_short_term_energy, self.config.floor_db);
 
-        self.snapshot.short_term_lufs.fill(combined_short_term_lufs);
+        self.snapshot
+            .short_term_loudness
+            .fill(combined_short_term_loudness);
 
         ProcessorUpdate::Snapshot(self.snapshot.clone())
     }
@@ -250,7 +252,7 @@ impl AudioProcessor for LoudnessProcessor {
         self.snapshot = if channels == 0 {
             LoudnessSnapshot::default()
         } else {
-            LoudnessSnapshot::with_channels(channels, self.config.floor_lufs)
+            LoudnessSnapshot::with_channels(channels, self.config.floor_db)
         };
     }
 }
@@ -402,7 +404,7 @@ mod tests {
             let mut processor = LoudnessProcessor::new(LoudnessConfig::default());
             let block = AudioBlock::new(&samples, 1, DEFAULT_SAMPLE_RATE, Instant::now());
             match processor.process_block(&block) {
-                ProcessorUpdate::Snapshot(s) => (s.short_term_lufs[0], s.rms_fast_db[0]),
+                ProcessorUpdate::Snapshot(s) => (s.short_term_loudness[0], s.rms_fast_db[0]),
                 ProcessorUpdate::None => panic!("expected snapshot"),
             }
         }
@@ -454,12 +456,12 @@ mod tests {
             ProcessorUpdate::None => panic!("expected stereo snapshot"),
         };
 
-        assert_eq!(stereo_snapshot.short_term_lufs.len(), 2);
-        let stereo_left = stereo_snapshot.short_term_lufs[0];
-        let stereo_right = stereo_snapshot.short_term_lufs[1];
+        assert_eq!(stereo_snapshot.short_term_loudness.len(), 2);
+        let stereo_left = stereo_snapshot.short_term_loudness[0];
+        let stereo_right = stereo_snapshot.short_term_loudness[1];
         assert!((stereo_left - stereo_right).abs() < 1e-3);
 
-        let diff = stereo_left - mono_snapshot.short_term_lufs[0];
+        let diff = stereo_left - mono_snapshot.short_term_loudness[0];
 
         // Correlated stereo content should increase loudness by ~3.01 dB compared to mono.
         assert!(diff > 2.9 && diff < 3.1, "diff was {diff}");
@@ -485,7 +487,7 @@ mod tests {
             .loudness_shortterm()
             .expect("reference short-term loudness unavailable");
 
-        let ours = snapshot.short_term_lufs[0] as f64;
+        let ours = snapshot.short_term_loudness[0] as f64;
         let diff = (ours - reference_short_term).abs();
         assert!(
             diff < 0.01,

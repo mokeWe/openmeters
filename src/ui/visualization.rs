@@ -1,5 +1,5 @@
 pub mod audio_stream;
-pub mod lufs_meter;
+pub mod loudness;
 pub mod oscilloscope;
 pub mod spectrogram;
 pub mod spectrum;

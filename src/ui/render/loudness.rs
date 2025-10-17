@@ -1,4 +1,4 @@
-//! Render a LUFS meter using custom wgpu rendering in iced.
+//! Rendering code for the loudness meters.
 
 use bytemuck::{Pod, Zeroable};
 use iced::Rectangle;
@@ -23,11 +23,11 @@ const VALUE_SCALE_EXPONENT: f32 = 1.1;
 
 const INNER_FILL_GAP_RATIO: f32 = 0.09;
 
-/// Describes how a LUFS meter should be rendered for a single frame.
+/// Describes how a loudness meter should be rendered for a single frame.
 #[derive(Debug, Clone)]
 pub struct VisualParams {
-    pub min_lufs: f32,
-    pub max_lufs: f32,
+    pub min_loudness: f32,
+    pub max_loudness: f32,
     pub channels: Vec<ChannelVisual>,
     pub channel_gap_fraction: f32,
     pub channel_width_scale: f32,
@@ -42,11 +42,11 @@ pub struct VisualParams {
 
 impl VisualParams {
     pub fn clamp_ratio(&self, value: f32) -> f32 {
-        if (self.max_lufs - self.min_lufs).abs() <= f32::EPSILON {
+        if (self.max_loudness - self.min_loudness).abs() <= f32::EPSILON {
             return 0.0;
         }
 
-        ((value - self.min_lufs) / (self.max_lufs - self.min_lufs)).clamp(0.0, 1.0)
+        ((value - self.min_loudness) / (self.max_loudness - self.min_loudness)).clamp(0.0, 1.0)
     }
 
     fn gap_fraction(&self) -> f32 {
@@ -185,13 +185,13 @@ pub struct ChannelVisual {
 
 #[derive(Debug, Clone)]
 pub struct FillVisual {
-    pub value_lufs: f32,
+    pub value_loudness: f32,
     pub color: [f32; 4],
 }
 
 #[derive(Debug, Clone)]
 pub struct GuideLine {
-    pub value_lufs: f32,
+    pub value_loudness: f32,
     pub color: [f32; 4],
     pub length: f32,
     pub thickness: f32,
@@ -199,13 +199,13 @@ pub struct GuideLine {
     pub label_width: f32,
 }
 
-/// Custom primitive that draws a LUFS meter using the iced_wgpu backend.
+/// Custom primitive that draws a loudness meter using the iced_wgpu backend.
 #[derive(Debug)]
-pub struct LufsMeterPrimitive {
+pub struct LoudnessMeterPrimitive {
     pub params: VisualParams,
 }
 
-impl LufsMeterPrimitive {
+impl LoudnessMeterPrimitive {
     pub fn new(params: VisualParams) -> Self {
         Self { params }
     }
@@ -310,7 +310,7 @@ impl LayoutContext {
             let segment_width = available_width / fill_count as f32;
 
             for (segment_index, fill) in channel.fills.iter().enumerate() {
-                let fill_ratio = params.meter_ratio(fill.value_lufs);
+                let fill_ratio = params.meter_ratio(fill.value_loudness);
                 let fill_top = self.y1 - self.height * fill_ratio;
                 let seg_x0 = bar_x0 + segment_index as f32 * (segment_width + inner_gap);
                 let seg_x1 = if segment_index + 1 == fill_count {
@@ -340,7 +340,7 @@ impl LayoutContext {
     fn push_guide_vertices(&self, vertices: &mut Vec<Vertex>, params: &VisualParams) {
         let anchor_x = self.x0 - params.guide_padding;
         for guide in &params.guides {
-            let ratio = params.clamp_ratio(guide.value_lufs);
+            let ratio = params.clamp_ratio(guide.value_loudness);
             let center_y = self.y1 - self.height * ratio;
             let half_thick = guide.thickness * 0.5;
             let top = (center_y - half_thick).clamp(self.y0, self.y1);
@@ -363,7 +363,7 @@ fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
 
-impl Primitive for LufsMeterPrimitive {
+impl Primitive for LoudnessMeterPrimitive {
     fn prepare(
         &self,
         device: &wgpu::Device,
@@ -405,7 +405,7 @@ impl Primitive for LufsMeterPrimitive {
         }
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("LUFS meter pass"),
+            label: Some("Loudness pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 resolve_target: None,
@@ -530,18 +530,18 @@ struct Pipeline {
 impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("LUFS meter shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/lufs_meter.wgsl").into()),
+            label: Some("Loudness shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/loudness.wgsl").into()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("LUFS meter pipeline layout"),
+            label: Some("Loudness pipeline layout"),
             bind_group_layouts: &[],
             push_constant_ranges: &[],
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("LUFS meter pipeline"),
+            label: Some("Loudness meter pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
@@ -643,7 +643,7 @@ impl InstanceBuffer {
 
 fn create_vertex_buffer(device: &wgpu::Device, size: wgpu::BufferAddress) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("LUFS meter vertex buffer"),
+        label: Some("Loudness meter vertex buffer"),
         size,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,

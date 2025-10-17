@@ -13,7 +13,7 @@ use crate::ui::settings::{
     ModuleSettings, OscilloscopeSettings, SpectrogramSettings, SpectrumSettings, VisualSettings,
     WaveformSettings,
 };
-use crate::ui::visualization::lufs_meter::{LufsMeterState, LufsProcessor};
+use crate::ui::visualization::loudness::{LoudnessMeterProcessor, LoudnessMeterState};
 use crate::ui::visualization::oscilloscope::{OscilloscopeProcessor, OscilloscopeState};
 use crate::ui::visualization::spectrogram::{SpectrogramProcessor, SpectrogramState};
 use crate::ui::visualization::spectrum::{SpectrumProcessor, SpectrumState};
@@ -31,7 +31,7 @@ use std::rc::Rc;
 pub struct VisualKind(&'static str);
 
 impl VisualKind {
-    pub const LUFS: Self = Self("lufs_meter");
+    pub const LOUDNESS: Self = Self("loudness");
     pub const OSCILLOSCOPE: Self = Self("oscilloscope");
     pub const SPECTROGRAM: Self = Self("spectrogram");
     pub const SPECTRUM: Self = Self("spectrum");
@@ -39,7 +39,7 @@ impl VisualKind {
 
     fn legacy_token(self) -> &'static str {
         match self {
-            Self::LUFS => "LufsMeter",
+            Self::LOUDNESS => "LoudnessMeter",
             Self::OSCILLOSCOPE => "Oscilloscope",
             Self::SPECTROGRAM => "Spectrogram",
             Self::SPECTRUM => "Spectrum",
@@ -50,7 +50,8 @@ impl VisualKind {
 
     fn from_serialized(value: &str) -> Option<Self> {
         match value {
-            "lufs_meter" | "LufsMeter" => Some(Self::LUFS),
+            "loudness" | "Loudness" | "loudness_meter" | "LoudnessMeter" | "lufs_meter"
+            | "LufsMeter" => Some(Self::LOUDNESS),
             "oscilloscope" | "Oscilloscope" => Some(Self::OSCILLOSCOPE),
             "spectrogram" | "Spectrogram" => Some(Self::SPECTROGRAM),
             "spectrum" | "Spectrum" => Some(Self::SPECTRUM),
@@ -79,7 +80,7 @@ impl<'de> Deserialize<'de> for VisualKind {
             de::Error::unknown_variant(
                 &token,
                 &[
-                    "lufs_meter",
+                    "loudness",
                     "oscilloscope",
                     "spectrogram",
                     "spectrum",
@@ -145,7 +146,7 @@ pub struct VisualSlotSnapshot {
 /// what we need to render a visual
 #[derive(Debug, Clone)]
 pub enum VisualContent {
-    LufsMeter { state: LufsMeterState },
+    LoudnessMeter { state: LoudnessMeterState },
     Oscilloscope { state: OscilloscopeState },
     Spectrogram { state: Box<SpectrogramState> },
     Spectrum { state: SpectrumState },
@@ -205,9 +206,9 @@ struct VisualEntry {
 // describe all available visuals here
 const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
     VisualDescriptor {
-        kind: VisualKind::LUFS,
+        kind: VisualKind::LOUDNESS,
         metadata: VisualMetadata {
-            display_name: "LUFS meter",
+            display_name: "Loudness Meter",
             preferred_width: 200.0,
             preferred_height: 300.0,
             fill_horizontal: true,
@@ -216,7 +217,7 @@ const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
             max_width: 300.0,
         },
         default_enabled: true,
-        build: build_module::<LufsVisual>,
+        build: build_module::<LoudnessVisual>,
     },
     VisualDescriptor {
         kind: VisualKind::OSCILLOSCOPE,
@@ -283,28 +284,28 @@ where
     Box::new(M::default())
 }
 
-struct LufsVisual {
-    processor: LufsProcessor,
-    state: LufsMeterState,
+struct LoudnessVisual {
+    processor: LoudnessMeterProcessor,
+    state: LoudnessMeterState,
 }
 
-impl Default for LufsVisual {
+impl Default for LoudnessVisual {
     fn default() -> Self {
         Self {
-            processor: LufsProcessor::new(DEFAULT_SAMPLE_RATE),
-            state: LufsMeterState::new(),
+            processor: LoudnessMeterProcessor::new(DEFAULT_SAMPLE_RATE),
+            state: LoudnessMeterState::new(),
         }
     }
 }
 
-impl VisualModule for LufsVisual {
+impl VisualModule for LoudnessVisual {
     fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
         let snapshot = self.processor.ingest(samples, format);
         self.state.apply_snapshot(&snapshot);
     }
 
     fn content(&self) -> VisualContent {
-        VisualContent::LufsMeter {
+        VisualContent::LoudnessMeter {
             state: self.state.clone(),
         }
     }
@@ -693,15 +694,15 @@ impl std::fmt::Debug for VisualManagerHandle {
 mod tests {
     use super::*;
 
-    fn lufs_average(snapshot: &VisualSnapshot) -> f32 {
+    fn loudness_average(snapshot: &VisualSnapshot) -> f32 {
         snapshot
             .slots
             .iter()
             .find_map(|slot| match &slot.content {
-                VisualContent::LufsMeter { state } => Some(state.short_term_average()),
+                VisualContent::LoudnessMeter { state } => Some(state.short_term_average()),
                 _ => None,
             })
-            .expect("lufs meter missing from snapshot")
+            .expect("loudness meter missing from snapshot")
     }
 
     #[test]
@@ -709,13 +710,13 @@ mod tests {
         let manager = VisualManager::new();
         let snapshot = manager.snapshot();
 
-        let mut lufs_enabled = false;
+        let mut loudness_enabled = false;
         let mut oscilloscope_enabled = false;
         let mut waveform_enabled = false;
 
         for slot in &snapshot.slots {
-            if slot.kind == VisualKind::LUFS {
-                lufs_enabled = slot.enabled;
+            if slot.kind == VisualKind::LOUDNESS {
+                loudness_enabled = slot.enabled;
             }
             if slot.kind == VisualKind::OSCILLOSCOPE {
                 oscilloscope_enabled = slot.enabled;
@@ -725,7 +726,10 @@ mod tests {
             }
         }
 
-        assert!(lufs_enabled, "LUFS meter should be enabled by default");
+        assert!(
+            loudness_enabled,
+            "Loudness meter should be enabled by default"
+        );
         assert!(!oscilloscope_enabled, "Oscilloscope should start disabled");
         assert!(waveform_enabled, "Waveform should be enabled by default");
     }
@@ -733,16 +737,16 @@ mod tests {
     #[test]
     fn toggling_a_kind_updates_snapshot_state() {
         let mut manager = VisualManager::new();
-        manager.set_enabled_by_kind(VisualKind::LUFS, false);
+        manager.set_enabled_by_kind(VisualKind::LOUDNESS, false);
 
         let snapshot = manager.snapshot();
-        let lufs_slot = snapshot
+        let loudness_slot = snapshot
             .slots
             .iter()
-            .find(|slot| slot.kind == VisualKind::LUFS)
-            .expect("lufs slot not found");
+            .find(|slot| slot.kind == VisualKind::LOUDNESS)
+            .expect("loudness slot not found");
 
-        assert!(!lufs_slot.enabled);
+        assert!(!loudness_slot.enabled);
     }
 
     #[test]
@@ -763,14 +767,14 @@ mod tests {
     fn ingest_samples_updates_visual_content() {
         let mut manager = VisualManager::new();
         let baseline = manager.snapshot();
-        let baseline_lufs = lufs_average(&baseline);
+        let baseline_loudness = loudness_average(&baseline);
 
         let samples = vec![0.5_f32; 480];
         manager.ingest_samples(&samples);
 
         let snapshot = manager.snapshot();
-        let updated_lufs = lufs_average(&snapshot);
+        let updated_loudness = loudness_average(&snapshot);
 
-        assert!(updated_lufs > baseline_lufs);
+        assert!(updated_loudness > baseline_loudness);
     }
 }

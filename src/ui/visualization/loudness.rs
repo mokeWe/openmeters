@@ -5,8 +5,8 @@ use crate::dsp::loudness::{
     LoudnessConfig, LoudnessProcessor as CoreLoudnessProcessor, LoudnessSnapshot,
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
-use crate::ui::render::lufs_meter::{
-    ChannelVisual, FillVisual, GuideLine, LufsMeterPrimitive, VisualParams,
+use crate::ui::render::loudness::{
+    ChannelVisual, FillVisual, GuideLine, LoudnessMeterPrimitive, VisualParams,
 };
 use crate::ui::theme;
 use iced::advanced::Renderer as _;
@@ -50,7 +50,7 @@ const GUIDE_LINE_PADDING: f32 = 3.0;
 const LIVE_VALUE_LABEL_FONT_SIZE: f32 = 12.0;
 const LIVE_VALUE_LABEL_HEIGHT: f32 = 20.0;
 const LIVE_VALUE_LABEL_CHAR_WIDTH: f32 = 7.0;
-const LIVE_VALUE_LABEL_TEMPLATE: &str = "-99.9LUFS";
+const LIVE_VALUE_LABEL_TEMPLATE: &str = "-99.9 dB";
 const LIVE_VALUE_LABEL_MIN_WIDTH: f32 = 21.0;
 const LIVE_VALUE_LABEL_MAX_WIDTH: f32 = 128.0;
 const LIVE_VALUE_LABEL_HORIZONTAL_PADDING: f32 = 2.0;
@@ -97,12 +97,12 @@ fn live_label_background() -> Color {
 
 /// UI wrapper around the shared loudness processor.
 #[derive(Debug, Clone)]
-pub struct LufsProcessor {
+pub struct LoudnessMeterProcessor {
     inner: CoreLoudnessProcessor,
     channels: usize,
 }
 
-impl LufsProcessor {
+impl LoudnessMeterProcessor {
     pub fn new(sample_rate: f32) -> Self {
         let config = LoudnessConfig {
             sample_rate,
@@ -140,19 +140,19 @@ impl LufsProcessor {
     }
 }
 
-/// View-model state consumed by the LUFS meter widget.
+/// View-model state consumed by the loudness widget.
 #[derive(Debug, Clone)]
-pub struct LufsMeterState {
-    short_term_lufs: [f32; CHANNELS],
+pub struct LoudnessMeterState {
+    short_term_loudness: [f32; CHANNELS],
     true_peak_db: [f32; CHANNELS],
     range: (f32, f32),
     style: VisualStyle,
 }
 
-impl LufsMeterState {
+impl LoudnessMeterState {
     pub fn new() -> Self {
         Self {
-            short_term_lufs: [DEFAULT_RANGE.0; CHANNELS],
+            short_term_loudness: [DEFAULT_RANGE.0; CHANNELS],
             true_peak_db: [DEFAULT_RANGE.0; CHANNELS],
             range: DEFAULT_RANGE,
             style: VisualStyle::default(),
@@ -161,7 +161,11 @@ impl LufsMeterState {
 
     pub fn apply_snapshot(&mut self, snapshot: &LoudnessSnapshot) {
         let floor = self.range.0;
-        Self::copy_into(&mut self.short_term_lufs, &snapshot.short_term_lufs, floor);
+        Self::copy_into(
+            &mut self.short_term_loudness,
+            &snapshot.short_term_loudness,
+            floor,
+        );
         Self::copy_into(&mut self.true_peak_db, &snapshot.true_peak_db, floor);
     }
 
@@ -182,7 +186,7 @@ impl LufsMeterState {
     }
 
     pub fn short_term_average(&self) -> f32 {
-        self.short_term_lufs.iter().copied().sum::<f32>() / CHANNELS as f32
+        self.short_term_loudness.iter().copied().sum::<f32>() / CHANNELS as f32
     }
 
     pub fn visual_params(&self, range: (f32, f32)) -> VisualParams {
@@ -197,7 +201,7 @@ impl LufsMeterState {
             .iter()
             .zip([style.raw_peak_left_fill, style.raw_peak_right_fill])
             .map(|(&value, color)| FillVisual {
-                value_lufs: value,
+                value_loudness: value,
                 color: theme::color_to_rgba(color),
             })
             .collect();
@@ -210,7 +214,7 @@ impl LufsMeterState {
             ChannelVisual {
                 background_color: bg_color,
                 fills: vec![FillVisual {
-                    value_lufs: short_term,
+                    value_loudness: short_term,
                     color: theme::color_to_rgba(style.short_term_fill),
                 }],
             },
@@ -225,7 +229,7 @@ impl LufsMeterState {
                 let label_width = guide_label_width(&label);
                 max_label_width = max_label_width.max(label_width);
                 GuideLine {
-                    value_lufs: level,
+                    value_loudness: level,
                     color: guide_color,
                     length: GUIDE_LINE_LENGTH,
                     thickness: GUIDE_LINE_THICKNESS,
@@ -236,8 +240,8 @@ impl LufsMeterState {
             .collect();
 
         VisualParams {
-            min_lufs: min,
-            max_lufs: max,
+            min_loudness: min,
+            max_loudness: max,
             channels,
             channel_gap_fraction: CHANNEL_GAP_FRACTION,
             channel_width_scale: CHANNEL_WIDTH_SCALE,
@@ -256,7 +260,7 @@ impl LufsMeterState {
     }
 }
 
-/// Palette for the LUFS meter.
+/// Palette for the loudness meter.
 #[derive(Debug, Clone, Copy)]
 pub struct VisualStyle {
     pub background: Color,
@@ -284,16 +288,16 @@ impl Default for VisualStyle {
 }
 
 #[derive(Debug)]
-pub struct LufsMeter<'a> {
-    state: &'a LufsMeterState,
+pub struct LoudnessMeter<'a> {
+    state: &'a LoudnessMeterState,
     range: Option<(f32, f32)>,
     height: f32,
     width: f32,
     fill_height: bool,
 }
 
-impl<'a> LufsMeter<'a> {
-    pub fn new(state: &'a LufsMeterState) -> Self {
+impl<'a> LoudnessMeter<'a> {
+    pub fn new(state: &'a LoudnessMeterState) -> Self {
         Self {
             state,
             range: None,
@@ -332,7 +336,7 @@ impl<'a> LufsMeter<'a> {
     }
 }
 
-impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LufsMeter<'a> {
+impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<GuideLabelCache>()
     }
@@ -382,7 +386,7 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LufsMeter<'a> {
         let bounds = layout.bounds();
         let (min, max) = self.active_range();
         let params = self.state.visual_params((min, max));
-        renderer.draw_primitive(bounds, LufsMeterPrimitive::new(params.clone()));
+        renderer.draw_primitive(bounds, LoudnessMeterPrimitive::new(params.clone()));
         draw_guide_labels(tree, renderer, bounds, &params);
         draw_live_value_label(tree, renderer, bounds, &params);
     }
@@ -396,7 +400,7 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LufsMeter<'a> {
 
 /// Convenience conversion into an [`iced::Element`].
 pub fn widget_with_layout<'a, Message>(
-    state: &'a LufsMeterState,
+    state: &'a LoudnessMeterState,
     preferred_width: f32,
     preferred_height: f32,
 ) -> Element<'a, Message>
@@ -405,7 +409,7 @@ where
 {
     let (min, max) = state.range();
     Element::new(
-        LufsMeter::new(state)
+        LoudnessMeter::new(state)
             .with_range(min, max)
             .fill_height()
             .with_height(preferred_height)
@@ -535,7 +539,7 @@ fn draw_guide_labels(
             continue;
         };
 
-        let ratio = params.clamp_ratio(guide.value_lufs);
+        let ratio = params.clamp_ratio(guide.value_loudness);
         let center_y = context.center(ratio);
         let label_bounds = Size::new(guide.label_width, GUIDE_LABEL_HEIGHT);
         let index = ensure_label_paragraph(&mut entries, label_text, label_bounds);
@@ -574,7 +578,7 @@ fn draw_live_value_label(
         return;
     };
 
-    let label = format!("{:.1}LUFS", params.short_term_value);
+    let label = format!("{:.1} dB", params.short_term_value);
     let available_width = context.available_width();
     let minimum_width = live_label_min_width(&label);
 
@@ -755,9 +759,9 @@ mod tests {
 
     #[test]
     fn state_aggregates_channels() {
-        let mut state = LufsMeterState::new();
+        let mut state = LoudnessMeterState::new();
         state.apply_snapshot(&LoudnessSnapshot {
-            short_term_lufs: vec![-12.0, -6.0],
+            short_term_loudness: vec![-12.0, -6.0],
             rms_fast_db: vec![-15.0, -9.0],
             true_peak_db: vec![-1.0, -3.0],
         });
@@ -770,9 +774,9 @@ mod tests {
         assert_eq!(params.channels.len(), 2);
         assert_eq!(params.channels[0].fills.len(), 2);
         assert_eq!(params.channels[1].fills.len(), 1);
-        let left_peak = params.channels[0].fills[0].value_lufs;
-        let right_peak = params.channels[0].fills[1].value_lufs;
-        let short_term = params.channels[1].fills[0].value_lufs;
+        let left_peak = params.channels[0].fills[0].value_loudness;
+        let right_peak = params.channels[0].fills[1].value_loudness;
+        let short_term = params.channels[1].fills[0].value_loudness;
         assert!((left_peak + 1.0).abs() < f32::EPSILON);
         assert!((right_peak + 3.0).abs() < f32::EPSILON);
         assert!((short_term + 9.0).abs() < f32::EPSILON);
