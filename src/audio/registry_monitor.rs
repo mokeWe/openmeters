@@ -7,6 +7,9 @@ use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
+const ROUTER_RECOVERY_DELAY: Duration = Duration::from_millis(500);
+const ROUTER_RETRY_DELAY: Duration = Duration::from_secs(5);
+
 pub fn init_registry_monitor(
     command_rx: mpsc::Receiver<RoutingCommand>,
     snapshot_tx: Sender<pw_registry::RegistrySnapshot>,
@@ -298,12 +301,14 @@ impl RoutingManager {
             return;
         }
 
-        let router = match self.ensure_router() {
-            Some(router) => router,
-            None => return,
-        };
+        let route_result = {
+            let router = match self.ensure_router() {
+                Some(router) => router,
+                None => return,
+            };
 
-        let route_result = router.route_application_to_sink(node, target);
+            router.route_application_to_sink(node, target)
+        };
 
         if route_result.is_ok() {
             let state = self
@@ -337,11 +342,28 @@ impl RoutingManager {
             .entry(node.id)
             .or_insert_with(|| RouteState::new(desired));
         state.mark_failure(desired, now);
+
+        self.router = None;
+        self.router_retry_after = Some(now + ROUTER_RECOVERY_DELAY);
     }
 
     fn ensure_router(&mut self) -> Option<&pw_router::Router> {
-        if self.router.is_some() {
+        if self
+            .router
+            .as_ref()
+            .is_some_and(|router| router.is_healthy())
+        {
             return self.router.as_ref();
+        }
+
+        if self
+            .router
+            .as_ref()
+            .is_some_and(|router| !router.is_healthy())
+        {
+            warn!("[router] detected stale metadata proxy; scheduling router reconnection");
+            self.router = None;
+            self.router_retry_after = Some(Instant::now() + ROUTER_RECOVERY_DELAY);
         }
 
         let now = Instant::now();
@@ -359,7 +381,6 @@ impl RoutingManager {
             }
             Err(err) => {
                 error!("[router] failed to reinitialise router: {err:?}");
-                const ROUTER_RETRY_DELAY: Duration = Duration::from_secs(5);
                 self.router_retry_after = Some(now + ROUTER_RETRY_DELAY);
             }
         }

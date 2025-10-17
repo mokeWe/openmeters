@@ -5,6 +5,7 @@ use crate::util::{dict_to_map, pipewire::metadata::format_target_metadata};
 use anyhow::{Context, Result, bail};
 use pipewire as pw;
 use pw::metadata::Metadata;
+use pw::proxy::{ProxyListener, ProxyT};
 use pw::registry::RegistryRc;
 use pw::types::ObjectType;
 use std::cell::{Cell, RefCell};
@@ -28,6 +29,8 @@ pub struct Router {
     mainloop: pw::main_loop::MainLoopRc,
     _core: pw::core::CoreRc,
     metadata: Metadata,
+    _metadata_listener: ProxyListener,
+    metadata_failed: Rc<Cell<bool>>,
 }
 
 impl Router {
@@ -61,15 +64,51 @@ impl Router {
             metadata_name.as_deref().unwrap_or("unnamed")
         );
 
+        let metadata_failed = Rc::new(Cell::new(false));
+        let listener = metadata
+            .upcast_ref()
+            .add_listener_local()
+            .destroy({
+                let flag = metadata_failed.clone();
+                move || {
+                    if !flag.replace(true) {
+                        warn!("[router] metadata proxy destroyed; routing unavailable until reconnection");
+                    }
+                }
+            })
+            .removed({
+                let flag = metadata_failed.clone();
+                move || {
+                    if !flag.replace(true) {
+                        warn!("[router] metadata proxy removed; routing unavailable until reconnection");
+                    }
+                }
+            })
+            .error({
+                let flag = metadata_failed.clone();
+                move |seq, res, message| {
+                    if !flag.replace(true) {
+                        warn!(
+                            "[router] metadata proxy error (seq={seq}, res={res}): {message}; routing unavailable"
+                        );
+                    }
+                }
+            })
+            .register();
+
         Ok(Self {
             mainloop,
             _core: core,
             metadata,
+            _metadata_listener: listener,
+            metadata_failed,
         })
     }
 
     /// Route the provided application node to the supplied sink using descriptive metadata.
     pub fn route_application_to_sink(&self, application: &NodeInfo, sink: &NodeInfo) -> Result<()> {
+        self.ensure_metadata_alive()?;
+
         let subject = application.id;
 
         let preferred_label = sink.display_name();
@@ -91,6 +130,8 @@ impl Router {
         );
         self.pump_loop(3);
 
+        self.ensure_metadata_alive()?;
+
         Ok(())
     }
 
@@ -100,6 +141,17 @@ impl Router {
         for _ in 0..iterations {
             loop_ref.iterate(Duration::from_millis(0));
         }
+    }
+
+    fn ensure_metadata_alive(&self) -> Result<()> {
+        if self.metadata_failed.get() {
+            bail!("PipeWire metadata proxy is unavailable");
+        }
+        Ok(())
+    }
+
+    pub fn is_healthy(&self) -> bool {
+        !self.metadata_failed.get()
     }
 }
 
