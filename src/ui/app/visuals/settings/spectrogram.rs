@@ -1,13 +1,23 @@
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::spectrogram::{FrequencyScale, SpectrogramConfig, WindowKind};
 use crate::ui::settings::{ModuleSettings, SettingsHandle, SpectrogramSettings};
+use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
-use iced::widget::{checkbox, column, pick_list, row, slider, text};
+use iced::Length;
+use iced::alignment::Vertical;
+use iced::widget::rule;
+use iced::widget::text::Style as TextStyle;
+use iced::widget::{Rule, column, container, pick_list, row, slider, text, toggler};
 use std::fmt;
 
 const FFT_OPTIONS: [usize; 4] = [1024, 2048, 4096, 8192];
 const ZERO_PADDING_OPTIONS: [usize; 3] = [1, 2, 4];
+const FREQUENCY_SCALE_OPTIONS: [FrequencyScale; 3] = [
+    FrequencyScale::Linear,
+    FrequencyScale::Logarithmic,
+    FrequencyScale::Mel,
+];
 
 // Slider ranges: (min, max, step)
 const HISTORY_RANGE: (f32, f32, f32) = (120.0, 960.0, 30.0);
@@ -20,6 +30,19 @@ const TEMPORAL_BLEND_HZ_RANGE: (f32, f32, f32) = (0.0, 4000.0, 1.0);
 const FREQUENCY_SMOOTHING_RANGE: (f32, f32, f32) = (0.0, 20.0, 1.0);
 const FREQUENCY_MAX_HZ_RANGE: (f32, f32, f32) = (0.0, 4000.0, 1.0);
 const FREQUENCY_BLEND_HZ_RANGE: (f32, f32, f32) = (0.0, 4000.0, 1.0);
+const SECTION_PADDING: f32 = 12.0;
+const SECTION_SPACING: f32 = 10.0;
+const ROW_SPACING: f32 = 10.0;
+const CONTROL_SPACING: f32 = 8.0;
+const OUTER_SPACING: f32 = 14.0;
+const RULE_HEIGHT: f32 = 1.0;
+const RULE_THICKNESS: u16 = 1;
+const RULE_FILL_PERCENT: f32 = 82.0;
+
+const TITLE_SIZE: u16 = 14;
+const LABEL_SIZE: u16 = 12;
+const VALUE_SIZE: u16 = 11;
+const TOGGLER_TEXT_SIZE: u16 = 11;
 
 #[derive(Debug)]
 pub struct SpectrogramSettingsPane {
@@ -30,105 +53,41 @@ pub struct SpectrogramSettingsPane {
     hop_ratio: HopRatio,
 }
 
-#[derive(Debug, Clone)]
-pub enum Message {
-    FftSize(usize),
-    HopRatio(HopRatio),
-    HistoryLength(f32),
-    Window(WindowPreset),
-    FrequencyScale(FrequencyScale),
-    UseReassignment(bool),
-    ReassignmentFloor(f32),
-    ReassignmentLowBinLimit(usize),
-    ZeroPadding(usize),
-    UseSynchrosqueezing(bool),
-    SynchroBinCount(usize),
-    TemporalSmoothing(f32),
-    TemporalSmoothingMaxHz(f32),
-    TemporalSmoothingBlendHz(f32),
-    FrequencySmoothing(f32),
-    FrequencySmoothingMaxHz(f32),
-    FrequencySmoothingBlendHz(f32),
-}
+impl SpectrogramSettingsPane {
+    fn core_section(&self) -> container::Container<'_, SettingsMessage> {
+        let fft_row = labeled_pick_list(
+            "FFT size",
+            FFT_OPTIONS.to_vec(),
+            Some(self.config.fft_size),
+            |size| SettingsMessage::Spectrogram(Message::FftSize(size)),
+        );
 
-pub fn create(
-    visual_id: VisualId,
-    visual_manager: &VisualManagerHandle,
-) -> SpectrogramSettingsPane {
-    let config = visual_manager
-        .borrow()
-        .module_settings(VisualKind::SPECTROGRAM)
-        .and_then(|stored| {
-            stored.spectrogram().map(|settings| {
-                let mut config = SpectrogramConfig::default();
-                settings.apply_to(&mut config);
-                config
-            })
-        })
-        .unwrap_or_default();
+        let hop_row = labeled_pick_list(
+            "Hop overlap",
+            HopRatio::ALL.to_vec(),
+            Some(self.hop_ratio),
+            |ratio| SettingsMessage::Spectrogram(Message::HopRatio(ratio)),
+        );
 
-    let window = WindowPreset::from_kind(config.window);
-    let frequency_scale = config.frequency_scale;
-    let hop_ratio = HopRatio::from_config(config.fft_size, config.hop_size);
+        let window_row = labeled_pick_list(
+            "Window",
+            WindowPreset::ALL.to_vec(),
+            Some(self.window),
+            |preset| SettingsMessage::Spectrogram(Message::Window(preset)),
+        );
 
-    SpectrogramSettingsPane {
-        visual_id,
-        config,
-        window,
-        frequency_scale,
-        hop_ratio,
-    }
-}
+        let frequency_scale_row = labeled_pick_list(
+            "Frequency scale",
+            FREQUENCY_SCALE_OPTIONS.to_vec(),
+            Some(self.frequency_scale),
+            |scale| SettingsMessage::Spectrogram(Message::FrequencyScale(scale)),
+        );
 
-// Helper function to create a labeled slider
-fn labeled_slider<'a>(
-    label: &'static str,
-    value: f32,
-    format: String,
-    range: (f32, f32, f32), // (min, max, step)
-    on_change: impl Fn(f32) -> SettingsMessage + 'a,
-) -> iced::widget::Column<'a, SettingsMessage> {
-    let (min, max, step) = range;
-    column![
-        row![text(label), text(format).size(12)].spacing(8),
-        slider::Slider::new(min..=max, value, on_change).step(step),
-    ]
-    .spacing(8)
-}
-
-impl ModuleSettingsPane for SpectrogramSettingsPane {
-    fn visual_id(&self) -> VisualId {
-        self.visual_id
-    }
-
-    fn view(&self) -> Element<'_, SettingsMessage> {
-        let fft_pick = pick_list(FFT_OPTIONS.to_vec(), Some(self.config.fft_size), |size| {
-            SettingsMessage::Spectrogram(Message::FftSize(size))
-        });
-
-        let hop_pick = pick_list(HopRatio::ALL.to_vec(), Some(self.hop_ratio), |ratio| {
-            SettingsMessage::Spectrogram(Message::HopRatio(ratio))
-        });
-
-        let zero_padding_pick = pick_list(
+        let zero_padding_row = labeled_pick_list(
+            "Zero padding",
             ZERO_PADDING_OPTIONS.to_vec(),
             Some(self.config.zero_padding_factor),
             |value| SettingsMessage::Spectrogram(Message::ZeroPadding(value)),
-        );
-
-        let window_pick = pick_list(WindowPreset::ALL.to_vec(), Some(self.window), |preset| {
-            SettingsMessage::Spectrogram(Message::Window(preset))
-        });
-
-        let frequency_scale_pick = pick_list(
-            [
-                FrequencyScale::Linear,
-                FrequencyScale::Logarithmic,
-                FrequencyScale::Mel,
-            ]
-            .to_vec(),
-            Some(self.frequency_scale),
-            |scale| SettingsMessage::Spectrogram(Message::FrequencyScale(scale)),
         );
 
         let history_slider = labeled_slider(
@@ -139,6 +98,20 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             |value| SettingsMessage::Spectrogram(Message::HistoryLength(value)),
         );
 
+        let paired_pick_lists = row![
+            column![fft_row, hop_row].spacing(CONTROL_SPACING),
+            column![window_row, frequency_scale_row, zero_padding_row].spacing(CONTROL_SPACING),
+        ]
+        .spacing(ROW_SPACING)
+        .width(Length::Fill);
+
+        section_container(
+            "Core controls",
+            column![paired_pick_lists, history_slider].spacing(CONTROL_SPACING),
+        )
+    }
+
+    fn advanced_section(&self) -> container::Container<'_, SettingsMessage> {
         let reassignment_floor = labeled_slider(
             "Reassignment floor",
             self.config.reassignment_power_floor_db,
@@ -219,37 +192,188 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             |value| SettingsMessage::Spectrogram(Message::FrequencySmoothingBlendHz(value)),
         );
 
-        column![
-            row![
-                column![
-                    row![text("FFT size"), fft_pick].spacing(12),
-                    row![text("Hop overlap"), hop_pick].spacing(12),
-                    row![text("Window"), window_pick].spacing(12),
-                    row![text("Frequency scale"), frequency_scale_pick].spacing(12),
-                    row![text("Zero padding"), zero_padding_pick].spacing(12),
-                ]
-                .spacing(12)
+        let reassignment_block = if self.config.use_reassignment {
+            column![reassignment_floor, reassignment_low_bin].spacing(CONTROL_SPACING)
+        } else {
+            column![]
+        };
+
+        let synchro_block = if self.config.use_synchrosqueezing {
+            column![synchro_bins].spacing(CONTROL_SPACING)
+        } else {
+            column![]
+        };
+
+        let smoothing_columns = row![
+            column![
+                temporal_smoothing,
+                temporal_smoothing_max,
+                temporal_smoothing_blend
             ]
-            .spacing(12),
-            history_slider,
-            checkbox("Time-frequency reassignment", self.config.use_reassignment,)
-                .on_toggle(|value| SettingsMessage::Spectrogram(Message::UseReassignment(value))),
-            reassignment_floor,
-            reassignment_low_bin,
-            checkbox(
-                "Synchrosqueezed accumulation",
-                self.config.use_synchrosqueezing,
-            )
-            .on_toggle(|value| SettingsMessage::Spectrogram(Message::UseSynchrosqueezing(value))),
-            synchro_bins,
-            temporal_smoothing,
-            temporal_smoothing_max,
-            temporal_smoothing_blend,
-            frequency_smoothing,
-            frequency_smoothing_max,
-            frequency_smoothing_blend,
+            .spacing(CONTROL_SPACING)
+            .width(Length::FillPortion(1)),
+            column![
+                frequency_smoothing,
+                frequency_smoothing_max,
+                frequency_smoothing_blend,
+            ]
+            .spacing(CONTROL_SPACING)
+            .width(Length::FillPortion(1)),
         ]
-        .spacing(16)
+        .spacing(ROW_SPACING)
+        .width(Length::Fill);
+
+        section_container(
+            "Advanced signal processing",
+            column![
+                toggler(self.config.use_reassignment)
+                    .label("Time-frequency reassignment")
+                    .text_size(TOGGLER_TEXT_SIZE)
+                    .spacing(CONTROL_SPACING - 4.0)
+                    .on_toggle(|value| {
+                        SettingsMessage::Spectrogram(Message::UseReassignment(value))
+                    }),
+                reassignment_block,
+                toggler(self.config.use_synchrosqueezing)
+                    .label("Synchrosqueezed accumulation")
+                    .text_size(TOGGLER_TEXT_SIZE)
+                    .spacing(CONTROL_SPACING - 4.0)
+                    .on_toggle(|value| {
+                        SettingsMessage::Spectrogram(Message::UseSynchrosqueezing(value))
+                    }),
+                synchro_block,
+                smoothing_columns,
+            ]
+            .spacing(CONTROL_SPACING),
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    FftSize(usize),
+    HopRatio(HopRatio),
+    HistoryLength(f32),
+    Window(WindowPreset),
+    FrequencyScale(FrequencyScale),
+    UseReassignment(bool),
+    ReassignmentFloor(f32),
+    ReassignmentLowBinLimit(usize),
+    ZeroPadding(usize),
+    UseSynchrosqueezing(bool),
+    SynchroBinCount(usize),
+    TemporalSmoothing(f32),
+    TemporalSmoothingMaxHz(f32),
+    TemporalSmoothingBlendHz(f32),
+    FrequencySmoothing(f32),
+    FrequencySmoothingMaxHz(f32),
+    FrequencySmoothingBlendHz(f32),
+}
+
+pub fn create(
+    visual_id: VisualId,
+    visual_manager: &VisualManagerHandle,
+) -> SpectrogramSettingsPane {
+    let config = visual_manager
+        .borrow()
+        .module_settings(VisualKind::SPECTROGRAM)
+        .and_then(|stored| {
+            stored.spectrogram().map(|settings| {
+                let mut config = SpectrogramConfig::default();
+                settings.apply_to(&mut config);
+                config
+            })
+        })
+        .unwrap_or_default();
+
+    let window = WindowPreset::from_kind(config.window);
+    let frequency_scale = config.frequency_scale;
+    let hop_ratio = HopRatio::from_config(config.fft_size, config.hop_size);
+
+    SpectrogramSettingsPane {
+        visual_id,
+        config,
+        window,
+        frequency_scale,
+        hop_ratio,
+    }
+}
+
+// Helper function to create a labeled slider
+fn labeled_slider<'a>(
+    label: &'static str,
+    value: f32,
+    format: String,
+    range: (f32, f32, f32), // (min, max, step)
+    on_change: impl Fn(f32) -> SettingsMessage + 'a,
+) -> iced::widget::Column<'a, SettingsMessage> {
+    let (min, max, step) = range;
+    let muted = muted_text_style();
+
+    column![
+        row![
+            text(label).size(LABEL_SIZE),
+            text(format).size(VALUE_SIZE).style(muted.clone()),
+        ]
+        .spacing(6.0),
+        slider::Slider::new(min..=max, value, on_change).step(step),
+    ]
+    .spacing(CONTROL_SPACING)
+}
+
+fn labeled_pick_list<'a, T>(
+    label: &'static str,
+    options: Vec<T>,
+    selected: Option<T>,
+    on_select: impl Fn(T) -> SettingsMessage + 'a,
+) -> iced::widget::Row<'a, SettingsMessage>
+where
+    T: Clone + PartialEq + fmt::Display + 'static,
+{
+    row![
+        text(label).size(LABEL_SIZE),
+        pick_list(options, selected, on_select),
+    ]
+    .spacing(ROW_SPACING)
+    .align_y(Vertical::Center)
+}
+
+fn muted_text_style() -> impl Fn(&iced::Theme) -> TextStyle + Clone {
+    let color = theme::text_secondary();
+    move |_| TextStyle {
+        color: Some(color),
+        ..TextStyle::default()
+    }
+}
+
+fn section_container<'a>(
+    title: &'static str,
+    body: iced::widget::Column<'a, SettingsMessage>,
+) -> container::Container<'a, SettingsMessage> {
+    container(column![text(title).size(TITLE_SIZE), body].spacing(SECTION_SPACING))
+        .padding(SECTION_PADDING)
+}
+
+impl ModuleSettingsPane for SpectrogramSettingsPane {
+    fn visual_id(&self) -> VisualId {
+        self.visual_id
+    }
+
+    fn view(&self) -> Element<'_, SettingsMessage> {
+        let divider_color = theme::with_alpha(theme::text_secondary(), 0.35);
+        let section_divider = Rule::horizontal(RULE_HEIGHT).style(move |_| rule::Style {
+            color: divider_color,
+            width: RULE_THICKNESS,
+            radius: 0.0.into(),
+            fill_mode: rule::FillMode::Percent(RULE_FILL_PERCENT),
+        });
+
+        column![
+            self.core_section(),
+            section_divider,
+            self.advanced_section()
+        ]
+        .spacing(OUTER_SPACING)
         .into()
     }
 
@@ -474,10 +598,16 @@ pub(crate) enum HopRatio {
     Quarter,
     Sixth,
     Eighth,
+    Sixteenth,
 }
 
 impl HopRatio {
-    const ALL: [HopRatio; 3] = [HopRatio::Quarter, HopRatio::Sixth, HopRatio::Eighth];
+    const ALL: [HopRatio; 4] = [
+        HopRatio::Quarter,
+        HopRatio::Sixth,
+        HopRatio::Eighth,
+        HopRatio::Sixteenth,
+    ];
 
     fn from_config(fft_size: usize, hop_size: usize) -> Self {
         if fft_size == 0 || hop_size == 0 {
@@ -503,6 +633,7 @@ impl HopRatio {
             HopRatio::Quarter => 4,
             HopRatio::Sixth => 6,
             HopRatio::Eighth => 8,
+            HopRatio::Sixteenth => 16,
         }
     }
 
@@ -518,6 +649,7 @@ impl fmt::Display for HopRatio {
             HopRatio::Quarter => "75% overlap",
             HopRatio::Sixth => "83% overlap",
             HopRatio::Eighth => "87% overlap",
+            HopRatio::Sixteenth => "94% overlap",
         };
         write!(f, "{}", label)
     }
