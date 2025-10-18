@@ -2,7 +2,7 @@ use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::waveform::{
     DownsampleStrategy, MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, WaveformConfig,
 };
-use crate::ui::settings::{ModuleSettings, SettingsHandle, WaveformSettings};
+use crate::ui::settings::{ModuleSettings, SettingsHandle};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::{column, pick_list, row, slider, text};
@@ -36,13 +36,7 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Wave
     let config = visual_manager
         .borrow()
         .module_settings(VisualKind::WAVEFORM)
-        .and_then(|stored| {
-            stored.waveform().map(|settings| {
-                let mut config = WaveformConfig::default();
-                settings.apply_to(&mut config);
-                config
-            })
-        })
+        .and_then(|stored| stored.waveform_config())
         .unwrap_or_default();
 
     WaveformSettingsPane { visual_id, config }
@@ -131,8 +125,7 @@ fn apply_waveform_config(
     visual_manager: &VisualManagerHandle,
     settings: &SettingsHandle,
 ) {
-    let mut module_settings = ModuleSettings::default();
-    module_settings.set_waveform(WaveformSettings::from_config(config));
+    let module_settings = ModuleSettings::with_waveform_config(config);
 
     if visual_manager
         .borrow_mut()

@@ -168,8 +168,7 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
         };
 
         if changed {
-            let mut module_settings = ModuleSettings::default();
-            module_settings.set_oscilloscope(self.settings.clone());
+            let module_settings = ModuleSettings::with_oscilloscope_settings(&self.settings);
 
             if visual_manager
                 .borrow_mut()

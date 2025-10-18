@@ -1,6 +1,6 @@
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::spectrogram::{FrequencyScale, SpectrogramConfig, WindowKind};
-use crate::ui::settings::{ModuleSettings, SettingsHandle, SpectrogramSettings};
+use crate::ui::settings::{ModuleSettings, SettingsHandle};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
@@ -277,13 +277,7 @@ pub fn create(
     let config = visual_manager
         .borrow()
         .module_settings(VisualKind::SPECTROGRAM)
-        .and_then(|stored| {
-            stored.spectrogram().map(|settings| {
-                let mut config = SpectrogramConfig::default();
-                settings.apply_to(&mut config);
-                config
-            })
-        })
+        .and_then(|stored| stored.spectrogram_config())
         .unwrap_or_default();
 
     let window = WindowPreset::from_kind(config.window);
@@ -523,8 +517,7 @@ fn apply_changes(
 ) {
     let config = pane.config;
 
-    let mut module_settings = ModuleSettings::default();
-    module_settings.set_spectrogram(SpectrogramSettings::from_config(&config));
+    let module_settings = ModuleSettings::with_spectrogram_config(&config);
 
     if visual_manager
         .borrow_mut()

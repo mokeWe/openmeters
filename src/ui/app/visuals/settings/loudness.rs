@@ -94,8 +94,7 @@ impl ModuleSettingsPane for LoudnessSettingsPane {
 
 impl LoudnessSettingsPane {
     fn push_changes(&self, visual_manager: &VisualManagerHandle, settings_handle: &SettingsHandle) {
-        let mut module_settings = ModuleSettings::default();
-        module_settings.set_loudness(self.settings);
+        let module_settings = ModuleSettings::with_loudness_settings(self.settings);
 
         if visual_manager
             .borrow_mut()

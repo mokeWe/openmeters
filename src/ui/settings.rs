@@ -58,58 +58,91 @@ pub struct ModuleSettings {
 
 impl ModuleSettings {
     pub fn set_spectrogram(&mut self, config: SpectrogramSettings) {
-        self.config = Some(StoredConfig::Spectrogram(config));
+        self.config = Some(config.into());
     }
 
     pub fn set_spectrum(&mut self, config: SpectrumSettings) {
-        self.config = Some(StoredConfig::Spectrum(config));
+        self.config = Some(config.into());
     }
 
     pub fn set_oscilloscope(&mut self, config: OscilloscopeSettings) {
-        self.config = Some(StoredConfig::Oscilloscope(config));
+        self.config = Some(config.into());
     }
 
     pub fn set_waveform(&mut self, config: WaveformSettings) {
-        self.config = Some(StoredConfig::Waveform(config));
+        self.config = Some(config.into());
     }
 
     pub fn set_loudness(&mut self, config: LoudnessSettings) {
-        self.config = Some(StoredConfig::Loudness(config));
+        self.config = Some(config.into());
     }
 
     pub fn spectrogram(&self) -> Option<&SpectrogramSettings> {
-        match &self.config {
-            Some(StoredConfig::Spectrogram(cfg)) => Some(cfg),
-            _ => None,
-        }
+        self.config.as_ref().and_then(StoredConfig::as_spectrogram)
+    }
+
+    pub fn spectrogram_config(&self) -> Option<SpectrogramConfig> {
+        self.config
+            .as_ref()
+            .and_then(StoredConfig::to_spectrogram_config)
     }
 
     pub fn spectrum(&self) -> Option<&SpectrumSettings> {
-        match &self.config {
-            Some(StoredConfig::Spectrum(cfg)) => Some(cfg),
-            _ => None,
-        }
+        self.config.as_ref().and_then(StoredConfig::as_spectrum)
+    }
+
+    pub fn spectrum_config(&self) -> Option<SpectrumConfig> {
+        self.config
+            .as_ref()
+            .and_then(StoredConfig::to_spectrum_config)
     }
 
     pub fn oscilloscope(&self) -> Option<&OscilloscopeSettings> {
-        match &self.config {
-            Some(StoredConfig::Oscilloscope(cfg)) => Some(cfg),
-            _ => None,
-        }
+        self.config.as_ref().and_then(StoredConfig::as_oscilloscope)
     }
 
     pub fn waveform(&self) -> Option<&WaveformSettings> {
-        match &self.config {
-            Some(StoredConfig::Waveform(cfg)) => Some(cfg),
-            _ => None,
-        }
+        self.config.as_ref().and_then(StoredConfig::as_waveform)
+    }
+
+    pub fn waveform_config(&self) -> Option<WaveformConfig> {
+        self.config
+            .as_ref()
+            .and_then(StoredConfig::to_waveform_config)
     }
 
     pub fn loudness(&self) -> Option<&LoudnessSettings> {
-        match &self.config {
-            Some(StoredConfig::Loudness(cfg)) => Some(cfg),
-            _ => None,
-        }
+        self.config.as_ref().and_then(StoredConfig::as_loudness)
+    }
+
+    pub fn with_spectrogram_config(config: &SpectrogramConfig) -> Self {
+        let mut module = Self::default();
+        module.config = Some(SpectrogramSettings::from_config(config).into());
+        module
+    }
+
+    pub fn with_spectrum_config(config: &SpectrumConfig) -> Self {
+        let mut module = Self::default();
+        module.config = Some(SpectrumSettings::from_config(config).into());
+        module
+    }
+
+    pub fn with_waveform_config(config: &WaveformConfig) -> Self {
+        let mut module = Self::default();
+        module.config = Some(WaveformSettings::from_config(config).into());
+        module
+    }
+
+    pub fn with_oscilloscope_settings(settings: &OscilloscopeSettings) -> Self {
+        let mut module = Self::default();
+        module.config = Some(settings.clone().into());
+        module
+    }
+
+    pub fn with_loudness_settings(settings: LoudnessSettings) -> Self {
+        let mut module = Self::default();
+        module.config = Some(settings.into());
+        module
     }
 
     pub fn retain_only(&mut self, kind: VisualKind) {
@@ -151,6 +184,83 @@ impl StoredConfig {
 
     fn from_value(value: Value) -> Option<Self> {
         serde_json::from_value(value).ok()
+    }
+
+    fn as_spectrogram(&self) -> Option<&SpectrogramSettings> {
+        match self {
+            StoredConfig::Spectrogram(cfg) => Some(cfg),
+            _ => None,
+        }
+    }
+
+    fn as_spectrum(&self) -> Option<&SpectrumSettings> {
+        match self {
+            StoredConfig::Spectrum(cfg) => Some(cfg),
+            _ => None,
+        }
+    }
+
+    fn as_oscilloscope(&self) -> Option<&OscilloscopeSettings> {
+        match self {
+            StoredConfig::Oscilloscope(cfg) => Some(cfg),
+            _ => None,
+        }
+    }
+
+    fn as_waveform(&self) -> Option<&WaveformSettings> {
+        match self {
+            StoredConfig::Waveform(cfg) => Some(cfg),
+            _ => None,
+        }
+    }
+
+    fn as_loudness(&self) -> Option<&LoudnessSettings> {
+        match self {
+            StoredConfig::Loudness(cfg) => Some(cfg),
+            _ => None,
+        }
+    }
+
+    fn to_spectrogram_config(&self) -> Option<SpectrogramConfig> {
+        self.as_spectrogram().map(SpectrogramSettings::to_config)
+    }
+
+    fn to_spectrum_config(&self) -> Option<SpectrumConfig> {
+        self.as_spectrum().map(SpectrumSettings::to_config)
+    }
+
+    fn to_waveform_config(&self) -> Option<WaveformConfig> {
+        self.as_waveform().map(WaveformSettings::to_config)
+    }
+}
+
+impl From<SpectrogramSettings> for StoredConfig {
+    fn from(settings: SpectrogramSettings) -> Self {
+        StoredConfig::Spectrogram(settings)
+    }
+}
+
+impl From<SpectrumSettings> for StoredConfig {
+    fn from(settings: SpectrumSettings) -> Self {
+        StoredConfig::Spectrum(settings)
+    }
+}
+
+impl From<OscilloscopeSettings> for StoredConfig {
+    fn from(settings: OscilloscopeSettings) -> Self {
+        StoredConfig::Oscilloscope(settings)
+    }
+}
+
+impl From<WaveformSettings> for StoredConfig {
+    fn from(settings: WaveformSettings) -> Self {
+        StoredConfig::Waveform(settings)
+    }
+}
+
+impl From<LoudnessSettings> for StoredConfig {
+    fn from(settings: LoudnessSettings) -> Self {
+        StoredConfig::Loudness(settings)
     }
 }
 
@@ -281,6 +391,12 @@ impl WaveformSettings {
         config.scroll_speed = self.scroll_speed;
         config.downsample = self.downsample;
     }
+
+    pub fn to_config(&self) -> WaveformConfig {
+        let mut config = WaveformConfig::default();
+        self.apply_to(&mut config);
+        config
+    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -351,6 +467,12 @@ impl SpectrumSettings {
             factor: self.averaging_factor.clamp(0.0, 0.9999),
         };
         config.frequency_scale = self.frequency_scale;
+    }
+
+    pub fn to_config(&self) -> SpectrumConfig {
+        let mut config = SpectrumConfig::default();
+        self.apply_to(&mut config);
+        config
     }
 }
 
@@ -426,6 +548,12 @@ impl SpectrogramSettings {
         config.frequency_smoothing_radius = self.frequency_smoothing_radius;
         config.frequency_smoothing_max_hz = self.frequency_smoothing_max_hz.max(0.0);
         config.frequency_smoothing_blend_hz = self.frequency_smoothing_blend_hz.max(0.0);
+    }
+
+    pub fn to_config(&self) -> SpectrogramConfig {
+        let mut config = SpectrogramConfig::default();
+        self.apply_to(&mut config);
+        config
     }
 }
 

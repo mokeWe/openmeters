@@ -1,7 +1,7 @@
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
-use crate::ui::settings::{ModuleSettings, SettingsHandle, SpectrumSettings};
+use crate::ui::settings::{ModuleSettings, SettingsHandle};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::{column, pick_list, row, slider, text};
@@ -33,13 +33,7 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Spec
     let config = visual_manager
         .borrow()
         .module_settings(VisualKind::SPECTRUM)
-        .and_then(|stored| {
-            stored.spectrum().map(|settings| {
-                let mut config = SpectrumConfig::default();
-                settings.apply_to(&mut config);
-                config
-            })
-        })
+        .and_then(|stored| stored.spectrum_config())
         .unwrap_or_default();
 
     let averaging_factor = match config.averaging {
@@ -138,8 +132,7 @@ fn apply_spectrum_config(
     visual_manager: &VisualManagerHandle,
     settings: &SettingsHandle,
 ) {
-    let mut module_settings = ModuleSettings::default();
-    module_settings.set_spectrum(SpectrumSettings::from_config(config));
+    let module_settings = ModuleSettings::with_spectrum_config(config);
 
     if visual_manager
         .borrow_mut()
