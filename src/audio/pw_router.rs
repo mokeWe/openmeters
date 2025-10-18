@@ -116,22 +116,37 @@ impl Router {
         let metadata =
             format_target_metadata(sink.object_serial(), sink.id, preferred_label.as_str());
 
-        self.metadata.set_property(
+        self.set_metadata_property(
             subject,
             TARGET_OBJECT_KEY,
-            Some(metadata.type_hint),
-            Some(&metadata.target_object),
-        );
-        self.metadata.set_property(
+            metadata.type_hint,
+            &metadata.target_object,
+        )?;
+        self.pump_loop(1);
+        self.ensure_metadata_alive()?;
+
+        self.set_metadata_property(
             subject,
             TARGET_NODE_KEY,
-            Some(metadata.type_hint),
-            Some(&metadata.target_node),
-        );
-        self.pump_loop(3);
+            metadata.type_hint,
+            &metadata.target_node,
+        )?;
+        self.pump_loop(2);
 
         self.ensure_metadata_alive()?;
 
+        Ok(())
+    }
+
+    fn set_metadata_property(
+        &self,
+        subject: u32,
+        key: &str,
+        type_hint: &'static str,
+        value: &str,
+    ) -> Result<()> {
+        self.metadata
+            .set_property(subject, key, Some(type_hint), Some(value));
         Ok(())
     }
 
@@ -139,7 +154,7 @@ impl Router {
     fn pump_loop(&self, iterations: usize) {
         let loop_ref = self.mainloop.loop_();
         for _ in 0..iterations {
-            loop_ref.iterate(Duration::from_millis(0));
+            loop_ref.iterate(Duration::from_millis(10));
         }
     }
 

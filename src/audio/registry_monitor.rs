@@ -69,8 +69,10 @@ fn run_registry_monitor(
                     break;
                 }
             }
-            Ok(None) => continue,
-            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+            Ok(None) | Err(mpsc::RecvTimeoutError::Timeout) => {
+                monitor.handle_idle();
+                continue;
+            }
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
@@ -107,6 +109,10 @@ impl RegistryMonitor {
     fn process_pending_commands(&mut self) -> bool {
         self.routing.apply_pending_commands()
     }
+
+    fn handle_idle(&mut self) {
+        self.routing.handle_idle();
+    }
 }
 
 struct RoutingManager {
@@ -120,6 +126,7 @@ struct RoutingManager {
     last_hardware_sink_id: Option<u32>,
     last_hardware_sink_label: Option<String>,
     router_retry_after: Option<Instant>,
+    router_epoch: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,10 +141,10 @@ struct RouteState {
     last_success: Option<Instant>,
     last_attempt: Option<Instant>,
     consecutive_failures: u32,
+    last_success_epoch: u64,
 }
 
 impl RouteState {
-    const REFRESH_INTERVAL: Duration = Duration::from_secs(2);
     const RETRY_INTERVAL: Duration = Duration::from_millis(350);
 
     fn new(target: RouteTarget) -> Self {
@@ -146,14 +153,16 @@ impl RouteState {
             last_success: None,
             last_attempt: None,
             consecutive_failures: 0,
+            last_success_epoch: 0,
         }
     }
 
-    fn mark_success(&mut self, target: RouteTarget, now: Instant) {
+    fn mark_success(&mut self, target: RouteTarget, now: Instant, epoch: u64) {
         self.target = target;
         self.last_attempt = Some(now);
         self.last_success = Some(now);
         self.consecutive_failures = 0;
+        self.last_success_epoch = epoch;
     }
 
     fn mark_failure(&mut self, target: RouteTarget, now: Instant) {
@@ -162,17 +171,12 @@ impl RouteState {
         self.consecutive_failures = self.consecutive_failures.saturating_add(1);
     }
 
-    fn should_retry(&self, target: RouteTarget, now: Instant) -> bool {
-        if self.target != target {
-            return true;
-        }
+    fn should_retry(&self, desired: RouteTarget, now: Instant, epoch: u64) -> bool {
+        self.target != desired || self.should_refresh(now, epoch)
+    }
 
-        if let Some(last_success) = self.last_success {
-            if now.duration_since(last_success) >= Self::REFRESH_INTERVAL {
-                return true;
-            }
-        } else {
-            // No successful routing recorded yet; allow retry as soon as permitted.
+    fn should_refresh(&self, now: Instant, epoch: u64) -> bool {
+        if self.last_success_epoch < epoch || self.last_success.is_none() {
             return true;
         }
 
@@ -189,6 +193,7 @@ impl RouteState {
 
 impl RoutingManager {
     fn new(router: Option<pw_router::Router>, commands: mpsc::Receiver<RoutingCommand>) -> Self {
+        let router_epoch = if router.is_some() { 1 } else { 0 };
         Self {
             router,
             commands,
@@ -200,6 +205,7 @@ impl RoutingManager {
             last_hardware_sink_id: None,
             last_hardware_sink_label: None,
             router_retry_after: None,
+            router_epoch,
         }
     }
 
@@ -296,7 +302,7 @@ impl RoutingManager {
         if !self
             .routed_nodes
             .get(&node.id)
-            .is_none_or(|state| state.should_retry(desired, now))
+            .is_none_or(|state| state.should_retry(desired, now, self.router_epoch))
         {
             return;
         }
@@ -315,7 +321,7 @@ impl RoutingManager {
                 .routed_nodes
                 .entry(node.id)
                 .or_insert_with(|| RouteState::new(desired));
-            state.mark_success(desired, now);
+            state.mark_success(desired, now, self.router_epoch);
 
             let action = match desired {
                 RouteTarget::Virtual(_) => "routed",
@@ -378,6 +384,7 @@ impl RoutingManager {
                 info!("[router] reinitialised PipeWire router connection");
                 self.router = Some(router);
                 self.router_retry_after = None;
+                self.router_epoch = self.router_epoch.wrapping_add(1).max(1);
             }
             Err(err) => {
                 error!("[router] failed to reinitialise router: {err:?}");
@@ -386,6 +393,28 @@ impl RoutingManager {
         }
 
         self.router.as_ref()
+    }
+
+    fn handle_idle(&mut self) {
+        let now = Instant::now();
+
+        if self.router.is_none() {
+            self.ensure_router();
+        }
+
+        let Some(snapshot) = self.last_snapshot.as_ref().cloned() else {
+            return;
+        };
+
+        if !self
+            .routed_nodes
+            .values()
+            .any(|state| state.should_refresh(now, self.router_epoch))
+        {
+            return;
+        }
+
+        self.apply_snapshot(snapshot.as_ref(), false);
     }
 
     fn resolve_hardware_sink<'a>(
