@@ -32,6 +32,7 @@ pub struct VisualParams {
     pub channel_gap_fraction: f32,
     pub channel_width_scale: f32,
     pub short_term_value: f32,
+    pub value_unit: String,
     pub guides: Vec<GuideLine>,
     pub left_padding: f32,
     pub right_padding: f32,

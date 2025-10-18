@@ -22,8 +22,49 @@ use iced::{
     Background, Border, Color, Element, Font, Length, Pixels, Point, Rectangle, Size, Theme,
 };
 use iced_wgpu::primitive::Renderer as _;
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+use std::fmt;
 use std::time::Instant;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+pub enum MeterMode {
+    #[default]
+    LufsShortTerm,
+    LufsMomentary,
+    RmsFast,
+    RmsSlow,
+    TruePeak,
+}
+
+impl MeterMode {
+    pub const ALL: &'static [MeterMode] = &[
+        MeterMode::LufsShortTerm,
+        MeterMode::LufsMomentary,
+        MeterMode::RmsFast,
+        MeterMode::RmsSlow,
+        MeterMode::TruePeak,
+    ];
+
+    pub fn unit_label(self) -> &'static str {
+        match self {
+            MeterMode::LufsShortTerm | MeterMode::LufsMomentary => "LUFS",
+            MeterMode::RmsFast | MeterMode::RmsSlow | MeterMode::TruePeak => "dB",
+        }
+    }
+}
+
+impl fmt::Display for MeterMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MeterMode::LufsShortTerm => f.write_str("LUFS Short-term"),
+            MeterMode::LufsMomentary => f.write_str("LUFS Momentary"),
+            MeterMode::RmsFast => f.write_str("RMS Fast"),
+            MeterMode::RmsSlow => f.write_str("RMS Slow"),
+            MeterMode::TruePeak => f.write_str("True Peak"),
+        }
+    }
+}
 
 const CHANNELS: usize = 2;
 const DEFAULT_RANGE: (f32, f32) = (-60.0, 0.0);
@@ -144,18 +185,28 @@ impl LoudnessMeterProcessor {
 #[derive(Debug, Clone)]
 pub struct LoudnessMeterState {
     short_term_loudness: [f32; CHANNELS],
+    momentary_loudness: [f32; CHANNELS],
+    rms_fast_db: [f32; CHANNELS],
+    rms_slow_db: [f32; CHANNELS],
     true_peak_db: [f32; CHANNELS],
     range: (f32, f32),
     style: VisualStyle,
+    left_mode: MeterMode,
+    right_mode: MeterMode,
 }
 
 impl LoudnessMeterState {
     pub fn new() -> Self {
         Self {
             short_term_loudness: [DEFAULT_RANGE.0; CHANNELS],
+            momentary_loudness: [DEFAULT_RANGE.0; CHANNELS],
+            rms_fast_db: [DEFAULT_RANGE.0; CHANNELS],
+            rms_slow_db: [DEFAULT_RANGE.0; CHANNELS],
             true_peak_db: [DEFAULT_RANGE.0; CHANNELS],
             range: DEFAULT_RANGE,
             style: VisualStyle::default(),
+            left_mode: MeterMode::TruePeak,
+            right_mode: MeterMode::LufsShortTerm,
         }
     }
 
@@ -166,6 +217,13 @@ impl LoudnessMeterState {
             &snapshot.short_term_loudness,
             floor,
         );
+        Self::copy_into(
+            &mut self.momentary_loudness,
+            &snapshot.momentary_loudness,
+            floor,
+        );
+        Self::copy_into(&mut self.rms_fast_db, &snapshot.rms_fast_db, floor);
+        Self::copy_into(&mut self.rms_slow_db, &snapshot.rms_slow_db, floor);
         Self::copy_into(&mut self.true_peak_db, &snapshot.true_peak_db, floor);
     }
 
@@ -185,19 +243,50 @@ impl LoudnessMeterState {
         &self.style
     }
 
+    pub fn set_modes(&mut self, left: MeterMode, right: MeterMode) {
+        self.left_mode = left;
+        self.right_mode = right;
+    }
+
+    pub fn left_mode(&self) -> MeterMode {
+        self.left_mode
+    }
+
+    pub fn right_mode(&self) -> MeterMode {
+        self.right_mode
+    }
+
+    #[cfg(test)]
     pub fn short_term_average(&self) -> f32 {
         self.short_term_loudness.iter().copied().sum::<f32>() / CHANNELS as f32
+    }
+
+    fn get_value_for_mode(&self, mode: MeterMode, channel: usize) -> f32 {
+        match mode {
+            MeterMode::LufsShortTerm => {
+                self.short_term_loudness.iter().copied().sum::<f32>() / CHANNELS as f32
+            }
+            MeterMode::LufsMomentary => {
+                self.momentary_loudness.iter().copied().sum::<f32>() / CHANNELS as f32
+            }
+            MeterMode::RmsFast => *self.rms_fast_db.get(channel).unwrap_or(&self.range.0),
+            MeterMode::RmsSlow => *self.rms_slow_db.get(channel).unwrap_or(&self.range.0),
+            MeterMode::TruePeak => *self.true_peak_db.get(channel).unwrap_or(&self.range.0),
+        }
     }
 
     pub fn visual_params(&self, range: (f32, f32)) -> VisualParams {
         let (min, max) = range;
         let style = *self.style();
-        let short_term = self.short_term_average();
         let guide_color = theme::color_to_rgba(guide_line_color());
         let bg_color = theme::color_to_rgba(style.background);
 
-        let peak_fills: Vec<_> = self
-            .true_peak_db
+        let left_values: Vec<f32> = (0..CHANNELS)
+            .map(|ch| self.get_value_for_mode(self.left_mode, ch))
+            .collect();
+        let right_value = self.get_value_for_mode(self.right_mode, 0);
+
+        let left_fills: Vec<_> = left_values
             .iter()
             .zip([style.raw_peak_left_fill, style.raw_peak_right_fill])
             .map(|(&value, color)| FillVisual {
@@ -209,12 +298,12 @@ impl LoudnessMeterState {
         let channels = vec![
             ChannelVisual {
                 background_color: bg_color,
-                fills: peak_fills,
+                fills: left_fills,
             },
             ChannelVisual {
                 background_color: bg_color,
                 fills: vec![FillVisual {
-                    value_loudness: short_term,
+                    value_loudness: right_value,
                     color: theme::color_to_rgba(style.short_term_fill),
                 }],
             },
@@ -245,7 +334,8 @@ impl LoudnessMeterState {
             channels,
             channel_gap_fraction: CHANNEL_GAP_FRACTION,
             channel_width_scale: CHANNEL_WIDTH_SCALE,
-            short_term_value: short_term,
+            short_term_value: right_value,
+            value_unit: self.right_mode.unit_label().to_string(),
             guides,
             left_padding: GUIDE_LABEL_MARGIN
                 + max_label_width
@@ -578,7 +668,7 @@ fn draw_live_value_label(
         return;
     };
 
-    let label = format!("{:.1} LUFS", params.short_term_value);
+    let label = format!("{:.1} {}", params.short_term_value, params.value_unit);
     let available_width = context.available_width();
     let minimum_width = live_label_min_width(&label);
 
@@ -762,7 +852,9 @@ mod tests {
         let mut state = LoudnessMeterState::new();
         state.apply_snapshot(&LoudnessSnapshot {
             short_term_loudness: vec![-12.0, -6.0],
+            momentary_loudness: vec![-10.0, -5.0],
             rms_fast_db: vec![-15.0, -9.0],
+            rms_slow_db: vec![-14.0, -8.0],
             true_peak_db: vec![-1.0, -3.0],
         });
 
@@ -774,13 +866,14 @@ mod tests {
         assert_eq!(params.channels.len(), 2);
         assert_eq!(params.channels[0].fills.len(), 2);
         assert_eq!(params.channels[1].fills.len(), 1);
-        let left_peak = params.channels[0].fills[0].value_loudness;
-        let right_peak = params.channels[0].fills[1].value_loudness;
-        let short_term = params.channels[1].fills[0].value_loudness;
-        assert!((left_peak + 1.0).abs() < f32::EPSILON);
-        assert!((right_peak + 3.0).abs() < f32::EPSILON);
-        assert!((short_term + 9.0).abs() < f32::EPSILON);
+        let left_value_0 = params.channels[0].fills[0].value_loudness;
+        let left_value_1 = params.channels[0].fills[1].value_loudness;
+        let right_value = params.channels[1].fills[0].value_loudness;
+        assert!((left_value_0 + 1.0).abs() < f32::EPSILON);
+        assert!((left_value_1 + 3.0).abs() < f32::EPSILON);
+        assert!((right_value + 9.0).abs() < f32::EPSILON);
         assert!((params.short_term_value + 9.0).abs() < f32::EPSILON);
+        assert_eq!(params.value_unit, "LUFS");
         assert!(!params.guides.is_empty());
         let labels: Vec<_> = params
             .guides

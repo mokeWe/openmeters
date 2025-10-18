@@ -1,6 +1,7 @@
 //! Contains the settings panes for visual modules.
 //! Each module in ./settings corresponds to a module in ../../visualization.
 
+mod loudness;
 mod oscilloscope;
 mod spectrogram;
 mod spectrum;
@@ -13,6 +14,7 @@ use iced::{Element, Length, Size};
 
 #[derive(Debug, Clone)]
 pub enum SettingsMessage {
+    Loudness(loudness::Message),
     Oscilloscope(oscilloscope::Message),
     Spectrogram(spectrogram::Message),
     Spectrum(spectrum::Message),
@@ -31,6 +33,7 @@ pub trait ModuleSettingsPane: std::fmt::Debug + 'static {
 }
 
 const DEFAULT_UNSUPPORTED_SIZE: Size = Size::new(320.0, 160.0);
+const LOUDNESS_SETTINGS_SIZE: Size = Size::new(360.0, 180.0);
 const OSCILLOSCOPE_SETTINGS_SIZE: Size = Size::new(420.0, 340.0);
 const SPECTROGRAM_SETTINGS_SIZE: Size = Size::new(560.0, 880.0);
 const SPECTRUM_SETTINGS_SIZE: Size = Size::new(420.0, 260.0);
@@ -103,6 +106,7 @@ pub fn create_panel(
     let preferred_size = settings_size_for(kind);
 
     let pane: Box<dyn ModuleSettingsPane> = match kind {
+        VisualKind::LOUDNESS => Box::new(loudness::create(visual_id, visual_manager)),
         VisualKind::OSCILLOSCOPE => Box::new(oscilloscope::create(visual_id, visual_manager)),
         VisualKind::SPECTROGRAM => Box::new(spectrogram::create(visual_id, visual_manager)),
         VisualKind::SPECTRUM => Box::new(spectrum::create(visual_id, visual_manager)),
@@ -115,6 +119,7 @@ pub fn create_panel(
 
 fn settings_size_for(kind: VisualKind) -> Size {
     match kind {
+        VisualKind::LOUDNESS => LOUDNESS_SETTINGS_SIZE,
         VisualKind::OSCILLOSCOPE => OSCILLOSCOPE_SETTINGS_SIZE,
         VisualKind::SPECTROGRAM => SPECTROGRAM_SETTINGS_SIZE,
         VisualKind::SPECTRUM => SPECTRUM_SETTINGS_SIZE,

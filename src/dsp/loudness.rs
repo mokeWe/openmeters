@@ -11,7 +11,9 @@ const LOUDNESS_OFFSET: f64 = -0.691;
 const NOMINAL_SAMPLE_RATE: f32 = DEFAULT_SAMPLE_RATE;
 const SAMPLE_RATE_TOLERANCE: f32 = 0.1;
 const DEFAULT_SHORT_TERM_WINDOW: f32 = 3.0;
+const DEFAULT_MOMENTARY_WINDOW: f32 = 0.4;
 const DEFAULT_RMS_FAST_WINDOW: f32 = 0.3;
+const DEFAULT_RMS_SLOW_WINDOW: f32 = 1.0;
 const DEFAULT_FLOOR_DB: f32 = -99.9;
 
 // ITU-R BS.1770-5: https://www.itu.int/rec/R-REC-BS.1770
@@ -87,16 +89,26 @@ impl RollingMeanSquare {
 #[derive(Debug, Clone)]
 struct ChannelState {
     short_term: RollingMeanSquare,
+    momentary: RollingMeanSquare,
     rms_fast: RollingMeanSquare,
+    rms_slow: RollingMeanSquare,
     filter: KWeightingFilter,
     peak_linear: f32,
 }
 
 impl ChannelState {
-    fn new(short_term_capacity: usize, rms_capacity: usize, sample_rate: f32) -> Self {
+    fn new(
+        short_term_capacity: usize,
+        momentary_capacity: usize,
+        rms_fast_capacity: usize,
+        rms_slow_capacity: usize,
+        sample_rate: f32,
+    ) -> Self {
         Self {
             short_term: RollingMeanSquare::new(short_term_capacity),
-            rms_fast: RollingMeanSquare::new(rms_capacity),
+            momentary: RollingMeanSquare::new(momentary_capacity),
+            rms_fast: RollingMeanSquare::new(rms_fast_capacity),
+            rms_slow: RollingMeanSquare::new(rms_slow_capacity),
             filter: KWeightingFilter::new(sample_rate),
             peak_linear: 0.0,
         }
@@ -107,7 +119,9 @@ impl ChannelState {
 #[derive(Debug, Clone, Default)]
 pub struct LoudnessSnapshot {
     pub short_term_loudness: Vec<f32>,
+    pub momentary_loudness: Vec<f32>,
     pub rms_fast_db: Vec<f32>,
+    pub rms_slow_db: Vec<f32>,
     pub true_peak_db: Vec<f32>,
 }
 
@@ -115,7 +129,9 @@ impl LoudnessSnapshot {
     fn with_channels(channels: usize, floor_db: f32) -> Self {
         Self {
             short_term_loudness: vec![floor_db; channels],
+            momentary_loudness: vec![floor_db; channels],
             rms_fast_db: vec![floor_db; channels],
+            rms_slow_db: vec![floor_db; channels],
             true_peak_db: vec![floor_db; channels],
         }
     }
@@ -127,8 +143,12 @@ pub struct LoudnessConfig {
     pub sample_rate: f32,
     /// Window size in seconds for short-term loudness (~3.0s).
     pub short_term_window: f32,
+    /// Window size in seconds for momentary loudness (~0.4s).
+    pub momentary_window: f32,
     /// Window size in seconds for RMS fast (~0.3s).
     pub rms_fast_window: f32,
+    /// Window size in seconds for RMS slow (~1.0s).
+    pub rms_slow_window: f32,
     /// Floor applied to loudness/peak values to avoid `-inf`.
     pub floor_db: f32,
 }
@@ -138,7 +158,9 @@ impl Default for LoudnessConfig {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
             short_term_window: DEFAULT_SHORT_TERM_WINDOW,
+            momentary_window: DEFAULT_MOMENTARY_WINDOW,
             rms_fast_window: DEFAULT_RMS_FAST_WINDOW,
+            rms_slow_window: DEFAULT_RMS_SLOW_WINDOW,
             floor_db: DEFAULT_FLOOR_DB,
         }
     }
@@ -187,10 +209,21 @@ impl LoudnessProcessor {
     fn rebuild_state(&mut self, channels: usize) {
         let short_term_capacity =
             window_length(self.config.sample_rate, self.config.short_term_window);
-        let rms_capacity = window_length(self.config.sample_rate, self.config.rms_fast_window);
+        let momentary_capacity =
+            window_length(self.config.sample_rate, self.config.momentary_window);
+        let rms_fast_capacity = window_length(self.config.sample_rate, self.config.rms_fast_window);
+        let rms_slow_capacity = window_length(self.config.sample_rate, self.config.rms_slow_window);
 
         self.channels = (0..channels)
-            .map(|_| ChannelState::new(short_term_capacity, rms_capacity, self.config.sample_rate))
+            .map(|_| {
+                ChannelState::new(
+                    short_term_capacity,
+                    momentary_capacity,
+                    rms_fast_capacity,
+                    rms_slow_capacity,
+                    self.config.sample_rate,
+                )
+            })
             .collect();
         self.snapshot = LoudnessSnapshot::with_channels(channels, self.config.floor_db);
     }
@@ -219,29 +252,43 @@ impl AudioProcessor for LoudnessProcessor {
                 let filtered = channel_state.filter.process(sample);
                 let energy = (filtered as f64).powi(2);
                 channel_state.short_term.push(energy);
+                channel_state.momentary.push(energy);
                 channel_state.rms_fast.push(energy);
+                channel_state.rms_slow.push(energy);
                 channel_state.peak_linear = channel_state.peak_linear.max(sample.abs());
             }
         }
 
         let mut combined_short_term_energy = 0.0;
+        let mut combined_momentary_energy = 0.0;
 
         for (index, channel_state) in self.channels.iter().enumerate() {
             let short_term_mean = channel_state.short_term.mean().max(MIN_MEAN_SQUARE);
-            let rms_mean = channel_state.rms_fast.mean().max(MIN_MEAN_SQUARE);
+            let momentary_mean = channel_state.momentary.mean().max(MIN_MEAN_SQUARE);
+            let rms_fast_mean = channel_state.rms_fast.mean().max(MIN_MEAN_SQUARE);
+            let rms_slow_mean = channel_state.rms_slow.mean().max(MIN_MEAN_SQUARE);
 
             combined_short_term_energy += short_term_mean;
-            self.snapshot.rms_fast_db[index] = mean_square_to_db(rms_mean, self.config.floor_db);
+            combined_momentary_energy += momentary_mean;
+            self.snapshot.rms_fast_db[index] =
+                mean_square_to_db(rms_fast_mean, self.config.floor_db);
+            self.snapshot.rms_slow_db[index] =
+                mean_square_to_db(rms_slow_mean, self.config.floor_db);
             self.snapshot.true_peak_db[index] =
                 peak_to_db(channel_state.peak_linear, self.config.floor_db);
         }
 
         let combined_short_term_loudness =
             mean_square_to_db(combined_short_term_energy, self.config.floor_db);
+        let combined_momentary_loudness =
+            mean_square_to_db(combined_momentary_energy, self.config.floor_db);
 
         self.snapshot
             .short_term_loudness
             .fill(combined_short_term_loudness);
+        self.snapshot
+            .momentary_loudness
+            .fill(combined_momentary_loudness);
 
         ProcessorUpdate::Snapshot(self.snapshot.clone())
     }

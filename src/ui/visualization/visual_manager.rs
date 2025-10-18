@@ -10,8 +10,8 @@ use crate::audio::meter_tap::{self, MeterFormat};
 use crate::dsp::ProcessorUpdate;
 use crate::dsp::waveform::{MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY};
 use crate::ui::settings::{
-    ModuleSettings, OscilloscopeSettings, SpectrogramSettings, SpectrumSettings, VisualSettings,
-    WaveformSettings,
+    LoudnessSettings, ModuleSettings, OscilloscopeSettings, SpectrogramSettings, SpectrumSettings,
+    VisualSettings, WaveformSettings,
 };
 use crate::ui::visualization::loudness::{LoudnessMeterProcessor, LoudnessMeterState};
 use crate::ui::visualization::oscilloscope::{OscilloscopeProcessor, OscilloscopeState};
@@ -310,7 +310,21 @@ impl VisualModule for LoudnessVisual {
         }
     }
 
-    fn apply_settings(&mut self, _settings: &ModuleSettings) {}
+    fn apply_settings(&mut self, settings: &ModuleSettings) {
+        if let Some(loudness_settings) = settings.loudness() {
+            self.state
+                .set_modes(loudness_settings.left_mode, loudness_settings.right_mode);
+        }
+    }
+
+    fn export_settings(&self) -> Option<ModuleSettings> {
+        let mut module = ModuleSettings::default();
+        module.set_loudness(LoudnessSettings::new(
+            self.state.left_mode(),
+            self.state.right_mode(),
+        ));
+        Some(module)
+    }
 }
 
 struct OscilloscopeVisual {

@@ -9,6 +9,7 @@ use crate::dsp::oscilloscope::{DisplayMode, OscilloscopeConfig};
 use crate::dsp::spectrogram::{FrequencyScale, SpectrogramConfig, WindowKind};
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
 use crate::dsp::waveform::{DownsampleStrategy, WaveformConfig};
+use crate::ui::visualization::loudness::MeterMode;
 use crate::ui::visualization::visual_manager::VisualKind;
 use serde::de::{self, Deserializer};
 use serde::ser::Serializer;
@@ -71,6 +72,10 @@ impl ModuleSettings {
         self.config = Some(StoredConfig::Waveform(config));
     }
 
+    pub fn set_loudness(&mut self, config: LoudnessSettings) {
+        self.config = Some(StoredConfig::Loudness(config));
+    }
+
     pub fn spectrogram(&self) -> Option<&SpectrogramSettings> {
         match &self.config {
             Some(StoredConfig::Spectrogram(cfg)) => Some(cfg),
@@ -99,6 +104,13 @@ impl ModuleSettings {
         }
     }
 
+    pub fn loudness(&self) -> Option<&LoudnessSettings> {
+        match &self.config {
+            Some(StoredConfig::Loudness(cfg)) => Some(cfg),
+            _ => None,
+        }
+    }
+
     pub fn retain_only(&mut self, kind: VisualKind) {
         let is_configurable = matches!(
             kind,
@@ -106,6 +118,7 @@ impl ModuleSettings {
                 | VisualKind::SPECTRUM
                 | VisualKind::OSCILLOSCOPE
                 | VisualKind::WAVEFORM
+                | VisualKind::LOUDNESS
         );
 
         if !is_configurable || self.config.as_ref().is_some_and(|cfg| cfg.kind() != kind) {
@@ -121,6 +134,7 @@ enum StoredConfig {
     Spectrum(SpectrumSettings),
     Oscilloscope(OscilloscopeSettings),
     Waveform(WaveformSettings),
+    Loudness(LoudnessSettings),
 }
 
 impl StoredConfig {
@@ -130,6 +144,7 @@ impl StoredConfig {
             StoredConfig::Spectrum(_) => VisualKind::SPECTRUM,
             StoredConfig::Oscilloscope(_) => VisualKind::OSCILLOSCOPE,
             StoredConfig::Waveform(_) => VisualKind::WAVEFORM,
+            StoredConfig::Loudness(_) => VisualKind::LOUDNESS,
         }
     }
 
@@ -258,6 +273,28 @@ impl WaveformSettings {
     pub fn apply_to(&self, config: &mut WaveformConfig) {
         config.scroll_speed = self.scroll_speed;
         config.downsample = self.downsample;
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct LoudnessSettings {
+    pub left_mode: MeterMode,
+    pub right_mode: MeterMode,
+}
+
+impl LoudnessSettings {
+    pub const fn new(left_mode: MeterMode, right_mode: MeterMode) -> Self {
+        Self {
+            left_mode,
+            right_mode,
+        }
+    }
+}
+
+impl Default for LoudnessSettings {
+    fn default() -> Self {
+        Self::new(MeterMode::TruePeak, MeterMode::LufsShortTerm)
     }
 }
 
@@ -447,6 +484,11 @@ impl SettingsManager {
     pub fn set_spectrum_settings(&mut self, kind: VisualKind, config: &SpectrumConfig) {
         let entry = self.data.visuals.modules.entry(kind).or_default();
         entry.set_spectrum(SpectrumSettings::from_config(config));
+    }
+
+    pub fn set_loudness_settings(&mut self, kind: VisualKind, settings: LoudnessSettings) {
+        let entry = self.data.visuals.modules.entry(kind).or_default();
+        entry.set_loudness(settings);
     }
 
     pub fn set_visual_order(&mut self, order: &[VisualKind]) {
