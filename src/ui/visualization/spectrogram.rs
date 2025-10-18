@@ -3,7 +3,7 @@
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::spectrogram::{
     FrequencyScale, SpectrogramColumn, SpectrogramConfig,
-    SpectrogramProcessor as CoreSpectrogramProcessor, SpectrogramUpdate,
+    SpectrogramProcessor as CoreSpectrogramProcessor, SpectrogramUpdate, hz_to_mel, mel_to_hz,
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::spectrogram::{
@@ -43,14 +43,6 @@ static NEXT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
 fn next_instance_id() -> u64 {
     NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed)
-}
-
-fn hz_to_mel(hz: f32) -> f32 {
-    2595.0 * (1.0 + hz / 700.0).log10()
-}
-
-fn mel_to_hz(mel: f32) -> f32 {
-    700.0 * (10.0f32.powf(mel / 2595.0) - 1.0)
 }
 
 /// Bridges the DSP spectrogram processor into the UI layer by
