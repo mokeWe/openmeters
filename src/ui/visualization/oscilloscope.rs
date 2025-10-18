@@ -2,11 +2,11 @@
 
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::oscilloscope::{
-    DisplayMode, OscilloscopeConfig, OscilloscopeProcessor as CoreOscilloscopeProcessor,
-    OscilloscopeSnapshot,
+    OscilloscopeConfig, OscilloscopeProcessor as CoreOscilloscopeProcessor, OscilloscopeSnapshot,
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::oscilloscope::{OscilloscopeParams, OscilloscopePrimitive};
+use crate::ui::settings::OscilloscopeSettings;
 use crate::ui::theme;
 use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
@@ -14,7 +14,39 @@ use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Widget, layout, mouse};
 use iced::{Background, Color, Element, Length, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
+use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::time::Instant;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DisplayMode {
+    LR,
+    XY,
+}
+
+impl Default for DisplayMode {
+    fn default() -> Self {
+        Self::LR
+    }
+}
+
+impl DisplayMode {
+    pub const ALL: [Self; 2] = [Self::LR, Self::XY];
+
+    #[inline]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LR => "LR",
+            Self::XY => "XY",
+        }
+    }
+}
+
+impl fmt::Display for DisplayMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct OscilloscopeProcessor {
@@ -66,6 +98,8 @@ pub struct OscilloscopeState {
     style: OscilloscopeStyle,
     display_samples: Vec<f32>,
     fade_alpha: f32,
+    persistence: f32,
+    display_mode: DisplayMode,
 }
 
 impl OscilloscopeState {
@@ -75,44 +109,86 @@ impl OscilloscopeState {
             style: OscilloscopeStyle::default(),
             display_samples: Vec::new(),
             fade_alpha: 1.0,
+            persistence: 0.85,
+            display_mode: DisplayMode::default(),
         }
+    }
+
+    pub fn update_view_settings(&mut self, settings: &OscilloscopeSettings) {
+        self.persistence = settings.persistence.clamp(0.0, 1.0);
+        self.display_mode = settings.display_mode;
+        self.recompute_fade_alpha();
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &OscilloscopeSnapshot) {
         if snapshot.samples.is_empty() {
             self.snapshot = snapshot.clone();
             self.display_samples.clear();
-            self.fade_alpha = 1.0;
+            self.fade_alpha = 1.0_f32;
             return;
         }
 
-        let mut persistence = snapshot.persistence.clamp(0.0, 0.98);
-        if snapshot.display_mode == DisplayMode::XY {
-            // XY persistence that is too aggressive makes the trace unreadable.
-            persistence = persistence.min(0.9);
+        let total_samples = snapshot.samples.len();
+        if self.display_samples.len() != total_samples {
+            self.display_samples.resize(total_samples, 0.0_f32);
         }
 
-        if self.display_samples.len() != snapshot.samples.len() {
-            self.display_samples = snapshot.samples.clone();
+        let persistence = self.effective_persistence_for(snapshot.channels);
+        if persistence <= f32::EPSILON {
+            self.display_samples.copy_from_slice(&snapshot.samples);
         } else {
-            let fresh = 1.0 - persistence;
+            let fresh = 1.0_f32 - persistence;
             for (current, incoming) in self.display_samples.iter_mut().zip(snapshot.samples.iter())
             {
                 *current = (*current * persistence) + (*incoming * fresh);
             }
         }
 
-        self.fade_alpha = (1.0 - persistence).sqrt().clamp(0.05, 1.0);
-
         self.snapshot = snapshot.clone();
         self.snapshot.samples.clear();
         self.snapshot
             .samples
             .extend_from_slice(&self.display_samples);
+        self.recompute_fade_alpha();
+    }
+
+    pub fn view_settings(&self) -> (f32, DisplayMode) {
+        (self.persistence, self.display_mode)
+    }
+
+    fn effective_display_mode(&self) -> DisplayMode {
+        if self.display_mode == DisplayMode::XY && self.snapshot.channels >= 2 {
+            DisplayMode::XY
+        } else {
+            DisplayMode::LR
+        }
+    }
+
+    fn effective_persistence_for(&self, channels: usize) -> f32 {
+        let mut value = self.persistence.clamp(0.0, 0.98);
+        if self.display_mode == DisplayMode::XY && channels >= 2 {
+            value = value.min(0.9);
+        }
+        value
+    }
+
+    fn recompute_fade_alpha(&mut self) {
+        if self.snapshot.samples.is_empty() {
+            self.fade_alpha = 1.0_f32;
+            return;
+        }
+
+        let persistence = self.effective_persistence_for(self.snapshot.channels);
+        let fade = (1.0_f32 - persistence).max(0.0_f32);
+        self.fade_alpha = fade.sqrt().clamp(0.05_f32, 1.0_f32);
     }
 
     fn visual_params(&self, bounds: Rectangle) -> OscilloscopeParams {
-        let channels = self.snapshot.channels.max(1);
+        let mode = self.effective_display_mode();
+        let channels = match mode {
+            DisplayMode::XY => 2,
+            DisplayMode::LR => self.snapshot.channels.max(1),
+        };
         let colors = self
             .style
             .channel_colors
@@ -122,11 +198,13 @@ impl OscilloscopeState {
             .map(|c| theme::color_to_rgba(*c))
             .collect();
 
+        let samples = self.build_render_samples(mode);
+
         OscilloscopeParams {
             bounds,
             channels,
             samples_per_channel: self.snapshot.samples_per_channel,
-            samples: self.snapshot.samples.clone(),
+            samples,
             colors,
             line_alpha: self.style.line_alpha,
             fade_alpha: self.fade_alpha,
@@ -134,7 +212,34 @@ impl OscilloscopeState {
             channel_gap: self.style.channel_gap,
             amplitude_scale: self.style.amplitude_scale,
             stroke_width: self.style.stroke_width,
-            display_mode: self.snapshot.display_mode,
+            display_mode: mode,
+        }
+    }
+
+    fn build_render_samples(&self, mode: DisplayMode) -> Vec<f32> {
+        match mode {
+            DisplayMode::LR => self.snapshot.samples.clone(),
+            DisplayMode::XY => {
+                let per_channel = self.snapshot.samples_per_channel;
+                if per_channel == 0 || self.snapshot.channels < 2 {
+                    return Vec::new();
+                }
+
+                let required = per_channel.saturating_mul(2);
+                if self.snapshot.samples.len() < required {
+                    return Vec::new();
+                }
+
+                let left = &self.snapshot.samples[..per_channel];
+                let right = &self.snapshot.samples[per_channel..per_channel * 2];
+                let len = left.len().min(right.len());
+                let mut output = Vec::with_capacity(len * 2);
+                for index in 0..len {
+                    output.push(left[index]);
+                    output.push(right[index]);
+                }
+                output
+            }
         }
     }
 }

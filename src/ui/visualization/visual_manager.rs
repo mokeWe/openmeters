@@ -358,12 +358,18 @@ impl VisualModule for OscilloscopeVisual {
             let mut config = self.processor.config();
             stored.apply_to(&mut config);
             self.processor.update_config(config);
+            self.state.update_view_settings(stored);
         }
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
         let mut settings = ModuleSettings::default();
-        let snapshot = OscilloscopeSettings::from_config(&self.processor.config());
+        let (persistence, mode) = self.state.view_settings();
+        let snapshot = OscilloscopeSettings::from_config_with_view(
+            &self.processor.config(),
+            persistence,
+            mode,
+        );
         settings.set_oscilloscope(snapshot);
         Some(settings)
     }

@@ -2,38 +2,7 @@
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
-use serde::{Deserialize, Serialize};
-use std::{collections::VecDeque, fmt};
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum DisplayMode {
-    LR,
-    XY,
-}
-
-impl Default for DisplayMode {
-    fn default() -> Self {
-        Self::LR
-    }
-}
-
-impl DisplayMode {
-    pub const ALL: [Self; 2] = [Self::LR, Self::XY];
-
-    #[inline]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::LR => "LR",
-            Self::XY => "XY",
-        }
-    }
-}
-
-impl fmt::Display for DisplayMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
+use std::collections::VecDeque;
 
 #[derive(Debug, Clone, Copy)]
 pub struct OscilloscopeConfig {
@@ -42,8 +11,6 @@ pub struct OscilloscopeConfig {
     pub trigger_level: f32,
     pub trigger_rising: bool,
     pub target_sample_count: usize,
-    pub persistence: f32,
-    pub display_mode: DisplayMode,
 }
 
 impl Default for OscilloscopeConfig {
@@ -54,8 +21,6 @@ impl Default for OscilloscopeConfig {
             trigger_level: 0.05,
             trigger_rising: true,
             target_sample_count: 1_024,
-            persistence: 0.85,
-            display_mode: DisplayMode::default(),
         }
     }
 }
@@ -65,8 +30,6 @@ pub struct OscilloscopeSnapshot {
     pub channels: usize,
     pub samples: Vec<f32>,
     pub samples_per_channel: usize,
-    pub persistence: f32,
-    pub display_mode: DisplayMode,
 }
 
 impl Default for OscilloscopeSnapshot {
@@ -75,8 +38,6 @@ impl Default for OscilloscopeSnapshot {
             channels: 2,
             samples: Vec::new(),
             samples_per_channel: 0,
-            persistence: 0.85,
-            display_mode: DisplayMode::default(),
         }
     }
 }
@@ -154,53 +115,28 @@ impl AudioProcessor for OscilloscopeProcessor {
 
         let data = self.history.make_contiguous();
         let target = self.config.target_sample_count.clamp(1, frames);
-        let output_channels =
-            if matches!(self.config.display_mode, DisplayMode::XY) && channels == 2 {
-                2
-            } else {
-                channels
-            };
 
         self.snapshot.samples.clear();
-        self.snapshot.samples.reserve(target * output_channels);
+        self.snapshot.samples.reserve(target * channels);
 
-        match (self.config.display_mode, channels) {
-            (DisplayMode::LR, _) => {
-                let trigger = find_trigger(
-                    data,
-                    frames,
-                    channels,
-                    self.config.trigger_level,
-                    self.config.trigger_rising,
-                );
-                downsample_interleaved(
-                    &mut self.snapshot.samples,
-                    data,
-                    frames,
-                    channels,
-                    target,
-                    trigger,
-                );
-            }
-            (DisplayMode::XY, 2) => {
-                downsample_xy(&mut self.snapshot.samples, data, frames, target);
-            }
-            _ => {
-                downsample_interleaved(
-                    &mut self.snapshot.samples,
-                    data,
-                    frames,
-                    channels,
-                    target,
-                    0,
-                );
-            }
-        }
+        let trigger = find_trigger(
+            data,
+            frames,
+            channels,
+            self.config.trigger_level,
+            self.config.trigger_rising,
+        );
+        downsample_interleaved(
+            &mut self.snapshot.samples,
+            data,
+            frames,
+            channels,
+            target,
+            trigger,
+        );
 
         self.snapshot.channels = channels;
         self.snapshot.samples_per_channel = target;
-        self.snapshot.persistence = self.config.persistence.clamp(0.0, 1.0);
-        self.snapshot.display_mode = self.config.display_mode;
 
         ProcessorUpdate::Snapshot(self.snapshot.clone())
     }
@@ -259,18 +195,6 @@ fn downsample_interleaved(
             let frame = (base + index * frames / target) % frames;
             output.push(data[frame * channels + channel]);
         }
-    }
-}
-
-fn downsample_xy(output: &mut Vec<f32>, data: &[f32], frames: usize, target: usize) {
-    if frames == 0 || target == 0 {
-        return;
-    }
-
-    for index in 0..target {
-        let frame = (index * frames / target).min(frames.saturating_sub(1));
-        let offset = frame * 2;
-        output.extend_from_slice(&data[offset..offset + 2]);
     }
 }
 

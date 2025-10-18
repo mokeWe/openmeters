@@ -5,11 +5,12 @@
 //! - providing access to settings for other parts of the UI
 //! - converting between internal config structs and serializable settings structs
 
-use crate::dsp::oscilloscope::{DisplayMode, OscilloscopeConfig};
+use crate::dsp::oscilloscope::OscilloscopeConfig;
 use crate::dsp::spectrogram::{FrequencyScale, SpectrogramConfig, WindowKind};
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
 use crate::dsp::waveform::{DownsampleStrategy, WaveformConfig};
 use crate::ui::visualization::loudness::MeterMode;
+use crate::ui::visualization::oscilloscope::DisplayMode;
 use crate::ui::visualization::visual_manager::VisualKind;
 use serde::de::{self, Deserializer};
 use serde::ser::Serializer;
@@ -226,13 +227,21 @@ impl Default for OscilloscopeSettings {
 
 impl OscilloscopeSettings {
     pub fn from_config(config: &OscilloscopeConfig) -> Self {
+        Self::from_config_with_view(config, 0.85, DisplayMode::default())
+    }
+
+    pub fn from_config_with_view(
+        config: &OscilloscopeConfig,
+        persistence: f32,
+        display_mode: DisplayMode,
+    ) -> Self {
         Self {
             segment_duration: config.segment_duration,
             trigger_level: config.trigger_level,
             trigger_rising: config.trigger_rising,
             target_sample_count: config.target_sample_count,
-            persistence: config.persistence,
-            display_mode: config.display_mode,
+            persistence,
+            display_mode,
         }
     }
 
@@ -241,8 +250,6 @@ impl OscilloscopeSettings {
         config.trigger_level = self.trigger_level;
         config.trigger_rising = self.trigger_rising;
         config.target_sample_count = self.target_sample_count;
-        config.persistence = self.persistence;
-        config.display_mode = self.display_mode;
     }
 }
 
@@ -466,9 +473,9 @@ impl SettingsManager {
         entry.enabled = Some(enabled);
     }
 
-    pub fn set_oscilloscope_settings(&mut self, kind: VisualKind, config: &OscilloscopeConfig) {
+    pub fn set_oscilloscope_settings(&mut self, kind: VisualKind, settings: &OscilloscopeSettings) {
         let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.set_oscilloscope(OscilloscopeSettings::from_config(config));
+        entry.set_oscilloscope(settings.clone());
     }
 
     pub fn set_waveform_settings(&mut self, kind: VisualKind, config: &WaveformConfig) {

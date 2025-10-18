@@ -5,8 +5,8 @@ use iced_wgpu::primitive::{Primitive, Storage};
 use std::collections::HashMap;
 use std::mem;
 
-use crate::dsp::oscilloscope::DisplayMode;
 use crate::ui::render::geometry::compute_normals;
+use crate::ui::visualization::oscilloscope::DisplayMode;
 
 #[derive(Debug, Clone)]
 pub struct OscilloscopeParams {

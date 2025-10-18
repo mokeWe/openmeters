@@ -1,6 +1,6 @@
 use super::{ModuleSettingsPane, SettingsMessage};
-use crate::dsp::oscilloscope::{DisplayMode, OscilloscopeConfig};
 use crate::ui::settings::{ModuleSettings, OscilloscopeSettings, SettingsHandle};
+use crate::ui::visualization::oscilloscope::DisplayMode;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::widget::{column, pick_list, row, slider, text, toggler};
 use iced::{Element, Length};
@@ -8,7 +8,7 @@ use iced::{Element, Length};
 #[derive(Debug)]
 pub struct OscilloscopeSettingsPane {
     visual_id: VisualId,
-    config: OscilloscopeConfig,
+    settings: OscilloscopeSettings,
 }
 
 #[derive(Debug, Clone)]
@@ -24,19 +24,16 @@ pub fn create(
     visual_id: VisualId,
     visual_manager: &VisualManagerHandle,
 ) -> OscilloscopeSettingsPane {
-    let config = visual_manager
+    let settings = visual_manager
         .borrow()
         .module_settings(VisualKind::OSCILLOSCOPE)
-        .and_then(|stored| {
-            stored.oscilloscope().map(|settings| {
-                let mut config = OscilloscopeConfig::default();
-                settings.apply_to(&mut config);
-                config
-            })
-        })
+        .and_then(|stored| stored.oscilloscope().cloned())
         .unwrap_or_default();
 
-    OscilloscopeSettingsPane { visual_id, config }
+    OscilloscopeSettingsPane {
+        visual_id,
+        settings,
+    }
 }
 
 impl ModuleSettingsPane for OscilloscopeSettingsPane {
@@ -45,7 +42,7 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
     }
 
     fn view(&self) -> Element<'_, SettingsMessage> {
-        let trigger_label = if self.config.trigger_rising {
+        let trigger_label = if self.settings.trigger_rising {
             "Rising edge"
         } else {
             "Falling edge"
@@ -56,7 +53,7 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
                 text("Display mode"),
                 pick_list(
                     DisplayMode::ALL.to_vec(),
-                    Some(self.config.display_mode),
+                    Some(self.settings.display_mode),
                     |mode| { SettingsMessage::Oscilloscope(Message::DisplayMode(mode)) }
                 )
             ]
@@ -64,10 +61,14 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             column![
                 row![
                     text("Segment duration"),
-                    text(format!("{:.1} ms", self.config.segment_duration * 1_000.0)).size(12)
+                    text(format!(
+                        "{:.1} ms",
+                        self.settings.segment_duration * 1_000.0
+                    ))
+                    .size(12)
                 ]
                 .spacing(8),
-                slider(0.005..=0.1, self.config.segment_duration, |value| {
+                slider(0.005..=0.1, self.settings.segment_duration, |value| {
                     SettingsMessage::Oscilloscope(Message::SegmentDuration(value))
                 })
                 .step(0.001)
@@ -76,10 +77,10 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             column![
                 row![
                     text("Persistence"),
-                    text(format!("{:.2}", self.config.persistence)).size(12)
+                    text(format!("{:.2}", self.settings.persistence)).size(12)
                 ]
                 .spacing(8),
-                slider(0.0..=1.0, self.config.persistence, |value| {
+                slider(0.0..=1.0, self.settings.persistence, |value| {
                     SettingsMessage::Oscilloscope(Message::Persistence(value))
                 })
                 .step(0.01)
@@ -88,12 +89,12 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             column![
                 text("Trigger"),
                 row![
-                    slider(0.0..=1.0, self.config.trigger_level, |value| {
+                    slider(0.0..=1.0, self.settings.trigger_level, |value| {
                         SettingsMessage::Oscilloscope(Message::TriggerLevel(value))
                     })
                     .step(0.01)
                     .width(Length::Fill),
-                    toggler(self.config.trigger_rising)
+                    toggler(self.settings.trigger_rising)
                         .label(trigger_label)
                         .spacing(4)
                         .text_size(12)
@@ -102,7 +103,7 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
                         })
                 ]
                 .spacing(12),
-                text(format!("Level {:.2}", self.config.trigger_level)).size(12)
+                text(format!("Level {:.2}", self.settings.trigger_level)).size(12)
             ]
             .spacing(8)
         ]
@@ -123,8 +124,8 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
         let changed = match msg {
             Message::SegmentDuration(value) => {
                 let new = value.clamp(0.005, 0.1);
-                if (self.config.segment_duration - new).abs() > f32::EPSILON {
-                    self.config.segment_duration = new;
+                if (self.settings.segment_duration - new).abs() > f32::EPSILON {
+                    self.settings.segment_duration = new;
                     true
                 } else {
                     false
@@ -132,8 +133,8 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             }
             Message::TriggerLevel(value) => {
                 let new = value.clamp(0.0, 1.0);
-                if (self.config.trigger_level - new).abs() > f32::EPSILON {
-                    self.config.trigger_level = new;
+                if (self.settings.trigger_level - new).abs() > f32::EPSILON {
+                    self.settings.trigger_level = new;
                     true
                 } else {
                     false
@@ -141,24 +142,24 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             }
             Message::Persistence(value) => {
                 let new = value.clamp(0.0, 1.0);
-                if (self.config.persistence - new).abs() > f32::EPSILON {
-                    self.config.persistence = new;
+                if (self.settings.persistence - new).abs() > f32::EPSILON {
+                    self.settings.persistence = new;
                     true
                 } else {
                     false
                 }
             }
             Message::TriggerMode(rising) => {
-                if self.config.trigger_rising != *rising {
-                    self.config.trigger_rising = *rising;
+                if self.settings.trigger_rising != *rising {
+                    self.settings.trigger_rising = *rising;
                     true
                 } else {
                     false
                 }
             }
             Message::DisplayMode(mode) => {
-                if self.config.display_mode != *mode {
-                    self.config.display_mode = *mode;
+                if self.settings.display_mode != *mode {
+                    self.settings.display_mode = *mode;
                     true
                 } else {
                     false
@@ -168,14 +169,14 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
 
         if changed {
             let mut module_settings = ModuleSettings::default();
-            module_settings.set_oscilloscope(OscilloscopeSettings::from_config(&self.config));
+            module_settings.set_oscilloscope(self.settings.clone());
 
             if visual_manager
                 .borrow_mut()
                 .apply_module_settings(VisualKind::OSCILLOSCOPE, &module_settings)
             {
                 settings.update(|mgr| {
-                    mgr.set_oscilloscope_settings(VisualKind::OSCILLOSCOPE, &self.config);
+                    mgr.set_oscilloscope_settings(VisualKind::OSCILLOSCOPE, &self.settings);
                 });
             }
         }
