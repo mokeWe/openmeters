@@ -340,10 +340,7 @@ where
 
 fn muted_text_style() -> impl Fn(&iced::Theme) -> TextStyle + Clone {
     let color = theme::text_secondary();
-    move |_| TextStyle {
-        color: Some(color),
-        ..TextStyle::default()
-    }
+    move |_| TextStyle { color: Some(color) }
 }
 
 fn section_container<'a>(
