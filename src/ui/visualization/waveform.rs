@@ -83,10 +83,10 @@ struct PresentationData {
     column_width: f32,
     min_values: Vec<f32>,
     max_values: Vec<f32>,
-    frequency: Vec<f32>,
+    channel_frequency: Vec<f32>,
     preview_min: Vec<f32>,
     preview_max: Vec<f32>,
-    preview_frequency: f32,
+    preview_frequency: Vec<f32>,
     preview_progress: f32,
 }
 
@@ -95,11 +95,11 @@ pub struct WaveformState {
     snapshot: WaveformSnapshot,
     preview_min: Vec<f32>,
     preview_max: Vec<f32>,
-    preview_frequency: f32,
+    preview_frequency: Vec<f32>,
     preview_progress: f32,
     style: WaveformStyle,
     desired_columns: Rc<Cell<usize>>,
-    frequency_hint: f32,
+    frequency_hint: Vec<f32>,
     render_key: u64,
 }
 
@@ -114,11 +114,11 @@ impl WaveformState {
             snapshot: WaveformSnapshot::default(),
             preview_min: Vec::new(),
             preview_max: Vec::new(),
-            preview_frequency: 0.0,
+            preview_frequency: Vec::new(),
             preview_progress: 0.0,
             style: WaveformStyle::default(),
             desired_columns: Rc::new(Cell::new(DEFAULT_COLUMN_CAPACITY)),
-            frequency_hint: 0.0,
+            frequency_hint: Vec::new(),
             render_key: Self::next_render_key(),
         }
     }
@@ -134,14 +134,24 @@ impl WaveformState {
         let presentation = self.build_presentation(bounds.width)?;
 
         let channels = self.snapshot.channels.max(1);
-        let mut colors = Vec::with_capacity(presentation.columns);
-        for &value in &presentation.frequency {
+        let mut colors = Vec::with_capacity(presentation.channel_frequency.len());
+        for &value in &presentation.channel_frequency {
             let color = self.style.color_for_frequency(value);
             colors.push(theme::color_to_rgba(color));
         }
-        let preview_color = self
-            .style
-            .color_for_frequency(presentation.preview_frequency.min(1.0));
+        let mut preview_colors = Vec::new();
+        if presentation.preview_progress > 0.0 {
+            preview_colors.reserve(channels);
+            for channel in 0..channels {
+                let freq = presentation
+                    .preview_frequency
+                    .get(channel)
+                    .copied()
+                    .unwrap_or_else(|| self.frequency_hint.get(channel).copied().unwrap_or(0.0));
+                let color = self.style.color_for_frequency(freq);
+                preview_colors.push(theme::color_to_rgba(color));
+            }
+        }
 
         let params = WaveformParams {
             bounds,
@@ -153,7 +163,7 @@ impl WaveformState {
             colors,
             preview_min: presentation.preview_min,
             preview_max: presentation.preview_max,
-            preview_color: theme::color_to_rgba(preview_color),
+            preview_colors,
             preview_progress: presentation.preview_progress,
             fill_alpha: self.style.fill_alpha,
             line_alpha: self.style.line_alpha,
@@ -207,31 +217,42 @@ impl WaveformState {
                 .copy_from_slice(&max_source[src_base..src_base + visible]);
         }
 
-        let mut frequency = vec![0.0; visible];
+        let mut channel_frequency = vec![0.0; visible * channels];
         let freq_source = &self.snapshot.frequency_normalized;
-        frequency.copy_from_slice(&freq_source[start..start + visible]);
+        for channel in 0..channels {
+            let src_base = channel * columns + start;
+            let dest_base = channel * visible;
+            channel_frequency[dest_base..dest_base + visible]
+                .copy_from_slice(&freq_source[src_base..src_base + visible]);
+        }
 
         let preview_active = self.preview_progress > 0.0;
-        let (preview_min, preview_max) = if preview_active {
+        let (preview_min, preview_max, preview_frequency) = if preview_active {
             let mut min = self.preview_min.clone();
             let mut max = self.preview_max.clone();
+            let mut freq = self.preview_frequency.clone();
             min.resize(channels, 0.0);
             max.resize(channels, 0.0);
-            (min, max)
+            freq.resize(channels, 0.0);
+            (min, max, freq)
         } else {
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), Vec::new())
         };
-        let preview_progress = if preview_active { 1.0 } else { 0.0 };
+        let preview_progress = if preview_active {
+            self.preview_progress
+        } else {
+            0.0
+        };
 
         Some(PresentationData {
             columns: visible,
             column_width,
             min_values,
             max_values,
-            frequency,
+            channel_frequency,
             preview_min,
             preview_max,
-            preview_frequency: self.preview_frequency,
+            preview_frequency,
             preview_progress,
         })
     }
@@ -240,6 +261,7 @@ impl WaveformState {
         let channels = self.snapshot.channels.max(1);
         self.preview_min.resize(channels, 0.0);
         self.preview_max.resize(channels, 0.0);
+        self.preview_frequency.resize(channels, 0.0);
 
         let progress = self.snapshot.preview.progress.clamp(0.0, 1.0);
         if progress > 0.0
@@ -261,24 +283,50 @@ impl WaveformState {
                     .get(channel)
                     .copied()
                     .unwrap_or(0.0);
+                let freq = self
+                    .snapshot
+                    .preview
+                    .frequency_normalized
+                    .get(channel)
+                    .copied()
+                    .unwrap_or_else(|| self.frequency_hint.get(channel).copied().unwrap_or(0.0));
+                self.preview_frequency[channel] = freq;
             }
-            self.preview_frequency = self.snapshot.preview.frequency_normalized;
             self.preview_progress = progress;
         } else {
             self.preview_min.fill(0.0);
             self.preview_max.fill(0.0);
-            self.preview_frequency = self.frequency_hint;
+            for channel in 0..channels {
+                self.preview_frequency[channel] =
+                    self.frequency_hint.get(channel).copied().unwrap_or(0.0);
+            }
             self.preview_progress = 0.0;
         }
     }
 
     fn update_frequency_hint(&mut self) {
-        self.frequency_hint = self
-            .snapshot
-            .frequency_normalized
-            .last()
-            .copied()
-            .unwrap_or(self.snapshot.preview.frequency_normalized);
+        let channels = self.snapshot.channels.max(1);
+        self.frequency_hint.resize(channels, 0.0);
+
+        let columns = self.snapshot.columns;
+        for channel in 0..channels {
+            let from_history = if columns > 0 {
+                let index = channel * columns + (columns - 1);
+                self.snapshot.frequency_normalized.get(index).copied()
+            } else {
+                None
+            };
+            let value = from_history
+                .or_else(|| {
+                    self.snapshot
+                        .preview
+                        .frequency_normalized
+                        .get(channel)
+                        .copied()
+                })
+                .unwrap_or(0.0);
+            self.frequency_hint[channel] = value;
+        }
     }
 
     pub fn desired_columns(&self) -> usize {

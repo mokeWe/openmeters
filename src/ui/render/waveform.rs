@@ -18,7 +18,7 @@ pub struct WaveformParams {
     pub colors: Vec<[f32; 4]>,
     pub preview_min: Vec<f32>,
     pub preview_max: Vec<f32>,
-    pub preview_color: [f32; 4],
+    pub preview_colors: Vec<[f32; 4]>,
     pub preview_progress: f32,
     pub fill_alpha: f32,
     pub line_alpha: f32,
@@ -34,6 +34,7 @@ impl WaveformParams {
         self.preview_progress > 0.0
             && self.preview_min.len() >= self.channels
             && self.preview_max.len() >= self.channels
+            && self.preview_colors.len() >= self.channels
     }
 }
 
@@ -58,7 +59,7 @@ impl WaveformPrimitive {
         if (columns > 0
             && (self.params.min_values.len() < total_samples
                 || self.params.max_values.len() < total_samples
-                || self.params.colors.len() < columns))
+                || self.params.colors.len() < total_samples))
             || (columns == 0 && !self.params.preview_active())
         {
             return Vec::new();
@@ -129,7 +130,12 @@ impl WaveformPrimitive {
                         .round();
                 let top_y = center - max_value * amplitude_scale;
                 let bottom_y = center - min_value * amplitude_scale;
-                let color = self.params.colors.get(index).copied().unwrap_or([1.0; 4]);
+                let color = self
+                    .params
+                    .colors
+                    .get(channel * columns + index)
+                    .copied()
+                    .unwrap_or([1.0; 4]);
                 let fill_color = [color[0], color[1], color[2], self.params.fill_alpha];
 
                 area_vertices.push(Vertex {
@@ -153,10 +159,16 @@ impl WaveformPrimitive {
                 let x = right_edge.round();
                 let top_y = center - max_value * amplitude_scale;
                 let bottom_y = center - min_value * amplitude_scale;
+                let preview_base = self
+                    .params
+                    .preview_colors
+                    .get(channel)
+                    .copied()
+                    .unwrap_or([1.0; 4]);
                 let fill_color = [
-                    self.params.preview_color[0],
-                    self.params.preview_color[1],
-                    self.params.preview_color[2],
+                    preview_base[0],
+                    preview_base[1],
+                    preview_base[2],
                     self.params.fill_alpha,
                 ];
 
@@ -184,7 +196,13 @@ impl WaveformPrimitive {
                         .round();
                 let y = center - average * amplitude_scale;
                 positions.push((x, y));
-                line_colors.push(self.params.colors.get(index).copied().unwrap_or([1.0; 4]));
+                line_colors.push(
+                    self.params
+                        .colors
+                        .get(channel * columns + index)
+                        .copied()
+                        .unwrap_or([1.0; 4]),
+                );
             }
 
             if self.params.preview_active() {
@@ -194,7 +212,13 @@ impl WaveformPrimitive {
                 let x = right_edge.round();
                 let y = center - average * amplitude_scale;
                 positions.push((x, y));
-                line_colors.push(self.params.preview_color);
+                let preview_base = self
+                    .params
+                    .preview_colors
+                    .get(channel)
+                    .copied()
+                    .unwrap_or([1.0; 4]);
+                line_colors.push(preview_base);
             }
 
             if positions.len() < 2 {
