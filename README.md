@@ -15,11 +15,11 @@ Checked features are implemented, unchecked features are planned.
 - [x] **loudness**
   - [x] LUFS
     - [x] Short-term
-    - [ ] Momentary
-  - [ ] RMS
-    - [ ] Fast
-    - [ ] Slow
-  - [ ] True Peak
+    - [x] Momentary
+  - [x] RMS
+    - [x] Fast
+    - [x] Slow
+  - [x] True Peak
 - [x] **oscilloscope**
   - [x] XY mode
 - [x] **spectrogram**
