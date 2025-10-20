@@ -24,3 +24,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
 ebur128 = "0.1"
+
+[profile.dev]
+opt-level = 3
