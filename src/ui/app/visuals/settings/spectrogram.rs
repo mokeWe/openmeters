@@ -570,8 +570,8 @@ impl WindowPreset {
             WindowPreset::Hamming => WindowKind::Hamming,
             WindowPreset::Blackman => WindowKind::Blackman,
             WindowPreset::PlanckBessel => WindowKind::PlanckBessel {
-                epsilon: 0.1,
-                beta: 5.5,
+                epsilon: 0.3,
+                beta: 11.0,
             },
         }
     }
