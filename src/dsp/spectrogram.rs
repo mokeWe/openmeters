@@ -471,6 +471,7 @@ struct SynchroState {
     power_buffer: Vec<f32>,
     magnitude_buffer: Vec<f32>,
     temporal_buffer: Vec<f32>,
+    frequency_buffer: Vec<f32>,
     min_hz: f32,
     max_hz: f32,
     log_min: f64,
@@ -543,6 +544,7 @@ impl SynchroState {
         self.power_buffer = vec![0.0; bin_count];
         self.magnitude_buffer = vec![DB_FLOOR; bin_count];
         self.temporal_buffer = vec![DB_FLOOR; bin_count];
+        self.frequency_buffer.clear();
         self.min_hz = min_hz;
         self.max_hz = nyquist;
         self.log_min = log_min;
@@ -642,12 +644,60 @@ impl SynchroState {
         }
     }
 
+    fn reset_frequency(&mut self) {
+        self.frequency_buffer.clear();
+    }
+
     fn align_pool(&self, pool: &mut Vec<Arc<[f32]>>) {
         pool.retain(|buffer| buffer.len() == self.magnitude_buffer.len());
+    }
+
+    fn apply_frequency_smoothing(&mut self, radius: usize, max_hz: f32, blend_hz: f32) {
+        if !self.enabled || self.magnitude_buffer.is_empty() {
+            self.reset_frequency();
+            return;
+        }
+
+        if radius == 0 {
+            self.reset_frequency();
+            return;
+        }
+
+        let bins = self.magnitude_buffer.len();
+        let radius = radius.min(bins.saturating_sub(1));
+        if radius == 0 {
+            self.reset_frequency();
+            return;
+        }
+
+        if self.frequency_buffer.len() != bins {
+            self.frequency_buffer.resize(bins, 0.0);
+        }
+
+        for idx in 0..bins {
+            let start = idx.saturating_sub(radius);
+            let end = (idx + radius + 1).min(bins);
+            let mut sum = 0.0;
+            for value in &self.magnitude_buffer[start..end] {
+                sum += *value;
+            }
+            self.frequency_buffer[idx] = sum / (end - start) as f32;
+        }
+
+        for (idx, value) in self.magnitude_buffer.iter_mut().enumerate() {
+            let smoothed = self.frequency_buffer[idx];
+            let weight = smoothing_weight(
+                self.bin_frequencies.get(idx).copied().unwrap_or_default(),
+                max_hz,
+                blend_hz,
+            );
+            *value = smoothed * weight + *value * (1.0 - weight);
+        }
     }
 }
 
 pub struct SpectrogramProcessor {
+    stored_config: SpectrogramConfig,
     config: SpectrogramConfig,
     planner: RealFftPlanner<f32>,
     fft: Arc<dyn RealToComplex<f32>>,
@@ -684,19 +734,23 @@ pub struct SpectrogramProcessor {
 
 impl SpectrogramProcessor {
     pub fn new(config: SpectrogramConfig) -> Self {
-        let window_size = config.fft_size;
-        let zero_padding = config.zero_padding_factor.max(1);
+        let stored_config = config;
+        let mut runtime_config = config;
+        Self::normalize_config(&mut runtime_config);
+
+        let window_size = runtime_config.fft_size;
+        let zero_padding = runtime_config.zero_padding_factor.max(1);
         let fft_size = window_size.saturating_mul(zero_padding);
         assert!(fft_size > 0, "FFT size must be greater than zero");
 
-        let history_len = config.history_length;
+        let history_len = runtime_config.history_length;
         let bins = fft_size / 2 + 1;
 
         let mut planner = RealFftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(fft_size);
-        let window = WindowCache::global().get(config.window, window_size);
+        let window = WindowCache::global().get(runtime_config.window, window_size);
         let time_weight_window = compute_time_weight_window(window.as_ref());
-        let derivative_window = compute_derivative_window(config.window, window.as_ref());
+        let derivative_window = compute_derivative_window(runtime_config.window, window.as_ref());
 
         let real_buffer = vec![0.0; fft_size];
         let time_weight_buffer = vec![0.0; fft_size];
@@ -712,14 +766,15 @@ impl SpectrogramProcessor {
         let pcm_buffer = VecDeque::with_capacity(window_size.saturating_mul(2));
         let history = SpectrogramHistory::new(history_len);
         let reassignment_power_floor_linear =
-            power_db_to_linear(config.reassignment_power_floor_db);
+            power_db_to_linear(runtime_config.reassignment_power_floor_db);
 
-        let synchro = SynchroState::new(&config, fft_size, config.sample_rate);
+        let synchro = SynchroState::new(&runtime_config, fft_size, runtime_config.sample_rate);
         let temporal_smoothing_buffer = vec![DB_FLOOR; bins];
         let frequency_scratch_buffer = vec![0.0; bins];
 
         Self {
-            config,
+            stored_config,
+            config: runtime_config,
             planner,
             fft,
             window_size,
@@ -754,8 +809,23 @@ impl SpectrogramProcessor {
         }
     }
 
+    fn normalize_config(config: &mut SpectrogramConfig) {
+        if !config.use_reassignment {
+            config.use_synchrosqueezing = false;
+        }
+
+        if !config.use_synchrosqueezing {
+            config.temporal_smoothing = 0.0;
+            config.temporal_smoothing_max_hz = 0.0;
+            config.temporal_smoothing_blend_hz = 0.0;
+            config.frequency_smoothing_radius = 0;
+            config.frequency_smoothing_max_hz = 0.0;
+            config.frequency_smoothing_blend_hz = 0.0;
+        }
+    }
+
     pub fn config(&self) -> SpectrogramConfig {
-        self.config
+        self.stored_config
     }
 
     fn rebuild_fft(&mut self) {
@@ -798,6 +868,7 @@ impl SpectrogramProcessor {
         self.synchro.align_pool(&mut self.synchro_pool);
         self.synchro.reset_temporal();
         self.synchro.reset_power();
+        self.synchro.reset_frequency();
 
         self.reassignment_power_floor_linear =
             power_db_to_linear(self.config.reassignment_power_floor_db);
@@ -948,6 +1019,11 @@ impl SpectrogramProcessor {
 
             self.apply_magnitude_post_processing(bins);
             if synchro_active {
+                self.synchro.apply_frequency_smoothing(
+                    self.config.frequency_smoothing_radius,
+                    self.config.frequency_smoothing_max_hz,
+                    self.config.frequency_smoothing_blend_hz,
+                );
                 self.synchro.apply_temporal_smoothing(
                     self.config.temporal_smoothing,
                     self.config.temporal_smoothing_max_hz,
@@ -1255,6 +1331,7 @@ impl AudioProcessor for SpectrogramProcessor {
 
         self.synchro.reset_temporal();
         self.synchro.reset_power();
+        self.synchro.reset_frequency();
     }
 }
 
@@ -1354,6 +1431,16 @@ impl SpectrogramProcessor {
         {
             self.synchro_pool.push(synchro);
         }
+    }
+
+    fn clear_history(&mut self) {
+        let mut evicted = std::mem::take(&mut self.evicted_columns);
+        self.history.clear_into(&mut evicted);
+        evicted
+            .drain(..)
+            .for_each(|column| self.recycle_column(column));
+        self.evicted_columns = evicted;
+        self.pending_reset = true;
     }
 }
 
@@ -1542,8 +1629,95 @@ pub fn mel_to_hz(mel: f32) -> f32 {
 
 impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
     fn update_config(&mut self, config: SpectrogramConfig) {
+        let previous = self.config;
+
+        // Persist the user-facing configuration for export and future edits.
+        self.stored_config = config;
+
+        // Apply the normalized configuration so helpers observe gated values.
         self.config = config;
-        self.rebuild_fft();
+        Self::normalize_config(&mut self.config);
+
+        // Rebuild the FFT pipeline when structural parameters change. These
+        // alterations force buffer and window reshaping, so preserving history
+        // would yield inconsistent spectra anyway.
+        let fft_related_changed = previous.fft_size != self.config.fft_size
+            || previous.zero_padding_factor != self.config.zero_padding_factor
+            || previous.window != self.config.window
+            || (previous.sample_rate - self.config.sample_rate).abs() > f32::EPSILON;
+
+        if fft_related_changed {
+            self.rebuild_fft();
+            return;
+        }
+
+        // Resize history without flushing existing columns so the UI can keep
+        // rendering accumulated data while the user adjusts history length.
+        if previous.history_length != self.config.history_length {
+            let mut evicted = std::mem::take(&mut self.evicted_columns);
+            self.history
+                .set_capacity(self.config.history_length, &mut evicted);
+            evicted
+                .drain(..)
+                .for_each(|column| self.recycle_column(column));
+            self.evicted_columns = evicted;
+        }
+
+        // Update the reassignment floor to match the latest dB threshold.
+        if previous.reassignment_power_floor_db != self.config.reassignment_power_floor_db {
+            self.reassignment_power_floor_linear =
+                power_db_to_linear(self.config.reassignment_power_floor_db);
+        }
+
+        // Refresh synchrosqueezing caches whenever the underlying grid changes.
+        let synchro_changed = previous.use_synchrosqueezing != self.config.use_synchrosqueezing
+            || previous.use_reassignment != self.config.use_reassignment
+            || previous.synchrosqueezing_bin_count != self.config.synchrosqueezing_bin_count
+            || (previous.synchrosqueezing_min_hz - self.config.synchrosqueezing_min_hz).abs()
+                > f32::EPSILON
+            || previous.frequency_scale != self.config.frequency_scale;
+
+        if synchro_changed {
+            self.synchro
+                .reconfigure(&self.config, self.fft_size, self.config.sample_rate);
+            self.synchro.align_pool(&mut self.synchro_pool);
+            self.synchro.reset_temporal();
+            self.synchro.reset_power();
+            self.synchro.reset_frequency();
+            self.clear_history();
+        }
+
+        // Reset temporal smoothing buffers when parameters change so that
+        // legacy decay state does not bleed into the new response curve.
+        let temporal_smoothing_changed = previous.temporal_smoothing
+            != self.config.temporal_smoothing
+            || previous.temporal_smoothing_max_hz != self.config.temporal_smoothing_max_hz
+            || previous.temporal_smoothing_blend_hz != self.config.temporal_smoothing_blend_hz;
+
+        if temporal_smoothing_changed {
+            if self.temporal_smoothing_buffer.len() != self.magnitude_buffer.len() {
+                self.temporal_smoothing_buffer
+                    .resize(self.magnitude_buffer.len(), DB_FLOOR);
+            }
+            self.temporal_smoothing_buffer.fill(DB_FLOOR);
+            self.synchro.reset_temporal();
+        }
+
+        let frequency_smoothing_changed = previous.frequency_smoothing_radius
+            != self.config.frequency_smoothing_radius
+            || previous.frequency_smoothing_max_hz != self.config.frequency_smoothing_max_hz
+            || previous.frequency_smoothing_blend_hz != self.config.frequency_smoothing_blend_hz;
+
+        if frequency_smoothing_changed {
+            if self.frequency_scratch_buffer.len() != self.magnitude_buffer.len() {
+                self.frequency_scratch_buffer
+                    .resize(self.magnitude_buffer.len(), 0.0);
+            } else {
+                self.frequency_scratch_buffer.fill(0.0);
+            }
+            self.synchro.reset_frequency();
+            self.clear_history();
+        }
     }
 }
 
@@ -1826,6 +2000,162 @@ mod tests {
             .expect("non-empty magnitude column");
         assert!((peak_bin as isize - approx_bin as isize).abs() <= 1);
         assert!(column.magnitudes_db[approx_bin] > -3.0);
+    }
+
+    #[test]
+    fn frequency_smoothing_blurs_energy_across_bins() {
+        let mut unsmoothed_cfg = test_config_base();
+        unsmoothed_cfg.fft_size = 1024;
+        unsmoothed_cfg.hop_size = 512;
+        unsmoothed_cfg.history_length = 4;
+        unsmoothed_cfg.zero_padding_factor = 1;
+        unsmoothed_cfg.frequency_smoothing_radius = 0;
+        unsmoothed_cfg.frequency_smoothing_max_hz = unsmoothed_cfg.sample_rate * 0.5;
+        unsmoothed_cfg.frequency_smoothing_blend_hz = 0.0;
+        unsmoothed_cfg.use_reassignment = false;
+        unsmoothed_cfg.use_synchrosqueezing = false;
+
+        let mut unsmoothed = SpectrogramProcessor::new(unsmoothed_cfg);
+
+        let frames = unsmoothed_cfg.fft_size * 2;
+        let freq_hz = 1200.0f32;
+        let mut samples = Vec::with_capacity(frames);
+        for n in 0..frames {
+            let t = n as f32 / unsmoothed_cfg.sample_rate;
+            samples.push((2.0 * core::f32::consts::PI * freq_hz * t).sin());
+        }
+        let block = make_block(samples, 1, unsmoothed_cfg.sample_rate);
+        let unsmoothed_update = match unsmoothed.process_block(&block) {
+            ProcessorUpdate::Snapshot(update) => update,
+            ProcessorUpdate::None => panic!("expected spectrogram snapshot"),
+        };
+        let unsmoothed_column = unsmoothed_update
+            .new_columns
+            .last()
+            .expect("spectrogram produced column");
+
+        let mut smoothed_cfg = unsmoothed_cfg;
+        smoothed_cfg.frequency_smoothing_radius = 12;
+        let mut smoothed = SpectrogramProcessor::new(smoothed_cfg);
+        let samples = (0..frames)
+            .map(|n| {
+                let t = n as f32 / smoothed_cfg.sample_rate;
+                (2.0 * core::f32::consts::PI * freq_hz * t).sin()
+            })
+            .collect::<Vec<_>>();
+        let block = make_block(samples, 1, smoothed_cfg.sample_rate);
+        let smoothed_update = match smoothed.process_block(&block) {
+            ProcessorUpdate::Snapshot(update) => update,
+            ProcessorUpdate::None => panic!("expected spectrogram snapshot"),
+        };
+        let smoothed_column = smoothed_update
+            .new_columns
+            .last()
+            .expect("spectrogram produced column");
+
+        let (peak_idx, &unsmoothed_peak) = unsmoothed_column
+            .magnitudes_db
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .expect("non-empty column");
+        let smoothed_peak = smoothed_column.magnitudes_db[peak_idx];
+        assert!(smoothed_peak < unsmoothed_peak - 6.0);
+
+        let neighbor = (peak_idx + 6).min(smoothed_column.magnitudes_db.len() - 1);
+        let unsmoothed_contrast = unsmoothed_peak - unsmoothed_column.magnitudes_db[neighbor];
+        let smoothed_contrast = smoothed_peak - smoothed_column.magnitudes_db[neighbor];
+        assert!(smoothed_contrast < unsmoothed_contrast - 6.0);
+    }
+
+    #[test]
+    fn frequency_smoothing_softens_synchro_peak() {
+        let mut base_cfg = test_config_base();
+        base_cfg.fft_size = 2048;
+        base_cfg.hop_size = 512;
+        base_cfg.history_length = 4;
+        base_cfg.zero_padding_factor = 1;
+        base_cfg.reassignment_low_bin_limit = 0;
+        base_cfg.synchrosqueezing_bin_count = 256;
+        base_cfg.frequency_smoothing_max_hz = base_cfg.sample_rate * 0.5;
+        base_cfg.frequency_smoothing_blend_hz = 0.0;
+
+        let mut unsmoothed_cfg = base_cfg;
+        unsmoothed_cfg.frequency_smoothing_radius = 0;
+
+        let mut smoothed_cfg = base_cfg;
+        smoothed_cfg.frequency_smoothing_radius = 10;
+        let mut unsmoothed_processor = SpectrogramProcessor::new(unsmoothed_cfg);
+        let mut smoothed_processor = SpectrogramProcessor::new(smoothed_cfg);
+
+        let frames = base_cfg.fft_size * 3;
+        let freq_hz = 1400.0f32;
+
+        let unsmoothed_samples = (0..frames)
+            .map(|n| {
+                let t = n as f32 / unsmoothed_cfg.sample_rate;
+                (2.0 * core::f32::consts::PI * freq_hz * t).sin()
+            })
+            .collect::<Vec<_>>();
+        let unsmoothed_block = make_block(unsmoothed_samples, 1, unsmoothed_cfg.sample_rate);
+        let unsmoothed_update = match unsmoothed_processor.process_block(&unsmoothed_block) {
+            ProcessorUpdate::Snapshot(update) => update,
+            ProcessorUpdate::None => panic!("expected synchrosqueezed snapshot"),
+        };
+
+        let smoothed_samples = (0..frames)
+            .map(|n| {
+                let t = n as f32 / smoothed_cfg.sample_rate;
+                (2.0 * core::f32::consts::PI * freq_hz * t).sin()
+            })
+            .collect::<Vec<_>>();
+        let smoothed_block = make_block(smoothed_samples, 1, smoothed_cfg.sample_rate);
+        let smoothed_update = match smoothed_processor.process_block(&smoothed_block) {
+            ProcessorUpdate::Snapshot(update) => update,
+            ProcessorUpdate::None => panic!("expected synchrosqueezed snapshot"),
+        };
+
+        let bins = unsmoothed_update
+            .synchro_bins_hz
+            .as_ref()
+            .expect("synchro bins available");
+        let column_unsmoothed = unsmoothed_update
+            .new_columns
+            .last()
+            .and_then(|column| column.synchro_magnitudes_db.as_ref())
+            .expect("unsmoothed synchro column");
+        let column_smoothed = smoothed_update
+            .new_columns
+            .last()
+            .and_then(|column| column.synchro_magnitudes_db.as_ref())
+            .expect("smoothed synchro column");
+
+        assert_eq!(column_unsmoothed.len(), column_smoothed.len());
+        assert_eq!(column_unsmoothed.len(), bins.len());
+
+        let target_idx = bins
+            .iter()
+            .enumerate()
+            .min_by(|a, b| {
+                let da = (*a.1 - freq_hz).abs();
+                let db = (*b.1 - freq_hz).abs();
+                da.partial_cmp(&db).unwrap()
+            })
+            .map(|(idx, _)| idx)
+            .expect("target frequency bin");
+
+        let unsmoothed_peak = column_unsmoothed[target_idx];
+        let smoothed_peak = column_smoothed[target_idx];
+        assert!(smoothed_peak < unsmoothed_peak - 3.0);
+
+        let neighbor_idx = if target_idx + 5 < column_unsmoothed.len() {
+            target_idx + 5
+        } else {
+            target_idx.saturating_sub(5)
+        };
+        let unsmoothed_contrast = unsmoothed_peak - column_unsmoothed[neighbor_idx];
+        let smoothed_contrast = smoothed_peak - column_smoothed[neighbor_idx];
+        assert!(smoothed_contrast < unsmoothed_contrast - 3.0);
     }
 
     #[test]

@@ -11,8 +11,8 @@ use iced::widget::text::Style as TextStyle;
 use iced::widget::{Rule, column, container, pick_list, row, slider, text, toggler};
 use std::fmt;
 
-const FFT_OPTIONS: [usize; 4] = [1024, 2048, 4096, 8192];
-const ZERO_PADDING_OPTIONS: [usize; 3] = [1, 2, 4];
+const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
+const ZERO_PADDING_OPTIONS: [usize; 6] = [1, 2, 4, 8, 16, 32];
 const FREQUENCY_SCALE_OPTIONS: [FrequencyScale; 3] = [
     FrequencyScale::Linear,
     FrequencyScale::Logarithmic,
@@ -22,7 +22,6 @@ const FREQUENCY_SCALE_OPTIONS: [FrequencyScale; 3] = [
 // Slider ranges: (min, max, step)
 const HISTORY_RANGE: (f32, f32, f32) = (120.0, 960.0, 30.0);
 const REASSIGNMENT_FLOOR_RANGE: (f32, f32, f32) = (-120.0, -30.0, 1.0);
-const REASSIGNMENT_LOW_BIN_RANGE: (f32, f32, f32) = (0.0, 4096.0, 1.0);
 const TEMPORAL_SMOOTHING_RANGE: (f32, f32, f32) = (0.0, 0.99, 0.01);
 const SYNCHRO_BINS_RANGE: (f32, f32, f32) = (64.0, 4096.0, 64.0);
 const TEMPORAL_MAX_HZ_RANGE: (f32, f32, f32) = (0.0, 4000.0, 1.0);
@@ -43,6 +42,12 @@ const TITLE_SIZE: u16 = 14;
 const LABEL_SIZE: u16 = 12;
 const VALUE_SIZE: u16 = 11;
 const TOGGLER_TEXT_SIZE: u16 = 11;
+
+fn clamp_synchro_bins(value: usize) -> usize {
+    let (min, max, step) = SYNCHRO_BINS_RANGE;
+    let snapped = ((value as f32 / step).round() * step).clamp(min, max);
+    snapped as usize
+}
 
 #[derive(Debug)]
 pub struct SpectrogramSettingsPane {
@@ -120,18 +125,6 @@ impl SpectrogramSettingsPane {
             |value| SettingsMessage::Spectrogram(Message::ReassignmentFloor(value)),
         );
 
-        let reassignment_low_bin = labeled_slider(
-            "Reassignment low-bin limit",
-            self.config.reassignment_low_bin_limit as f32,
-            format!("{} bins", self.config.reassignment_low_bin_limit),
-            REASSIGNMENT_LOW_BIN_RANGE,
-            |value| {
-                let (min, max, _) = REASSIGNMENT_LOW_BIN_RANGE;
-                let bins = value.round().clamp(min, max) as usize;
-                SettingsMessage::Spectrogram(Message::ReassignmentLowBinLimit(bins))
-            },
-        );
-
         let temporal_smoothing = labeled_slider(
             "Temporal smoothing",
             self.config.temporal_smoothing,
@@ -192,17 +185,8 @@ impl SpectrogramSettingsPane {
             |value| SettingsMessage::Spectrogram(Message::FrequencySmoothingBlendHz(value)),
         );
 
-        let reassignment_block = if self.config.use_reassignment {
-            column![reassignment_floor, reassignment_low_bin].spacing(CONTROL_SPACING)
-        } else {
-            column![]
-        };
-
-        let synchro_block = if self.config.use_synchrosqueezing {
-            column![synchro_bins].spacing(CONTROL_SPACING)
-        } else {
-            column![]
-        };
+        let reassignment_block = column![reassignment_floor].spacing(CONTROL_SPACING);
+        let synchro_block = column![synchro_bins].spacing(CONTROL_SPACING);
 
         let smoothing_columns = row![
             column![
@@ -223,17 +207,19 @@ impl SpectrogramSettingsPane {
         .spacing(ROW_SPACING)
         .width(Length::Fill);
 
-        section_container(
-            "Advanced signal processing",
-            column![
-                toggler(self.config.use_reassignment)
-                    .label("Time-frequency reassignment")
-                    .text_size(TOGGLER_TEXT_SIZE)
-                    .spacing(CONTROL_SPACING - 4.0)
-                    .on_toggle(|value| {
-                        SettingsMessage::Spectrogram(Message::UseReassignment(value))
-                    }),
-                reassignment_block,
+        let mut advanced_content = column![
+            toggler(self.config.use_reassignment)
+                .label("Time-frequency reassignment")
+                .text_size(TOGGLER_TEXT_SIZE)
+                .spacing(CONTROL_SPACING - 4.0)
+                .on_toggle(|value| {
+                    SettingsMessage::Spectrogram(Message::UseReassignment(value))
+                }),
+        ]
+        .spacing(CONTROL_SPACING);
+
+        if self.config.use_reassignment {
+            advanced_content = advanced_content.push(reassignment_block).push(
                 toggler(self.config.use_synchrosqueezing)
                     .label("Synchrosqueezed accumulation")
                     .text_size(TOGGLER_TEXT_SIZE)
@@ -241,11 +227,14 @@ impl SpectrogramSettingsPane {
                     .on_toggle(|value| {
                         SettingsMessage::Spectrogram(Message::UseSynchrosqueezing(value))
                     }),
-                synchro_block,
-                smoothing_columns,
-            ]
-            .spacing(CONTROL_SPACING),
-        )
+            );
+
+            if self.config.use_synchrosqueezing {
+                advanced_content = advanced_content.push(synchro_block).push(smoothing_columns);
+            }
+        }
+
+        section_container("Advanced signal processing", advanced_content)
     }
 }
 
@@ -258,7 +247,6 @@ pub enum Message {
     FrequencyScale(FrequencyScale),
     UseReassignment(bool),
     ReassignmentFloor(f32),
-    ReassignmentLowBinLimit(usize),
     ZeroPadding(usize),
     UseSynchrosqueezing(bool),
     SynchroBinCount(usize),
@@ -274,11 +262,17 @@ pub fn create(
     visual_id: VisualId,
     visual_manager: &VisualManagerHandle,
 ) -> SpectrogramSettingsPane {
-    let config = visual_manager
+    let stored_config = visual_manager
         .borrow()
         .module_settings(VisualKind::SPECTROGRAM)
         .and_then(|stored| stored.spectrogram_config())
         .unwrap_or_default();
+
+    let mut config = stored_config;
+
+    if !config.use_reassignment {
+        config.use_synchrosqueezing = false;
+    }
 
     let window = WindowPreset::from_kind(config.window);
     let frequency_scale = config.frequency_scale;
@@ -419,6 +413,9 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             Message::UseReassignment(value) => {
                 if self.config.use_reassignment != *value {
                     self.config.use_reassignment = *value;
+                    if !self.config.use_reassignment {
+                        self.config.use_synchrosqueezing = false;
+                    }
                     changed = true;
                 }
             }
@@ -430,12 +427,6 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                     changed = true;
                 }
             }
-            Message::ReassignmentLowBinLimit(value) => {
-                if self.config.reassignment_low_bin_limit != *value {
-                    self.config.reassignment_low_bin_limit = *value;
-                    changed = true;
-                }
-            }
             Message::ZeroPadding(value) => {
                 if self.config.zero_padding_factor != *value {
                     self.config.zero_padding_factor = *value;
@@ -443,63 +434,79 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                 }
             }
             Message::UseSynchrosqueezing(value) => {
-                if self.config.use_synchrosqueezing != *value {
-                    self.config.use_synchrosqueezing = *value;
+                let desired = *value && self.config.use_reassignment;
+                if self.config.use_synchrosqueezing != desired {
+                    self.config.use_synchrosqueezing = desired;
                     changed = true;
                 }
             }
             Message::SynchroBinCount(value) => {
-                if self.config.synchrosqueezing_bin_count != *value {
-                    self.config.synchrosqueezing_bin_count = (*value).max(1);
-                    changed = true;
+                if self.config.use_synchrosqueezing {
+                    let bins = clamp_synchro_bins(*value);
+                    if self.config.synchrosqueezing_bin_count != bins {
+                        self.config.synchrosqueezing_bin_count = bins;
+                        changed = true;
+                    }
                 }
             }
             Message::TemporalSmoothing(value) => {
-                let (min, max, _) = TEMPORAL_SMOOTHING_RANGE;
-                let clamped = value.clamp(min, max);
-                if (self.config.temporal_smoothing - clamped).abs() > f32::EPSILON {
-                    self.config.temporal_smoothing = clamped;
-                    changed = true;
+                if self.config.use_synchrosqueezing {
+                    let (min, max, _) = TEMPORAL_SMOOTHING_RANGE;
+                    let clamped = value.clamp(min, max);
+                    if (self.config.temporal_smoothing - clamped).abs() > f32::EPSILON {
+                        self.config.temporal_smoothing = clamped;
+                        changed = true;
+                    }
                 }
             }
             Message::TemporalSmoothingMaxHz(value) => {
-                let (min, max, _) = TEMPORAL_MAX_HZ_RANGE;
-                let clamped = value.clamp(min, max);
-                if (self.config.temporal_smoothing_max_hz - clamped).abs() > f32::EPSILON {
-                    self.config.temporal_smoothing_max_hz = clamped;
-                    changed = true;
+                if self.config.use_synchrosqueezing {
+                    let (min, max, _) = TEMPORAL_MAX_HZ_RANGE;
+                    let clamped = value.clamp(min, max);
+                    if (self.config.temporal_smoothing_max_hz - clamped).abs() > f32::EPSILON {
+                        self.config.temporal_smoothing_max_hz = clamped;
+                        changed = true;
+                    }
                 }
             }
             Message::TemporalSmoothingBlendHz(value) => {
-                let (min, max, _) = TEMPORAL_BLEND_HZ_RANGE;
-                let clamped = value.clamp(min, max);
-                if (self.config.temporal_smoothing_blend_hz - clamped).abs() > f32::EPSILON {
-                    self.config.temporal_smoothing_blend_hz = clamped;
-                    changed = true;
+                if self.config.use_synchrosqueezing {
+                    let (min, max, _) = TEMPORAL_BLEND_HZ_RANGE;
+                    let clamped = value.clamp(min, max);
+                    if (self.config.temporal_smoothing_blend_hz - clamped).abs() > f32::EPSILON {
+                        self.config.temporal_smoothing_blend_hz = clamped;
+                        changed = true;
+                    }
                 }
             }
             Message::FrequencySmoothing(value) => {
-                let (min, max, _) = FREQUENCY_SMOOTHING_RANGE;
-                let radius = value.clamp(min, max).round() as usize;
-                if self.config.frequency_smoothing_radius != radius {
-                    self.config.frequency_smoothing_radius = radius;
-                    changed = true;
+                if self.config.use_synchrosqueezing {
+                    let (min, max, _) = FREQUENCY_SMOOTHING_RANGE;
+                    let radius = value.clamp(min, max).round() as usize;
+                    if self.config.frequency_smoothing_radius != radius {
+                        self.config.frequency_smoothing_radius = radius;
+                        changed = true;
+                    }
                 }
             }
             Message::FrequencySmoothingMaxHz(value) => {
-                let (min, max, _) = FREQUENCY_MAX_HZ_RANGE;
-                let clamped = value.clamp(min, max);
-                if (self.config.frequency_smoothing_max_hz - clamped).abs() > f32::EPSILON {
-                    self.config.frequency_smoothing_max_hz = clamped;
-                    changed = true;
+                if self.config.use_synchrosqueezing {
+                    let (min, max, _) = FREQUENCY_MAX_HZ_RANGE;
+                    let clamped = value.clamp(min, max);
+                    if (self.config.frequency_smoothing_max_hz - clamped).abs() > f32::EPSILON {
+                        self.config.frequency_smoothing_max_hz = clamped;
+                        changed = true;
+                    }
                 }
             }
             Message::FrequencySmoothingBlendHz(value) => {
-                let (min, max, _) = FREQUENCY_BLEND_HZ_RANGE;
-                let clamped = value.clamp(min, max);
-                if (self.config.frequency_smoothing_blend_hz - clamped).abs() > f32::EPSILON {
-                    self.config.frequency_smoothing_blend_hz = clamped;
-                    changed = true;
+                if self.config.use_synchrosqueezing {
+                    let (min, max, _) = FREQUENCY_BLEND_HZ_RANGE;
+                    let clamped = value.clamp(min, max);
+                    if (self.config.frequency_smoothing_blend_hz - clamped).abs() > f32::EPSILON {
+                        self.config.frequency_smoothing_blend_hz = clamped;
+                        changed = true;
+                    }
                 }
             }
         }
