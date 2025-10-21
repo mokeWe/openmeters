@@ -26,7 +26,6 @@ const DEFAULT_VERTICAL_PADDING: f32 = 8.0;
 const DEFAULT_CHANNEL_GAP: f32 = 12.0;
 const DEFAULT_AMPLITUDE_SCALE: f32 = 1.0;
 const DEFAULT_STROKE_WIDTH: f32 = 1.0;
-
 #[derive(Debug, Clone)]
 pub struct WaveformProcessor {
     inner: CoreWaveformProcessor,
@@ -128,6 +127,15 @@ impl WaveformState {
 
         self.update_frequency_hint();
         self.update_preview_state();
+    }
+
+    pub fn set_palette(&mut self, palette: &[Color]) {
+        self.style.set_palette(palette);
+        self.render_key = Self::next_render_key();
+    }
+
+    pub fn palette(&self) -> &[Color] {
+        self.style.palette()
     }
 
     pub fn visual(&self, bounds: Rectangle) -> Option<WaveformVisual> {
@@ -343,13 +351,15 @@ pub struct WaveformStyle {
     pub channel_gap: f32,
     pub amplitude_scale: f32,
     pub stroke_width: f32,
+    palette: Vec<Color>,
     gradient: Vec<GradientStop>,
 }
 
 impl WaveformStyle {
     fn color_for_frequency(&self, value: f32) -> Color {
         if self.gradient.is_empty() {
-            return theme::waveform_palette()
+            return self
+                .palette
                 .first()
                 .copied()
                 .unwrap_or_else(theme::accent_primary);
@@ -367,24 +377,33 @@ impl WaveformStyle {
             }
         }
 
-        self.gradient
+        self.palette
             .last()
-            .map(|stop| stop.color)
-            .unwrap_or_else(|| {
-                theme::waveform_palette()
-                    .last()
-                    .copied()
-                    .unwrap_or_else(theme::accent_primary)
-            })
+            .copied()
+            .unwrap_or_else(theme::accent_primary)
     }
-}
 
-impl Default for WaveformStyle {
-    fn default() -> Self {
-        let background = theme::with_alpha(theme::base_color(), 0.0);
-        let palette = theme::waveform_palette();
+    fn set_palette(&mut self, palette: &[Color]) {
+        if self.palette.len() == palette.len()
+            && self
+                .palette
+                .iter()
+                .zip(palette)
+                .all(|(a, b)| theme::colors_equal(*a, *b))
+        {
+            return;
+        }
 
-        let gradient = match palette.len() {
+        self.palette = palette.to_vec();
+        self.gradient = Self::build_gradient(&self.palette);
+    }
+
+    fn palette(&self) -> &[Color] {
+        &self.palette
+    }
+
+    fn build_gradient(palette: &[Color]) -> Vec<GradientStop> {
+        match palette.len() {
             0 => Vec::new(),
             1 => vec![GradientStop {
                 position: 0.0,
@@ -401,7 +420,15 @@ impl Default for WaveformStyle {
                     })
                     .collect()
             }
-        };
+        }
+    }
+}
+
+impl Default for WaveformStyle {
+    fn default() -> Self {
+        let background = theme::with_alpha(theme::base_color(), 0.0);
+        let palette = theme::waveform_palette().to_vec();
+        let gradient = Self::build_gradient(&palette);
 
         Self {
             background,
@@ -411,6 +438,7 @@ impl Default for WaveformStyle {
             channel_gap: DEFAULT_CHANNEL_GAP,
             amplitude_scale: DEFAULT_AMPLITUDE_SCALE,
             stroke_width: DEFAULT_STROKE_WIDTH,
+            palette,
             gradient,
         }
     }

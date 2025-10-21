@@ -341,8 +341,7 @@ impl WaveformProcessor {
 
         for frame in samples.chunks_exact(channels) {
             let current_time = self.bucket_elapsed_seconds;
-            for ch in 0..channels {
-                let sample = frame[ch];
+            for (ch, &sample) in frame.iter().enumerate().take(channels) {
                 let filtered = {
                     let prefilter = &mut self.prefilters[ch];
                     prefilter.process(sample)

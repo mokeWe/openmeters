@@ -12,6 +12,7 @@ use crate::dsp::waveform::{DownsampleStrategy, WaveformConfig};
 use crate::ui::visualization::loudness::MeterMode;
 use crate::ui::visualization::oscilloscope::DisplayMode;
 use crate::ui::visualization::visual_manager::VisualKind;
+use iced::Color;
 use serde::de::{self, Deserializer};
 use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
@@ -81,12 +82,6 @@ impl ModuleSettings {
         self.config.as_ref().and_then(StoredConfig::as_spectrogram)
     }
 
-    pub fn spectrogram_config(&self) -> Option<SpectrogramConfig> {
-        self.config
-            .as_ref()
-            .and_then(StoredConfig::to_spectrogram_config)
-    }
-
     pub fn spectrum(&self) -> Option<&SpectrumSettings> {
         self.config.as_ref().and_then(StoredConfig::as_spectrum)
     }
@@ -105,44 +100,43 @@ impl ModuleSettings {
         self.config.as_ref().and_then(StoredConfig::as_waveform)
     }
 
-    pub fn waveform_config(&self) -> Option<WaveformConfig> {
-        self.config
-            .as_ref()
-            .and_then(StoredConfig::to_waveform_config)
-    }
-
     pub fn loudness(&self) -> Option<&LoudnessSettings> {
         self.config.as_ref().and_then(StoredConfig::as_loudness)
     }
 
-    pub fn with_spectrogram_config(config: &SpectrogramConfig) -> Self {
-        let mut module = Self::default();
-        module.config = Some(SpectrogramSettings::from_config(config).into());
-        module
+    pub fn with_spectrogram_settings(settings: &SpectrogramSettings) -> Self {
+        Self {
+            config: Some(settings.clone().into()),
+            ..Default::default()
+        }
     }
 
     pub fn with_spectrum_config(config: &SpectrumConfig) -> Self {
-        let mut module = Self::default();
-        module.config = Some(SpectrumSettings::from_config(config).into());
-        module
+        Self {
+            config: Some(SpectrumSettings::from_config(config).into()),
+            ..Default::default()
+        }
     }
 
-    pub fn with_waveform_config(config: &WaveformConfig) -> Self {
-        let mut module = Self::default();
-        module.config = Some(WaveformSettings::from_config(config).into());
-        module
+    pub fn with_waveform_settings(settings: &WaveformSettings) -> Self {
+        Self {
+            config: Some(settings.clone().into()),
+            ..Default::default()
+        }
     }
 
     pub fn with_oscilloscope_settings(settings: &OscilloscopeSettings) -> Self {
-        let mut module = Self::default();
-        module.config = Some(settings.clone().into());
-        module
+        Self {
+            config: Some(settings.clone().into()),
+            ..Default::default()
+        }
     }
 
     pub fn with_loudness_settings(settings: LoudnessSettings) -> Self {
-        let mut module = Self::default();
-        module.config = Some(settings.into());
-        module
+        Self {
+            config: Some(settings.into()),
+            ..Default::default()
+        }
     }
 
     pub fn retain_only(&mut self, kind: VisualKind) {
@@ -221,16 +215,8 @@ impl StoredConfig {
         }
     }
 
-    fn to_spectrogram_config(&self) -> Option<SpectrogramConfig> {
-        self.as_spectrogram().map(SpectrogramSettings::to_config)
-    }
-
     fn to_spectrum_config(&self) -> Option<SpectrumConfig> {
         self.as_spectrum().map(SpectrumSettings::to_config)
-    }
-
-    fn to_waveform_config(&self) -> Option<WaveformConfig> {
-        self.as_waveform().map(WaveformSettings::to_config)
     }
 }
 
@@ -261,6 +247,64 @@ impl From<WaveformSettings> for StoredConfig {
 impl From<LoudnessSettings> for StoredConfig {
     fn from(settings: LoudnessSettings) -> Self {
         StoredConfig::Loudness(settings)
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct ColorSetting {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+
+impl From<Color> for ColorSetting {
+    fn from(c: Color) -> Self {
+        Self {
+            r: c.r,
+            g: c.g,
+            b: c.b,
+            a: c.a,
+        }
+    }
+}
+
+impl ColorSetting {
+    pub fn to_color(self) -> Color {
+        Color {
+            r: self.r,
+            g: self.g,
+            b: self.b,
+            a: self.a,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PaletteSettings {
+    pub stops: Vec<ColorSetting>,
+}
+
+impl PaletteSettings {
+    pub fn to_array<const N: usize>(&self) -> Option<[Color; N]> {
+        (self.stops.len() == N).then(|| std::array::from_fn(|i| self.stops[i].to_color()))
+    }
+
+    pub fn maybe_from_colors(colors: &[Color], defaults: &[Color]) -> Option<Self> {
+        if colors.len() != defaults.len() {
+            None
+        } else if colors.iter().zip(defaults).any(|(a, b)| {
+            (a.r - b.r).abs() > 1e-4
+                || (a.g - b.g).abs() > 1e-4
+                || (a.b - b.b).abs() > 1e-4
+                || (a.a - b.a).abs() > 1e-4
+        }) {
+            Some(Self {
+                stops: colors.iter().copied().map(ColorSetting::from).collect(),
+            })
+        } else {
+            None
+        }
     }
 }
 
@@ -370,6 +414,8 @@ pub struct WaveformSettings {
     pub downsample: DownsampleStrategy,
     #[serde(default, rename = "max_columns", skip_serializing)]
     _legacy_max_columns: Option<usize>,
+    #[serde(default)]
+    pub palette: Option<PaletteSettings>,
 }
 
 impl Default for WaveformSettings {
@@ -384,6 +430,7 @@ impl WaveformSettings {
             scroll_speed: config.scroll_speed,
             downsample: config.downsample,
             _legacy_max_columns: None,
+            palette: None,
         }
     }
 
@@ -396,6 +443,12 @@ impl WaveformSettings {
         let mut config = WaveformConfig::default();
         self.apply_to(&mut config);
         config
+    }
+
+    pub fn palette_array<const N: usize>(&self) -> Option<[Color; N]> {
+        self.palette
+            .as_ref()
+            .and_then(PaletteSettings::to_array::<N>)
     }
 }
 
@@ -497,6 +550,8 @@ pub struct SpectrogramSettings {
     pub frequency_smoothing_radius: usize,
     pub frequency_smoothing_max_hz: f32,
     pub frequency_smoothing_blend_hz: f32,
+    #[serde(default)]
+    pub palette: Option<PaletteSettings>,
 }
 
 impl Default for SpectrogramSettings {
@@ -526,6 +581,7 @@ impl SpectrogramSettings {
             frequency_smoothing_radius: config.frequency_smoothing_radius,
             frequency_smoothing_max_hz: config.frequency_smoothing_max_hz,
             frequency_smoothing_blend_hz: config.frequency_smoothing_blend_hz,
+            palette: None,
         }
     }
 
@@ -554,6 +610,12 @@ impl SpectrogramSettings {
         let mut config = SpectrogramConfig::default();
         self.apply_to(&mut config);
         config
+    }
+
+    pub fn palette_array<const N: usize>(&self) -> Option<[Color; N]> {
+        self.palette
+            .as_ref()
+            .and_then(PaletteSettings::to_array::<N>)
     }
 }
 
@@ -606,14 +668,14 @@ impl SettingsManager {
         entry.set_oscilloscope(settings.clone());
     }
 
-    pub fn set_waveform_settings(&mut self, kind: VisualKind, config: &WaveformConfig) {
+    pub fn set_waveform_settings(&mut self, kind: VisualKind, settings: &WaveformSettings) {
         let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.set_waveform(WaveformSettings::from_config(config));
+        entry.set_waveform(settings.clone());
     }
 
-    pub fn set_spectrogram_settings(&mut self, kind: VisualKind, config: &SpectrogramConfig) {
+    pub fn set_spectrogram_settings(&mut self, kind: VisualKind, settings: &SpectrogramSettings) {
         let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.set_spectrogram(SpectrogramSettings::from_config(config));
+        entry.set_spectrogram(settings.clone());
     }
 
     pub fn set_spectrum_settings(&mut self, kind: VisualKind, config: &SpectrumConfig) {

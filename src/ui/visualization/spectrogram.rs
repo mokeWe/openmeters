@@ -196,7 +196,6 @@ impl SpectrogramState {
         }
     }
 
-    #[allow(dead_code)]
     pub fn set_palette(&mut self, palette: [Color; PALETTE_STOPS]) {
         if self.palette == palette {
             return;
@@ -205,6 +204,10 @@ impl SpectrogramState {
         self.palette = palette;
         self.palette_cache.borrow_mut().dirty = true;
         self.buffer.borrow_mut().mark_dirty();
+    }
+
+    pub fn palette(&self) -> [Color; PALETTE_STOPS] {
+        self.palette
     }
 
     pub fn apply_update(&mut self, update: &SpectrogramUpdate) {
@@ -1071,11 +1074,7 @@ mod tests {
 }
 
 fn build_palette_rgba(palette: &[Color; PALETTE_STOPS], opacity: f32) -> [[f32; 4]; PALETTE_STOPS] {
-    let mut rgba = [[0.0; 4]; PALETTE_STOPS];
-    for (idx, color) in palette.iter().enumerate() {
-        rgba[idx] = color_to_rgba_with_opacity(*color, opacity);
-    }
-    rgba
+    palette.map(|color| theme::color_to_rgba_with_opacity(color, opacity))
 }
 
 /// Memoizes palette conversions so we avoid recomputing RGBA values unless
@@ -1090,7 +1089,7 @@ struct PaletteCache {
 impl PaletteCache {
     fn new(style: &SpectrogramStyle, palette: &[Color; PALETTE_STOPS]) -> Self {
         let palette_rgba = build_palette_rgba(palette, style.opacity);
-        let background = color_to_rgba_with_opacity(style.background, style.opacity);
+        let background = theme::color_to_rgba_with_opacity(style.background, style.opacity);
         Self {
             palette: palette_rgba,
             background,
@@ -1100,7 +1099,7 @@ impl PaletteCache {
 
     fn refresh(&mut self, style: &SpectrogramStyle, palette: &[Color; PALETTE_STOPS]) {
         self.palette = build_palette_rgba(palette, style.opacity);
-        self.background = color_to_rgba_with_opacity(style.background, style.opacity);
+        self.background = theme::color_to_rgba_with_opacity(style.background, style.opacity);
         self.dirty = false;
     }
 }
@@ -1178,10 +1177,4 @@ where
     Message: 'a,
 {
     Element::new(Spectrogram::new(state))
-}
-
-fn color_to_rgba_with_opacity(color: Color, opacity: f32) -> [f32; 4] {
-    let mut rgba = theme::color_to_rgba(color);
-    rgba[3] = rgba[3].clamp(0.0, 1.0) * opacity.clamp(0.0, 1.0);
-    rgba
 }

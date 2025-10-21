@@ -235,3 +235,19 @@ pub fn with_alpha(color: Color, alpha: f32) -> Color {
 pub fn color_to_rgba(color: Color) -> [f32; 4] {
     [color.r, color.g, color.b, color.a]
 }
+
+/// Converts a color to RGBA with custom opacity override.
+pub fn color_to_rgba_with_opacity(color: Color, opacity: f32) -> [f32; 4] {
+    let mut rgba = color_to_rgba(color);
+    rgba[3] = rgba[3].clamp(0.0, 1.0) * opacity.clamp(0.0, 1.0);
+    rgba
+}
+
+/// Compares two colors for approximate equality within a small epsilon.
+pub fn colors_equal(a: Color, b: Color) -> bool {
+    const EPSILON: f32 = 1e-4;
+    (a.r - b.r).abs() <= EPSILON
+        && (a.g - b.g).abs() <= EPSILON
+        && (a.b - b.b).abs() <= EPSILON
+        && (a.a - b.a).abs() <= EPSILON
+}

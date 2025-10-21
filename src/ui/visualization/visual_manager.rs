@@ -9,10 +9,12 @@
 use crate::audio::meter_tap::{self, MeterFormat};
 use crate::dsp::ProcessorUpdate;
 use crate::dsp::waveform::{MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY};
+use crate::ui::render::spectrogram::SPECTROGRAM_PALETTE_SIZE;
 use crate::ui::settings::{
-    LoudnessSettings, ModuleSettings, OscilloscopeSettings, SpectrogramSettings, SpectrumSettings,
-    VisualSettings, WaveformSettings,
+    LoudnessSettings, ModuleSettings, OscilloscopeSettings, PaletteSettings, SpectrogramSettings,
+    SpectrumSettings, VisualSettings, WaveformSettings,
 };
+use crate::ui::theme;
 use crate::ui::visualization::loudness::{LoudnessMeterProcessor, LoudnessMeterState};
 use crate::ui::visualization::oscilloscope::{OscilloscopeProcessor, OscilloscopeState};
 use crate::ui::visualization::spectrogram::{SpectrogramProcessor, SpectrogramState};
@@ -36,29 +38,6 @@ impl VisualKind {
     pub const SPECTROGRAM: Self = Self("spectrogram");
     pub const SPECTRUM: Self = Self("spectrum");
     pub const WAVEFORM: Self = Self("waveform");
-
-    fn legacy_token(self) -> &'static str {
-        match self {
-            Self::LOUDNESS => "LoudnessMeter",
-            Self::OSCILLOSCOPE => "Oscilloscope",
-            Self::SPECTROGRAM => "Spectrogram",
-            Self::SPECTRUM => "Spectrum",
-            Self::WAVEFORM => "Waveform",
-            _ => self.0,
-        }
-    }
-
-    fn from_serialized(value: &str) -> Option<Self> {
-        match value {
-            "loudness" | "Loudness" | "loudness_meter" | "LoudnessMeter" | "lufs_meter"
-            | "LufsMeter" => Some(Self::LOUDNESS),
-            "oscilloscope" | "Oscilloscope" => Some(Self::OSCILLOSCOPE),
-            "spectrogram" | "Spectrogram" => Some(Self::SPECTROGRAM),
-            "spectrum" | "Spectrum" => Some(Self::SPECTRUM),
-            "waveform" | "Waveform" => Some(Self::WAVEFORM),
-            _ => None,
-        }
-    }
 }
 
 impl Serialize for VisualKind {
@@ -66,7 +45,7 @@ impl Serialize for VisualKind {
     where
         S: Serializer,
     {
-        serializer.serialize_str(self.legacy_token())
+        serializer.serialize_str(self.0)
     }
 }
 
@@ -76,8 +55,13 @@ impl<'de> Deserialize<'de> for VisualKind {
         D: Deserializer<'de>,
     {
         let token = String::deserialize(deserializer)?;
-        Self::from_serialized(&token).ok_or_else(|| {
-            de::Error::unknown_variant(
+        match token.as_str() {
+            "loudness" => Ok(Self::LOUDNESS),
+            "oscilloscope" => Ok(Self::OSCILLOSCOPE),
+            "spectrogram" => Ok(Self::SPECTROGRAM),
+            "spectrum" => Ok(Self::SPECTRUM),
+            "waveform" => Ok(Self::WAVEFORM),
+            _ => Err(de::Error::unknown_variant(
                 &token,
                 &[
                     "loudness",
@@ -86,8 +70,8 @@ impl<'de> Deserialize<'de> for VisualKind {
                     "spectrum",
                     "waveform",
                 ],
-            )
-        })
+            )),
+        }
     }
 }
 
@@ -277,6 +261,8 @@ const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
     },
 ];
 
+const WAVEFORM_PALETTE_SIZE: usize = theme::DEFAULT_WAVEFORM_PALETTE.len();
+
 fn build_module<M>() -> Box<dyn VisualModule>
 where
     M: VisualModule + Default + 'static,
@@ -408,12 +394,22 @@ impl VisualModule for WaveformVisual {
             stored.apply_to(&mut config);
             self.processor.update_config(config);
             self.ensure_capacity();
+
+            if let Some(palette) = stored.palette_array::<WAVEFORM_PALETTE_SIZE>() {
+                self.state.set_palette(&palette);
+            } else {
+                self.state.set_palette(&theme::DEFAULT_WAVEFORM_PALETTE);
+            }
         }
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
         let mut module = ModuleSettings::default();
-        let snapshot = WaveformSettings::from_config(&self.processor.config());
+        let mut snapshot = WaveformSettings::from_config(&self.processor.config());
+        snapshot.palette = PaletteSettings::maybe_from_colors(
+            self.state.palette(),
+            &theme::DEFAULT_WAVEFORM_PALETTE,
+        );
         module.set_waveform(snapshot);
         Some(module)
     }
@@ -467,12 +463,21 @@ impl VisualModule for SpectrogramVisual {
             let mut config = self.processor.config();
             stored.apply_to(&mut config);
             self.processor.update_config(config);
+
+            if let Some(palette) = stored.palette_array::<SPECTROGRAM_PALETTE_SIZE>() {
+                self.state.set_palette(palette);
+            } else {
+                self.state.set_palette(theme::DEFAULT_SPECTROGRAM_PALETTE);
+            }
         }
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
         let mut settings = ModuleSettings::default();
-        let snapshot = SpectrogramSettings::from_config(&self.processor.config());
+        let mut snapshot = SpectrogramSettings::from_config(&self.processor.config());
+        let palette = self.state.palette();
+        snapshot.palette =
+            PaletteSettings::maybe_from_colors(&palette, &theme::DEFAULT_SPECTROGRAM_PALETTE);
         settings.set_spectrogram(snapshot);
         Some(settings)
     }

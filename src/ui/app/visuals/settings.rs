@@ -3,6 +3,7 @@
 
 mod loudness;
 mod oscilloscope;
+mod palette;
 mod spectrogram;
 mod spectrum;
 mod waveform;
@@ -37,7 +38,7 @@ const LOUDNESS_SETTINGS_SIZE: Size = Size::new(360.0, 180.0);
 const OSCILLOSCOPE_SETTINGS_SIZE: Size = Size::new(420.0, 340.0);
 const SPECTROGRAM_SETTINGS_SIZE: Size = Size::new(560.0, 880.0);
 const SPECTRUM_SETTINGS_SIZE: Size = Size::new(420.0, 260.0);
-const WAVEFORM_SETTINGS_SIZE: Size = Size::new(360.0, 200.0);
+const WAVEFORM_SETTINGS_SIZE: Size = Size::new(500.0, 400.0);
 
 #[derive(Debug)]
 pub struct ActiveSettings {
