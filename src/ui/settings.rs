@@ -9,6 +9,7 @@ use crate::dsp::oscilloscope::OscilloscopeConfig;
 use crate::dsp::spectrogram::{FrequencyScale, SpectrogramConfig, WindowKind};
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
 use crate::dsp::waveform::{DownsampleStrategy, WaveformConfig};
+use crate::ui::theme;
 use crate::ui::visualization::loudness::MeterMode;
 use crate::ui::visualization::oscilloscope::DisplayMode;
 use crate::ui::visualization::visual_manager::VisualKind;
@@ -292,19 +293,20 @@ impl PaletteSettings {
 
     pub fn maybe_from_colors(colors: &[Color], defaults: &[Color]) -> Option<Self> {
         if colors.len() != defaults.len() {
-            None
-        } else if colors.iter().zip(defaults).any(|(a, b)| {
-            (a.r - b.r).abs() > 1e-4
-                || (a.g - b.g).abs() > 1e-4
-                || (a.b - b.b).abs() > 1e-4
-                || (a.a - b.a).abs() > 1e-4
-        }) {
-            Some(Self {
-                stops: colors.iter().copied().map(ColorSetting::from).collect(),
-            })
-        } else {
-            None
+            return None;
         }
+
+        if colors
+            .iter()
+            .zip(defaults)
+            .all(|(color, default)| theme::colors_equal(*color, *default))
+        {
+            return None;
+        }
+
+        Some(Self {
+            stops: colors.iter().copied().map(ColorSetting::from).collect(),
+        })
     }
 }
 

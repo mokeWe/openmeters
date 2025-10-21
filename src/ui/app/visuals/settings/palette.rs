@@ -1,3 +1,5 @@
+//! A color palette editor for visual module settings
+
 use crate::ui::theme;
 use iced::alignment::{Horizontal, Vertical};
 use iced::widget::{Button, Column, Row, Space, container, slider, text};
@@ -143,22 +145,47 @@ impl PaletteEditor {
                 ),
         );
 
-        for (label, get, set, fmt) in CHANNELS {
-            let v = get(c);
+        // RGB+A channels
+        for (label, value, setter, display_fn) in [
+            (
+                "R",
+                c.r,
+                set_r as fn(Color, f32) -> Color,
+                rgb_display as fn(f32) -> String,
+            ),
+            (
+                "G",
+                c.g,
+                set_g as fn(Color, f32) -> Color,
+                rgb_display as fn(f32) -> String,
+            ),
+            (
+                "B",
+                c.b,
+                set_b as fn(Color, f32) -> Color,
+                rgb_display as fn(f32) -> String,
+            ),
+            (
+                "A",
+                c.a,
+                set_a as fn(Color, f32) -> Color,
+                alpha_display as fn(f32) -> String,
+            ),
+        ] {
             col = col.push(
                 Row::new()
                     .spacing(8.0)
                     .align_y(Vertical::Center)
                     .push(text(label).size(12).width(Length::Fixed(32.0)))
                     .push(
-                        slider::Slider::new(0.0..=1.0, v, move |nv| PaletteEvent::Adjust {
+                        slider::Slider::new(0.0..=1.0, value, move |nv| PaletteEvent::Adjust {
                             index: i,
-                            color: set(c, nv),
+                            color: setter(c, nv),
                         })
                         .step(0.01)
                         .width(Length::Fill),
                     )
-                    .push(text(fmt(v)).size(12)),
+                    .push(text(display_fn(value)).size(12)),
             );
         }
 
@@ -190,80 +217,36 @@ fn to_hex(c: Color) -> String {
     format!("#{r:02X}{g:02X}{b:02X}")
 }
 
+#[inline]
 fn rgb_display(v: f32) -> String {
     format!("{:>3}", (v.clamp(0.0, 1.0) * 255.0).round() as u8)
 }
 
+#[inline]
 fn alpha_display(v: f32) -> String {
     format!("{:>3}%", (v.clamp(0.0, 1.0) * 100.0).round() as u8)
 }
 
-type ChannelDescriptor = (
-    &'static str,
-    fn(Color) -> f32,
-    fn(Color, f32) -> Color,
-    fn(f32) -> String,
-);
-
-const CHANNELS: [ChannelDescriptor; 4] = [
-    (
-        "R",
-        |c| c.r,
-        |mut c, v| {
-            c.r = v;
-            c
-        },
-        rgb_display,
-    ),
-    (
-        "G",
-        |c| c.g,
-        |mut c, v| {
-            c.g = v;
-            c
-        },
-        rgb_display,
-    ),
-    (
-        "B",
-        |c| c.b,
-        |mut c, v| {
-            c.b = v;
-            c
-        },
-        rgb_display,
-    ),
-    (
-        "A",
-        |c| c.a,
-        |mut c, v| {
-            c.a = v;
-            c
-        },
-        alpha_display,
-    ),
-];
+fn set_r(mut c: Color, v: f32) -> Color {
+    c.r = v;
+    c
+}
+fn set_g(mut c: Color, v: f32) -> Color {
+    c.g = v;
+    c
+}
+fn set_b(mut c: Color, v: f32) -> Color {
+    c.b = v;
+    c
+}
+fn set_a(mut c: Color, v: f32) -> Color {
+    c.a = v;
+    c
+}
 
 fn button_style(
     _theme: &iced::Theme,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
-    let mut style = iced::widget::button::Style {
-        background: Some(Background::Color(theme::surface_color())),
-        text_color: theme::text_color(),
-        border: theme::sharp_border(),
-        ..Default::default()
-    };
-
-    match status {
-        iced::widget::button::Status::Hovered => {
-            style.background = Some(Background::Color(theme::hover_color()));
-        }
-        iced::widget::button::Status::Pressed => {
-            style.border = theme::focus_border();
-        }
-        _ => {}
-    }
-
-    style
+    theme::surface_button_style(status)
 }

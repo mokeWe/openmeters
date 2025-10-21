@@ -1,4 +1,5 @@
 use super::palette::{PaletteEditor, PaletteEvent};
+use super::widgets::{SliderRange, labeled_slider};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::waveform::{
     DownsampleStrategy, MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, WaveformConfig,
@@ -7,7 +8,7 @@ use crate::ui::settings::{ModuleSettings, PaletteSettings, SettingsHandle, Wavef
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
-use iced::widget::{column, pick_list, row, slider, text};
+use iced::widget::{column, pick_list, text};
 use std::fmt;
 
 #[derive(Debug)]
@@ -19,14 +20,10 @@ pub struct WaveformSettingsPane {
 
 impl fmt::Display for DownsampleStrategy {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match self {
-                DownsampleStrategy::MinMax => "Min/Max",
-                DownsampleStrategy::Average => "Average",
-            }
-        )
+        f.write_str(match self {
+            DownsampleStrategy::MinMax => "Min/Max",
+            DownsampleStrategy::Average => "Average",
+        })
     }
 }
 
@@ -63,20 +60,13 @@ impl ModuleSettingsPane for WaveformSettingsPane {
 
     fn view(&self) -> Element<'_, SettingsMessage> {
         column![
-            column![
-                row![
-                    text("Scroll speed"),
-                    text(format!("{:.0} px/s", self.config.scroll_speed)).size(12)
-                ]
-                .spacing(8),
-                slider::Slider::new(
-                    MIN_SCROLL_SPEED..=MAX_SCROLL_SPEED,
-                    self.config.scroll_speed,
-                    |v| SettingsMessage::Waveform(Message::ScrollSpeed(v))
-                )
-                .step(1.0),
-            ]
-            .spacing(8),
+            labeled_slider(
+                "Scroll speed",
+                self.config.scroll_speed,
+                format!("{:.0} px/s", self.config.scroll_speed),
+                SliderRange::new(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED, 1.0),
+                |v| SettingsMessage::Waveform(Message::ScrollSpeed(v)),
+            ),
             column![
                 text("Downsampling strategy"),
                 pick_list(
@@ -114,12 +104,15 @@ impl ModuleSettingsPane for WaveformSettingsPane {
                     false
                 }
             }
-            Message::Downsample(d) if self.config.downsample != *d => {
-                self.config.downsample = *d;
-                true
+            Message::Downsample(d) => {
+                if self.config.downsample != *d {
+                    self.config.downsample = *d;
+                    true
+                } else {
+                    false
+                }
             }
             Message::Palette(e) => self.palette.update(*e),
-            _ => false,
         };
 
         if changed {

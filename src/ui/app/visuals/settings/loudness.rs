@@ -1,9 +1,10 @@
+use super::widgets::{CONTROL_SPACING, labeled_pick_list};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::ui::settings::{LoudnessSettings, ModuleSettings, SettingsHandle};
 use crate::ui::visualization::loudness::MeterMode;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
-use iced::widget::{column, pick_list, text};
-use iced::{Element, Length};
+use iced::Element;
+use iced::widget::column;
 
 #[derive(Debug)]
 pub struct LoudnessSettingsPane {
@@ -13,8 +14,13 @@ pub struct LoudnessSettingsPane {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    LeftMode(MeterMode),
-    RightMode(MeterMode),
+    Mode(MeterSide, MeterMode),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeterSide {
+    Left,
+    Right,
 }
 
 pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> LoudnessSettingsPane {
@@ -36,25 +42,23 @@ impl ModuleSettingsPane for LoudnessSettingsPane {
     }
 
     fn view(&self) -> Element<'_, SettingsMessage> {
-        column![
-            column![
-                text("Left meter mode"),
-                pick_list(MeterMode::ALL, Some(self.settings.left_mode), |mode| {
-                    SettingsMessage::Loudness(Message::LeftMode(mode))
-                })
-            ]
-            .spacing(8),
-            column![
-                text("Right meter mode"),
-                pick_list(MeterMode::ALL, Some(self.settings.right_mode), |mode| {
-                    SettingsMessage::Loudness(Message::RightMode(mode))
-                })
-            ]
-            .spacing(8),
-        ]
-        .spacing(16)
-        .width(Length::Fill)
-        .into()
+        let left_mode = labeled_pick_list(
+            "Left meter mode",
+            MeterMode::ALL,
+            Some(self.settings.left_mode),
+            |mode| SettingsMessage::Loudness(Message::Mode(MeterSide::Left, mode)),
+        )
+        .spacing(CONTROL_SPACING);
+
+        let right_mode = labeled_pick_list(
+            "Right meter mode",
+            MeterMode::ALL,
+            Some(self.settings.right_mode),
+            |mode| SettingsMessage::Loudness(Message::Mode(MeterSide::Right, mode)),
+        )
+        .spacing(CONTROL_SPACING);
+
+        column![left_mode, right_mode].spacing(16).into()
     }
 
     fn handle(
@@ -68,22 +72,7 @@ impl ModuleSettingsPane for LoudnessSettingsPane {
         };
 
         let changed = match msg {
-            Message::LeftMode(mode) => {
-                if self.settings.left_mode != *mode {
-                    self.settings.left_mode = *mode;
-                    true
-                } else {
-                    false
-                }
-            }
-            Message::RightMode(mode) => {
-                if self.settings.right_mode != *mode {
-                    self.settings.right_mode = *mode;
-                    true
-                } else {
-                    false
-                }
-            }
+            Message::Mode(side, mode) => self.set_meter_mode(*side, *mode),
         };
 
         if changed {
@@ -93,6 +82,20 @@ impl ModuleSettingsPane for LoudnessSettingsPane {
 }
 
 impl LoudnessSettingsPane {
+    fn set_meter_mode(&mut self, side: MeterSide, mode: MeterMode) -> bool {
+        let target = match side {
+            MeterSide::Left => &mut self.settings.left_mode,
+            MeterSide::Right => &mut self.settings.right_mode,
+        };
+
+        if *target == mode {
+            return false;
+        }
+
+        *target = mode;
+        true
+    }
+
     fn push_changes(&self, visual_manager: &VisualManagerHandle, settings_handle: &SettingsHandle) {
         let module_settings = ModuleSettings::with_loudness_settings(self.settings);
 
@@ -100,9 +103,8 @@ impl LoudnessSettingsPane {
             .borrow_mut()
             .apply_module_settings(VisualKind::LOUDNESS, &module_settings)
         {
-            let updated = self.settings;
             settings_handle.update(|mgr| {
-                mgr.set_loudness_settings(VisualKind::LOUDNESS, updated);
+                mgr.set_loudness_settings(VisualKind::LOUDNESS, self.settings);
             });
         }
     }

@@ -1,3 +1,4 @@
+use super::widgets::{SliderRange, labeled_slider, set_f32};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::ui::settings::{ModuleSettings, OscilloscopeSettings, SettingsHandle};
 use crate::ui::visualization::oscilloscope::DisplayMode;
@@ -58,34 +59,20 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
                 )
             ]
             .spacing(8),
-            column![
-                row![
-                    text("Segment duration"),
-                    text(format!(
-                        "{:.1} ms",
-                        self.settings.segment_duration * 1_000.0
-                    ))
-                    .size(12)
-                ]
-                .spacing(8),
-                slider(0.005..=0.1, self.settings.segment_duration, |value| {
-                    SettingsMessage::Oscilloscope(Message::SegmentDuration(value))
-                })
-                .step(0.001)
-            ]
-            .spacing(8),
-            column![
-                row![
-                    text("Persistence"),
-                    text(format!("{:.2}", self.settings.persistence)).size(12)
-                ]
-                .spacing(8),
-                slider(0.0..=1.0, self.settings.persistence, |value| {
-                    SettingsMessage::Oscilloscope(Message::Persistence(value))
-                })
-                .step(0.01)
-            ]
-            .spacing(8),
+            labeled_slider(
+                "Segment duration",
+                self.settings.segment_duration,
+                format!("{:.1} ms", self.settings.segment_duration * 1_000.0),
+                SliderRange::new(0.005, 0.1, 0.001),
+                |value| SettingsMessage::Oscilloscope(Message::SegmentDuration(value)),
+            ),
+            labeled_slider(
+                "Persistence",
+                self.settings.persistence,
+                format!("{:.2}", self.settings.persistence),
+                SliderRange::new(0.0, 1.0, 0.01),
+                |value| SettingsMessage::Oscilloscope(Message::Persistence(value)),
+            ),
             column![
                 text("Trigger"),
                 row![
@@ -123,31 +110,13 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
 
         let changed = match msg {
             Message::SegmentDuration(value) => {
-                let new = value.clamp(0.005, 0.1);
-                if (self.settings.segment_duration - new).abs() > f32::EPSILON {
-                    self.settings.segment_duration = new;
-                    true
-                } else {
-                    false
-                }
+                set_f32(&mut self.settings.segment_duration, value.clamp(0.005, 0.1))
             }
             Message::TriggerLevel(value) => {
-                let new = value.clamp(0.0, 1.0);
-                if (self.settings.trigger_level - new).abs() > f32::EPSILON {
-                    self.settings.trigger_level = new;
-                    true
-                } else {
-                    false
-                }
+                set_f32(&mut self.settings.trigger_level, value.clamp(0.0, 1.0))
             }
             Message::Persistence(value) => {
-                let new = value.clamp(0.0, 1.0);
-                if (self.settings.persistence - new).abs() > f32::EPSILON {
-                    self.settings.persistence = new;
-                    true
-                } else {
-                    false
-                }
+                set_f32(&mut self.settings.persistence, value.clamp(0.0, 1.0))
             }
             Message::TriggerMode(rising) => {
                 if self.settings.trigger_rising != *rising {

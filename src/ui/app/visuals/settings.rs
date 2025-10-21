@@ -1,5 +1,5 @@
 //! Contains the settings panes for visual modules.
-//! Each module in ./settings corresponds to a module in ../../visualization.
+//! MOST modules in ./settings correspond to a module in ../../visualization.
 
 mod loudness;
 mod oscilloscope;
@@ -7,6 +7,7 @@ mod palette;
 mod spectrogram;
 mod spectrum;
 mod waveform;
+mod widgets;
 
 use crate::ui::settings::SettingsHandle;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};

@@ -333,24 +333,7 @@ fn header_button_style(
     _theme: &iced::Theme,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
-    let mut style = iced::widget::button::Style {
-        background: Some(iced::Background::Color(theme::surface_color())),
-        text_color: theme::text_color(),
-        border: theme::sharp_border(),
-        ..Default::default()
-    };
-
-    match status {
-        iced::widget::button::Status::Hovered => {
-            style.background = Some(iced::Background::Color(theme::hover_color()));
-        }
-        iced::widget::button::Status::Pressed => {
-            style.border = theme::focus_border();
-        }
-        _ => {}
-    }
-
-    style
+    theme::surface_button_style(status)
 }
 
 struct RegistrySubscription {

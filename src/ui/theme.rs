@@ -2,7 +2,8 @@
 
 use iced::border::Border;
 use iced::theme::palette::{self, Extended, Pair};
-use iced::{Color, Theme};
+use iced::widget::button;
+use iced::{Background, Color, Theme};
 
 // Core palette stops
 const BG_BASE: Color = Color::from_rgb(0.059, 0.063, 0.071); // #0f1012
@@ -166,6 +167,33 @@ pub fn focus_border() -> Border {
         width: 1.0,
         radius: 0.0.into(),
     }
+}
+
+/// Builds a button style using the provided base background color.
+pub fn button_style(base: Color, status: button::Status) -> button::Style {
+    let mut style = button::Style {
+        background: Some(Background::Color(base)),
+        text_color: text_color(),
+        border: sharp_border(),
+        ..Default::default()
+    };
+
+    match status {
+        button::Status::Hovered => {
+            style.background = Some(Background::Color(hover_color()));
+        }
+        button::Status::Pressed => {
+            style.border = focus_border();
+        }
+        _ => {}
+    }
+
+    style
+}
+
+/// Convenience helper for surface-colored buttons.
+pub fn surface_button_style(status: button::Status) -> button::Style {
+    button_style(surface_color(), status)
 }
 
 // Color utilities

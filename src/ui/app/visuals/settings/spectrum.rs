@@ -1,10 +1,11 @@
+use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
 use crate::ui::settings::{ModuleSettings, SettingsHandle};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
-use iced::widget::{column, pick_list, row, slider, text};
+use iced::widget::column;
 
 const AVERAGING_MIN: f32 = 0.0;
 const AVERAGING_MAX: f32 = 0.95;
@@ -54,34 +55,29 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
     }
 
     fn view(&self) -> Element<'_, SettingsMessage> {
-        let fft_pick = pick_list(FFT_OPTIONS.to_vec(), Some(self.config.fft_size), |size| {
-            SettingsMessage::Spectrum(Message::FftSize(size))
-        });
+        let fft_row = labeled_pick_list(
+            "FFT size",
+            FFT_OPTIONS.as_slice(),
+            Some(self.config.fft_size),
+            |size| SettingsMessage::Spectrum(Message::FftSize(size)),
+        )
+        .spacing(12);
 
-        let fft_row = row![text("FFT size"), fft_pick].spacing(12);
-
-        let scale_pick = pick_list(
-            SCALE_OPTIONS.to_vec(),
+        let scale_row = labeled_pick_list(
+            "Frequency scale",
+            SCALE_OPTIONS.as_slice(),
             Some(self.config.frequency_scale),
             |scale| SettingsMessage::Spectrum(Message::FrequencyScale(scale)),
+        )
+        .spacing(12);
+
+        let averaging = labeled_slider(
+            "Averaging",
+            self.averaging_factor,
+            format!("{:.2}", self.averaging_factor),
+            SliderRange::new(AVERAGING_MIN, AVERAGING_MAX, 0.01),
+            |value| SettingsMessage::Spectrum(Message::Averaging(value)),
         );
-
-        let scale_row = row![text("Frequency scale"), scale_pick].spacing(12);
-
-        let averaging = column![
-            row![
-                text("Averaging"),
-                text(format!("{:.2}", self.averaging_factor)).size(12)
-            ]
-            .spacing(8),
-            slider::Slider::new(
-                AVERAGING_MIN..=AVERAGING_MAX,
-                self.averaging_factor,
-                |value| SettingsMessage::Spectrum(Message::Averaging(value)),
-            )
-            .step(0.01)
-        ]
-        .spacing(8);
 
         column![fft_row, scale_row, averaging].spacing(16).into()
     }
@@ -97,15 +93,18 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
         };
 
         let changed = match msg {
-            Message::FftSize(size) if self.config.fft_size != *size => {
-                self.config.fft_size = *size;
-                self.config.hop_size = (size / 4).max(1);
-                true
+            Message::FftSize(size) => {
+                if self.config.fft_size != *size {
+                    self.config.fft_size = *size;
+                    self.config.hop_size = (size / 4).max(1);
+                    true
+                } else {
+                    false
+                }
             }
             Message::Averaging(value) => {
                 let clamped = value.clamp(AVERAGING_MIN, AVERAGING_MAX);
-                if (self.averaging_factor - clamped).abs() > f32::EPSILON {
-                    self.averaging_factor = clamped;
+                if set_f32(&mut self.averaging_factor, clamped) {
                     self.config.averaging = AveragingMode::Exponential {
                         factor: self.averaging_factor,
                     };
@@ -114,11 +113,14 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                     false
                 }
             }
-            Message::FrequencyScale(scale) if self.config.frequency_scale != *scale => {
-                self.config.frequency_scale = *scale;
-                true
+            Message::FrequencyScale(scale) => {
+                if self.config.frequency_scale != *scale {
+                    self.config.frequency_scale = *scale;
+                    true
+                } else {
+                    false
+                }
             }
-            _ => false,
         };
 
         if changed {

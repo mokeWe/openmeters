@@ -566,48 +566,14 @@ fn tab_button_style(
     } else {
         theme::surface_color()
     };
-    let mut style = iced::widget::button::Style {
-        background: Some(Background::Color(base_background)),
-        text_color: theme::text_color(),
-        border: theme::sharp_border(),
-        ..Default::default()
-    };
-
-    match status {
-        iced::widget::button::Status::Hovered => {
-            style.background = Some(Background::Color(theme::hover_color()));
-        }
-        iced::widget::button::Status::Pressed => {
-            style.border = theme::focus_border();
-        }
-        _ => {}
-    }
-
-    style
+    theme::button_style(base_background, status)
 }
 
 fn settings_button_style(
     _theme: &iced::Theme,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
-    let mut style = iced::widget::button::Style {
-        background: Some(Background::Color(theme::surface_color())),
-        text_color: theme::text_color(),
-        border: theme::sharp_border(),
-        ..Default::default()
-    };
-
-    match status {
-        iced::widget::button::Status::Hovered => {
-            style.background = Some(Background::Color(theme::hover_color()));
-        }
-        iced::widget::button::Status::Pressed => {
-            style.border = theme::focus_border();
-        }
-        _ => {}
-    }
-
-    style
+    theme::surface_button_style(status)
 }
 
 fn settings_panel_style(_theme: &iced::Theme) -> iced::widget::container::Style {
