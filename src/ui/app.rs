@@ -11,9 +11,9 @@ pub mod config;
 pub mod visuals;
 
 use crate::audio::pw_registry::RegistrySnapshot;
+use crate::ui::channel_subscription::channel_subscription;
 use crate::ui::settings::SettingsHandle;
 use crate::ui::theme;
-use crate::ui::visualization::audio_stream::AudioStreamSubscription;
 use crate::ui::visualization::visual_manager::{
     VisualId, VisualKind, VisualManager, VisualManagerHandle, VisualSnapshot,
 };
@@ -23,7 +23,6 @@ use visuals::{
     ActiveSettings, SettingsMessage, VisualsMessage, VisualsPage, create_settings_panel,
 };
 
-use iced::advanced::subscription::from_recipe;
 use iced::alignment::Horizontal;
 use iced::keyboard::{self, Key};
 use iced::widget::{button, column, container, horizontal_space, row, scrollable, text};
@@ -255,10 +254,7 @@ impl UiApp {
         let mut subscriptions = vec![page_subscription];
 
         if let Some(receiver) = &self.audio_frames {
-            subscriptions.push(
-                from_recipe(AudioStreamSubscription::new(Arc::clone(receiver)))
-                    .map(Message::AudioFrame),
-            );
+            subscriptions.push(channel_subscription(Arc::clone(receiver)).map(Message::AudioFrame));
         }
 
         subscriptions.push(window::close_events().map(Message::WindowClosed));

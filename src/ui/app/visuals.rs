@@ -4,8 +4,8 @@
 use crate::ui::pane_grid::{self, Content as PaneContent, Pane};
 use crate::ui::settings::SettingsHandle;
 use crate::ui::visualization::visual_manager::{
-    VisualContent, VisualId, VisualKind, VisualLayoutHint, VisualManagerHandle, VisualMetadata,
-    VisualSlotSnapshot, VisualSnapshot,
+    VisualContent, VisualId, VisualKind, VisualManagerHandle, VisualMetadata, VisualSlotSnapshot,
+    VisualSnapshot,
 };
 use crate::ui::visualization::{loudness, oscilloscope, spectrogram, spectrum, waveform};
 mod settings;
@@ -34,7 +34,6 @@ struct VisualPane {
     kind: VisualKind,
     metadata: VisualMetadata,
     content: VisualContent,
-    layout_hint: VisualLayoutHint,
 }
 
 impl VisualPane {
@@ -44,7 +43,6 @@ impl VisualPane {
             kind: snapshot.kind,
             metadata: snapshot.metadata,
             content: snapshot.content.clone(),
-            layout_hint: snapshot.layout_hint,
         }
     }
 
@@ -53,8 +51,8 @@ impl VisualPane {
             VisualContent::LoudnessMeter { state } => {
                 let meter = loudness::widget_with_layout(
                     state,
-                    self.layout_hint.preferred_width,
-                    self.layout_hint.preferred_height,
+                    self.metadata.preferred_width,
+                    self.metadata.preferred_height,
                 );
                 Element::from(
                     container(meter)
@@ -102,16 +100,16 @@ impl VisualPane {
             }
         };
 
-        let target_width = self.layout_hint.preferred_width;
-        let target_height = self.layout_hint.preferred_height;
+        let target_width = self.metadata.preferred_width;
+        let target_height = self.metadata.preferred_height;
 
-        let width = if self.layout_hint.fill_horizontal {
+        let width = if self.metadata.fill_horizontal {
             Length::Fill
         } else {
             Length::Fixed(target_width)
         };
 
-        let height = if self.layout_hint.fill_vertical {
+        let height = if self.metadata.fill_vertical {
             Length::Fill
         } else {
             Length::Fixed(target_height)
@@ -130,9 +128,9 @@ impl VisualPane {
             .align_y(Vertical::Center);
 
         PaneContent::new(element).with_width_hint(
-            self.layout_hint.min_width,
-            self.layout_hint.preferred_width,
-            self.layout_hint.max_width,
+            self.metadata.min_width,
+            self.metadata.preferred_width,
+            self.metadata.max_width,
         )
     }
 }
@@ -254,7 +252,7 @@ impl VisualsPage {
             panes.for_each_mut(|_, pane_state| {
                 if let Some(slot) = slot_map.get(&pane_state.id) {
                     pane_state.content = slot.content.clone();
-                    pane_state.layout_hint = slot.layout_hint;
+                    pane_state.metadata = slot.metadata;
                 }
             });
         }

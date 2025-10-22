@@ -109,7 +109,6 @@ impl Default for FrequencyScale {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum WindowKind {
@@ -349,39 +348,10 @@ fn modified_bessel_i1(x: f64) -> f64 {
     }
 }
 
-/// Estimate the Kaiser beta parameter for a target stop-band attenuation in dB.
-#[allow(dead_code)]
-pub fn kaiser_beta_from_attenuation_db(atten_db: f32) -> f32 {
-    match atten_db {
-        a if a <= 21.0 => 0.0,
-        a if a <= 50.0 => {
-            let term = a - 21.0;
-            0.5842 * term.powf(0.4) + 0.07886 * term
-        }
-        a => 0.1102 * (a - 8.7),
-    }
-}
-
-/// Approximate minimum window length that satisfies attenuation and transition width specs.
-#[allow(dead_code)]
-pub fn kaiser_length_estimate(atten_db: f32, transition_width: f32) -> usize {
-    if transition_width <= 0.0 || !transition_width.is_finite() {
-        return 1;
-    }
-    let n = ((atten_db.max(0.0) - 8.0) / (2.285 * transition_width) + 1.0).ceil();
-    if !n.is_finite() || n <= 1.0 {
-        1
-    } else {
-        n as usize
-    }
-}
-
 /// Reassigned sample containing high-resolution time-frequency localization.
-#[derive(Debug, Clone, Copy)]
 #[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
 pub struct ReassignedSample {
-    /// Time offset relative to the column timestamp, in seconds.
-    pub time_offset_sec: f32,
     /// Reassigned instantaneous frequency in Hz.
     pub frequency_hz: f32,
     /// Log-power magnitude in dBFS.
@@ -389,8 +359,8 @@ pub struct ReassignedSample {
 }
 
 /// One column of log-power magnitudes, with optional reassigned samples.
-#[derive(Debug, Clone)]
 #[allow(dead_code)]
+#[derive(Debug, Clone)]
 pub struct SpectrogramColumn {
     pub timestamp: Instant,
     pub magnitudes_db: Arc<[f32]>,
@@ -399,8 +369,8 @@ pub struct SpectrogramColumn {
 }
 
 /// Incremental update emitted by the spectrogram processor.
-#[derive(Debug, Clone)]
 #[allow(dead_code)]
+#[derive(Debug, Clone)]
 pub struct SpectrogramUpdate {
     pub fft_size: usize,
     pub hop_size: usize,
@@ -715,13 +685,10 @@ pub struct SpectrogramProcessor {
     window_size: usize,
     fft_size: usize,
     window: Arc<[f32]>,
-    time_weight_window: Vec<f32>,
     derivative_window: Vec<f32>,
     real_buffer: Vec<f32>,
-    time_weight_buffer: Vec<f32>,
     derivative_buffer: Vec<f32>,
     spectrum_buffer: Vec<Complex32>,
-    time_spectrum_buffer: Vec<Complex32>,
     derivative_spectrum_buffer: Vec<Complex32>,
     scratch_buffer: Vec<Complex32>,
     magnitude_buffer: Vec<f32>,
@@ -759,15 +726,12 @@ impl SpectrogramProcessor {
 
         let mut planner = RealFftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(fft_size);
-        let window = WindowCache::global().get(runtime_config.window, window_size);
-        let time_weight_window = compute_time_weight_window(window.as_ref());
+    let window = WindowCache::global().get(runtime_config.window, window_size);
         let derivative_window = compute_derivative_window(runtime_config.window, window.as_ref());
 
         let real_buffer = vec![0.0; fft_size];
-        let time_weight_buffer = vec![0.0; fft_size];
         let derivative_buffer = vec![0.0; fft_size];
         let spectrum_buffer = fft.make_output_vec();
-        let time_spectrum_buffer = fft.make_output_vec();
         let derivative_spectrum_buffer = fft.make_output_vec();
         let scratch_buffer = fft.make_scratch_vec();
         let magnitude_buffer = vec![0.0; bins];
@@ -791,13 +755,10 @@ impl SpectrogramProcessor {
             window_size,
             fft_size,
             window,
-            time_weight_window,
             derivative_window,
             real_buffer,
-            time_weight_buffer,
             derivative_buffer,
             spectrum_buffer,
-            time_spectrum_buffer,
             derivative_spectrum_buffer,
             scratch_buffer,
             magnitude_buffer,
@@ -844,16 +805,13 @@ impl SpectrogramProcessor {
 
         self.fft = self.planner.plan_fft_forward(fft_size);
         self.window = WindowCache::global().get(self.config.window, window_size);
-        self.time_weight_window = compute_time_weight_window(self.window.as_ref());
         self.derivative_window =
             compute_derivative_window(self.config.window, self.window.as_ref());
 
         self.real_buffer.resize(fft_size, 0.0);
-        self.time_weight_buffer.resize(fft_size, 0.0);
         self.derivative_buffer.resize(fft_size, 0.0);
 
         self.spectrum_buffer = self.fft.make_output_vec();
-        self.time_spectrum_buffer = self.fft.make_output_vec();
         self.derivative_spectrum_buffer = self.fft.make_output_vec();
         self.scratch_buffer = self.fft.make_scratch_vec();
 
@@ -948,10 +906,8 @@ impl SpectrogramProcessor {
 
                 if reassignment_enabled {
                     for (idx, &raw) in window_input.iter().enumerate() {
-                        self.time_weight_buffer[idx] = raw * self.time_weight_window[idx];
                         self.derivative_buffer[idx] = raw * self.derivative_window[idx];
                     }
-                    self.time_weight_buffer[window_size..fft_size].fill(0.0);
                     self.derivative_buffer[window_size..fft_size].fill(0.0);
                 }
 
@@ -971,13 +927,6 @@ impl SpectrogramProcessor {
                 .expect("real FFT forward transform");
 
             if reassignment_enabled {
-                self.fft
-                    .process_with_scratch(
-                        &mut self.time_weight_buffer,
-                        &mut self.time_spectrum_buffer,
-                        &mut self.scratch_buffer,
-                    )
-                    .expect("time-weighted FFT");
                 self.fft
                     .process_with_scratch(
                         &mut self.derivative_buffer,
@@ -1108,16 +1057,9 @@ impl SpectrogramProcessor {
             let energy_power = power * energy_scale;
 
             let base_conj = base.conj();
-            let cross_time = self.time_spectrum_buffer[k] * base_conj;
             let cross_freq = self.derivative_spectrum_buffer[k] * base_conj;
 
             let denom = f64::from(power.max(POWER_EPSILON));
-
-            let mut delta_n = -f64::from(cross_time.re) / denom;
-            if !delta_n.is_finite() {
-                continue;
-            }
-            delta_n = delta_n.clamp(-(self.window_size as f64), self.window_size as f64);
 
             let mut delta_omega = -f64::from(cross_freq.im) / denom;
             if !delta_omega.is_finite() {
@@ -1155,9 +1097,7 @@ impl SpectrogramProcessor {
                 self.synchro.accumulate(freq_hz, display_power);
             }
 
-            let time_offset_sec = (delta_n / sample_rate_f64) as f32;
             samples.push(ReassignedSample {
-                time_offset_sec,
                 frequency_hz: freq_hz as f32,
                 magnitude_db,
             });
@@ -1443,18 +1383,6 @@ fn acquire_from_pool(pool: &mut Vec<Arc<[f32]>>, bins: usize, default: f32) -> A
         .rposition(|buffer| buffer.len() == bins)
         .map(|idx| pool.swap_remove(idx))
         .unwrap_or_else(|| Arc::from(vec![default; bins]))
-}
-
-fn compute_time_weight_window(window: &[f32]) -> Vec<f32> {
-    if window.is_empty() {
-        return Vec::new();
-    }
-    let center = (window.len() - 1) as f32 * 0.5;
-    window
-        .iter()
-        .enumerate()
-        .map(|(idx, &c)| (idx as f32 - center) * c)
-        .collect()
 }
 
 fn compute_derivative_window(kind: WindowKind, window: &[f32]) -> Vec<f32> {

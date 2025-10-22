@@ -173,14 +173,8 @@ impl SpectrumState {
         }
     }
 
-    #[allow(dead_code)]
     pub fn style_mut(&mut self) -> &mut SpectrumStyle {
         &mut self.style
-    }
-
-    #[allow(dead_code)]
-    pub fn peak_frequency_hz(&self) -> Option<f32> {
-        self.peak_frequency_hz
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &SpectrumSnapshot) {

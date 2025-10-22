@@ -99,17 +99,6 @@ pub struct VisualMetadata {
     pub max_width: f32,
 }
 
-/// Layout hints surfaced to pane planners.
-#[derive(Debug, Clone, Copy)]
-pub struct VisualLayoutHint {
-    pub preferred_width: f32,
-    pub preferred_height: f32,
-    pub fill_horizontal: bool,
-    pub fill_vertical: bool,
-    pub min_width: f32,
-    pub max_width: f32,
-}
-
 /// Aggregate snapshot of all visual slots.
 #[derive(Debug, Clone)]
 pub struct VisualSnapshot {
@@ -123,7 +112,6 @@ pub struct VisualSlotSnapshot {
     pub kind: VisualKind,
     pub enabled: bool,
     pub metadata: VisualMetadata,
-    pub layout_hint: VisualLayoutHint,
     pub content: VisualContent,
 }
 
@@ -167,17 +155,6 @@ impl VisualSlot {
             kind: descriptor.kind,
             enabled: descriptor.default_enabled,
             metadata: descriptor.metadata,
-        }
-    }
-
-    fn layout_hint(&self) -> VisualLayoutHint {
-        VisualLayoutHint {
-            preferred_width: self.metadata.preferred_width,
-            preferred_height: self.metadata.preferred_height,
-            fill_horizontal: self.metadata.fill_horizontal,
-            fill_vertical: self.metadata.fill_vertical,
-            min_width: self.metadata.min_width,
-            max_width: self.metadata.max_width,
         }
     }
 }
@@ -580,7 +557,6 @@ impl VisualManager {
                 kind: entry.slot.kind,
                 enabled: entry.slot.enabled,
                 metadata: entry.slot.metadata,
-                layout_hint: entry.slot.layout_hint(),
                 content: entry.module.content(),
             });
         }

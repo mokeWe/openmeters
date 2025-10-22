@@ -4,18 +4,16 @@
 use crate::audio::VIRTUAL_SINK_NAME;
 use crate::audio::pw_registry::RegistrySnapshot;
 use crate::ui::application_row::ApplicationRow;
+use crate::ui::channel_subscription::channel_subscription;
 use crate::ui::hardware_sink::HardwareSinkCache;
 use crate::ui::settings::SettingsHandle;
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;
-use iced::advanced::subscription::{EventStream, Hasher, Recipe, from_recipe};
 use iced::alignment;
-use iced::futures::{self, StreamExt};
 use iced::widget::{Column, Row, Space, button, container, scrollable, text};
 use iced::{Element, Length, Subscription, Task};
 use std::collections::{HashMap, HashSet};
-use std::hash::Hasher as _;
 use std::sync::{Arc, mpsc};
 
 const GRID_COLUMNS: usize = 4;
@@ -70,9 +68,7 @@ impl ConfigPage {
         self.registry_updates
             .as_ref()
             .map(|receiver| {
-                from_recipe(RegistrySubscription {
-                    receiver: Arc::clone(receiver),
-                })
+                channel_subscription(Arc::clone(receiver)).map(ConfigMessage::RegistryUpdated)
             })
             .unwrap_or_else(Subscription::none)
     }
@@ -334,30 +330,4 @@ fn header_button_style(
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
     theme::surface_button_style(status)
-}
-
-struct RegistrySubscription {
-    receiver: Arc<AsyncReceiver<RegistrySnapshot>>,
-}
-
-impl Recipe for RegistrySubscription {
-    type Output = ConfigMessage;
-
-    fn hash(&self, state: &mut Hasher) {
-        let ptr = Arc::as_ptr(&self.receiver) as usize;
-        state.write(&ptr.to_ne_bytes());
-    }
-
-    fn stream(
-        self: Box<Self>,
-        _input: EventStream,
-    ) -> futures::stream::BoxStream<'static, Self::Output> {
-        futures::stream::unfold(self.receiver, |receiver| async move {
-            match receiver.recv().await {
-                Ok(snapshot) => Some((ConfigMessage::RegistryUpdated(snapshot), receiver)),
-                Err(_) => None,
-            }
-        })
-        .boxed()
-    }
 }

@@ -99,7 +99,6 @@ impl SpectrogramProcessor {
         self.inner.process_block(&block)
     }
 
-    #[allow(dead_code)]
     pub fn update_config(&mut self, config: SpectrogramConfig) {
         self.inner.update_config(config);
     }
@@ -149,50 +148,6 @@ impl SpectrogramState {
             history_length: default_cfg.history_length,
             synchro_bins_hz: None,
             instance_id: next_instance_id(),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn set_style(&mut self, style: SpectrogramStyle) {
-        if self.style == style {
-            return;
-        }
-
-        let floor_changed = (self.style.floor_db - style.floor_db).abs() > f32::EPSILON;
-        let ceiling_changed = (self.style.ceiling_db - style.ceiling_db).abs() > f32::EPSILON;
-        let contrast_changed = (self.style.contrast - style.contrast).abs() > f32::EPSILON;
-
-        self.style = style;
-        self.palette_cache.borrow_mut().dirty = true;
-
-        if floor_changed || ceiling_changed {
-            let use_synchro = {
-                let buffer = self.buffer.borrow();
-                buffer.using_synchro()
-            };
-            let synchro_bins = if use_synchro {
-                self.synchro_bins_hz.as_deref()
-            } else {
-                None
-            };
-            self.buffer.borrow_mut().rebuild_from_history(
-                &self.history,
-                RebuildContext {
-                    style: &self.style,
-                    history_length: self.history_length,
-                    sample_rate: self.sample_rate,
-                    fft_size: self.fft_size,
-                    frequency_scale: self.frequency_scale,
-                    use_synchro,
-                    synchro_bins_hz: synchro_bins,
-                },
-            );
-        } else {
-            self.buffer.borrow_mut().mark_dirty();
-        }
-
-        if contrast_changed && !(floor_changed || ceiling_changed) {
-            self.buffer.borrow_mut().mark_dirty();
         }
     }
 
@@ -514,6 +469,7 @@ impl SpectrogramBuffer {
         self.column_count
     }
 
+    #[cfg(test)]
     fn using_synchro(&self) -> bool {
         self.using_synchro
     }
@@ -587,24 +543,6 @@ impl SpectrogramBuffer {
         } else if self.pending_base.is_none() || !self.pending_updates.is_empty() {
             self.queue_full_refresh();
         }
-    }
-
-    #[allow(dead_code)]
-    fn reset(&mut self) {
-        self.capacity = 0;
-        self.height = 0;
-        self.values.clear();
-        self.write_index = 0;
-        self.column_count = 0;
-        self.last_timestamp = None;
-        self.clear_pending();
-        self.row_bin_positions.clear();
-        self.row_lower_bins.clear();
-        self.row_upper_bins.clear();
-        self.row_interp_weights.clear();
-        self.using_synchro = false;
-        self.grid_bin_frequencies.clear();
-        self.update_buffer_pool = ColumnBufferPool::new();
     }
 
     fn rebuild_from_history(

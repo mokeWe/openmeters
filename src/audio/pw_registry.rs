@@ -718,9 +718,6 @@ fn process_metadata_added(
         return;
     }
 
-    let props = dict_to_map(global.props.as_ref().copied());
-    let metadata_name = props.get("metadata.name").cloned();
-
     let metadata = match registry.bind::<Metadata, _>(global) {
         Ok(metadata) => metadata,
         Err(err) => {
@@ -750,7 +747,6 @@ fn process_metadata_added(
         MetadataBinding {
             _proxy: metadata,
             _listener: listener,
-            name: metadata_name,
         },
     );
 }
@@ -772,8 +768,6 @@ fn handle_metadata_property(
 struct MetadataBinding {
     _proxy: Metadata,
     _listener: MetadataListener,
-    #[allow(dead_code)]
-    name: Option<String>,
 }
 
 #[cfg(test)]
