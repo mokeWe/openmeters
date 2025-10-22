@@ -726,7 +726,7 @@ impl SpectrogramProcessor {
 
         let mut planner = RealFftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(fft_size);
-    let window = WindowCache::global().get(runtime_config.window, window_size);
+        let window = WindowCache::global().get(runtime_config.window, window_size);
         let derivative_window = compute_derivative_window(runtime_config.window, window.as_ref());
 
         let real_buffer = vec![0.0; fft_size];
