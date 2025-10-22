@@ -1,12 +1,12 @@
 //! Rendering code for the loudness meters.
 
-use bytemuck::{Pod, Zeroable};
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{Primitive, Storage};
 use iced_wgpu::wgpu;
 use std::collections::HashMap;
-use std::mem;
+
+use crate::ui::render::common::{ClipTransform, SimplePipeline, SimpleVertex, quad_vertices};
 
 const VALUE_SCALE_BASE: &[(f32, f32)] = &[
     (0.0, 0.0),
@@ -216,7 +216,7 @@ impl LoudnessMeterPrimitive {
         self as *const Self as usize
     }
 
-    fn build_vertices(&self, bounds: &Rectangle, viewport: &Viewport) -> Vec<Vertex> {
+    fn build_vertices(&self, bounds: &Rectangle, viewport: &Viewport) -> Vec<SimpleVertex> {
         let Some(layout) = LayoutContext::new(bounds, viewport, &self.params) else {
             return Vec::new();
         };
@@ -241,12 +241,9 @@ struct LayoutContext {
 
 impl LayoutContext {
     fn new(bounds: &Rectangle, viewport: &Viewport, params: &VisualParams) -> Option<Self> {
-        let viewport_size = viewport.logical_size();
-        let viewport_width = viewport_size.width.max(1.0);
-        let viewport_height = viewport_size.height.max(1.0);
         let (y0, y1) = params.vertical_bounds(bounds)?;
         let geometry = params.meter_geometry(bounds)?;
-        let clip = ClipTransform::new(viewport_width, viewport_height);
+        let clip = ClipTransform::from_viewport(viewport);
         let height = y1 - y0;
         if height <= f32::EPSILON {
             return None;
@@ -280,7 +277,7 @@ impl LayoutContext {
         (bar_x0, bar_x1)
     }
 
-    fn push_channel_vertices(&self, vertices: &mut Vec<Vertex>, params: &VisualParams) {
+    fn push_channel_vertices(&self, vertices: &mut Vec<SimpleVertex>, params: &VisualParams) {
         for (index, channel) in params.channels.iter().enumerate() {
             let (bar_x0, bar_x1) = self.bar_span(index);
             vertices.extend(quad_vertices(
@@ -339,7 +336,7 @@ impl LayoutContext {
         desired_gap.clamp(min_gap, max_gap)
     }
 
-    fn push_guide_vertices(&self, vertices: &mut Vec<Vertex>, params: &VisualParams) {
+    fn push_guide_vertices(&self, vertices: &mut Vec<SimpleVertex>, params: &VisualParams) {
         let anchor_x = self.x0 - params.guide_padding;
         for guide in &params.guides {
             let ratio = params.clamp_ratio(guide.value_loudness);
@@ -384,7 +381,13 @@ impl Primitive for LoudnessMeterPrimitive {
             .expect("pipeline must exist after storage check");
 
         let vertices = self.build_vertices(bounds, viewport);
-        pipeline.prepare_instance(device, queue, self.key(), &vertices);
+        pipeline.prepare_instance(
+            device,
+            queue,
+            "Loudness vertex buffer",
+            self.key(),
+            &vertices,
+        );
     }
 
     fn render(
@@ -433,101 +436,7 @@ impl Primitive for LoudnessMeterPrimitive {
     }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    color: [f32; 4],
-}
-
-impl Vertex {
-    fn layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: 8,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-            ],
-        }
-    }
-}
-
-#[inline]
-fn quad_vertices(
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-    clip: ClipTransform,
-    color: [f32; 4],
-) -> [Vertex; 6] {
-    let tl = clip.to_clip(x0, y0);
-    let tr = clip.to_clip(x1, y0);
-    let bl = clip.to_clip(x0, y1);
-    let br = clip.to_clip(x1, y1);
-
-    [
-        Vertex {
-            position: tl,
-            color,
-        },
-        Vertex {
-            position: bl,
-            color,
-        },
-        Vertex {
-            position: br,
-            color,
-        },
-        Vertex {
-            position: tl,
-            color,
-        },
-        Vertex {
-            position: br,
-            color,
-        },
-        Vertex {
-            position: tr,
-            color,
-        },
-    ]
-}
-
-#[derive(Clone, Copy)]
-struct ClipTransform {
-    scale_x: f32,
-    scale_y: f32,
-}
-
-impl ClipTransform {
-    fn new(width: f32, height: f32) -> Self {
-        Self {
-            scale_x: 2.0 / width,
-            scale_y: 2.0 / height,
-        }
-    }
-
-    #[inline]
-    fn to_clip(self, x: f32, y: f32) -> [f32; 2] {
-        [x * self.scale_x - 1.0, 1.0 - y * self.scale_y]
-    }
-}
-
-#[derive(Debug)]
-struct Pipeline {
-    pipeline: wgpu::RenderPipeline,
-    instances: HashMap<usize, InstanceBuffer>,
-}
+type Pipeline = SimplePipeline<usize>;
 
 impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
@@ -548,7 +457,7 @@ impl Pipeline {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[Vertex::layout()],
+                buffers: &[SimpleVertex::layout()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -582,72 +491,4 @@ impl Pipeline {
             instances: HashMap::new(),
         }
     }
-
-    fn prepare_instance(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        key: usize,
-        vertices: &[Vertex],
-    ) {
-        let required_size = std::mem::size_of_val(vertices) as wgpu::BufferAddress;
-        let entry = self
-            .instances
-            .entry(key)
-            .or_insert_with(|| InstanceBuffer::new(device, required_size.max(1)));
-
-        if vertices.is_empty() {
-            entry.vertex_count = 0;
-            return;
-        }
-
-        entry.ensure_capacity(device, required_size);
-        queue.write_buffer(&entry.vertex_buffer, 0, bytemuck::cast_slice(vertices));
-        entry.vertex_count = vertices.len() as u32;
-    }
-
-    fn instance(&self, key: usize) -> Option<&InstanceBuffer> {
-        self.instances.get(&key)
-    }
-}
-
-#[derive(Debug)]
-struct InstanceBuffer {
-    vertex_buffer: wgpu::Buffer,
-    capacity: wgpu::BufferAddress,
-    vertex_count: u32,
-}
-
-impl InstanceBuffer {
-    fn new(device: &wgpu::Device, size: wgpu::BufferAddress) -> Self {
-        let buffer = create_vertex_buffer(device, size.max(1));
-        Self {
-            vertex_buffer: buffer,
-            capacity: size.max(1),
-            vertex_count: 0,
-        }
-    }
-
-    fn ensure_capacity(&mut self, device: &wgpu::Device, size: wgpu::BufferAddress) {
-        if size <= self.capacity {
-            return;
-        }
-
-        let new_capacity = size.next_power_of_two().max(1);
-        self.vertex_buffer = create_vertex_buffer(device, new_capacity);
-        self.capacity = new_capacity;
-    }
-
-    fn used_bytes(&self) -> wgpu::BufferAddress {
-        self.vertex_count as wgpu::BufferAddress * mem::size_of::<Vertex>() as wgpu::BufferAddress
-    }
-}
-
-fn create_vertex_buffer(device: &wgpu::Device, size: wgpu::BufferAddress) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Loudness vertex buffer"),
-        size,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
 }

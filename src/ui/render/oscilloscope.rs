@@ -6,11 +6,15 @@ use iced_wgpu::wgpu;
 use std::collections::HashMap;
 use std::mem;
 
+use crate::ui::render::common::{
+    CacheTracker, ClipTransform, InstanceBuffer, create_shader_module,
+};
 use crate::ui::render::geometry::compute_normals;
 use crate::ui::visualization::oscilloscope::DisplayMode;
 
 #[derive(Debug, Clone)]
 pub struct OscilloscopeParams {
+    pub instance_id: u64,
     pub bounds: Rectangle,
     pub channels: usize,
     pub samples_per_channel: usize,
@@ -35,8 +39,8 @@ impl OscilloscopePrimitive {
         Self { params }
     }
 
-    fn key(&self) -> usize {
-        self as *const Self as usize
+    fn key(&self) -> u64 {
+        self.params.instance_id
     }
 
     fn build_vertices(&self, viewport: &Viewport) -> Vec<Vertex> {
@@ -67,10 +71,7 @@ impl OscilloscopePrimitive {
         channels: usize,
     ) -> Vec<Vertex> {
         let bounds = self.params.bounds;
-        let clip = ClipTransform::new(
-            viewport.logical_size().width.max(1.0),
-            viewport.logical_size().height.max(1.0),
-        );
+        let clip = ClipTransform::from_viewport(viewport);
 
         let vertical_padding = self.params.vertical_padding.max(0.0);
         let channel_gap = self.params.channel_gap.max(0.0);
@@ -137,10 +138,7 @@ impl OscilloscopePrimitive {
 
     fn build_xy_vertices(&self, viewport: &Viewport, samples_per_channel: usize) -> Vec<Vertex> {
         let bounds = self.params.bounds;
-        let clip = ClipTransform::new(
-            viewport.logical_size().width.max(1.0),
-            viewport.logical_size().height.max(1.0),
-        );
+        let clip = ClipTransform::from_viewport(viewport);
 
         let center_x = bounds.x + bounds.width * 0.5;
         let center_y = bounds.y + bounds.height * 0.5;
@@ -242,7 +240,7 @@ impl Primitive for OscilloscopePrimitive {
             return;
         };
 
-        if instance.vertex_count == 0 {
+        if instance.buffer.vertex_count == 0 {
             return;
         }
 
@@ -268,8 +266,14 @@ impl Primitive for OscilloscopePrimitive {
             clip_bounds.height.max(1),
         );
         pass.set_pipeline(&pipeline.pipeline);
-        pass.set_vertex_buffer(0, instance.vertex_buffer.slice(0..instance.used_bytes()));
-        pass.draw(0..instance.vertex_count, 0..1);
+        pass.set_vertex_buffer(
+            0,
+            instance
+                .buffer
+                .vertex_buffer
+                .slice(0..instance.buffer.used_bytes()),
+        );
+        pass.draw(0..instance.buffer.vertex_count, 0..1);
     }
 }
 
@@ -307,38 +311,28 @@ impl Vertex {
     }
 }
 
-#[derive(Clone, Copy)]
-struct ClipTransform {
-    scale_x: f32,
-    scale_y: f32,
-}
-
-impl ClipTransform {
-    fn new(width: f32, height: f32) -> Self {
-        Self {
-            scale_x: 2.0 / width,
-            scale_y: 2.0 / height,
-        }
-    }
-
-    #[inline]
-    fn to_clip(self, x: f32, y: f32) -> [f32; 2] {
-        [x * self.scale_x - 1.0, 1.0 - y * self.scale_y]
-    }
-}
+const VERTEX_LABEL: &str = "Oscilloscope vertex buffer";
 
 #[derive(Debug)]
 struct Pipeline {
     pipeline: wgpu::RenderPipeline,
-    instances: HashMap<usize, InstanceBuffer>,
+    instances: HashMap<u64, InstanceRecord>,
+    cache: CacheTracker,
+}
+
+#[derive(Debug)]
+struct InstanceRecord {
+    buffer: InstanceBuffer<Vertex>,
+    last_used: u64,
 }
 
 impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Oscilloscope shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/oscilloscope.wgsl").into()),
-        });
+        let shader = create_shader_module(
+            device,
+            "Oscilloscope shader",
+            include_str!("shaders/oscilloscope.wgsl"),
+        );
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Oscilloscope pipeline layout"),
@@ -384,6 +378,7 @@ impl Pipeline {
         Self {
             pipeline,
             instances: HashMap::new(),
+            cache: CacheTracker::default(),
         }
     }
 
@@ -391,67 +386,40 @@ impl Pipeline {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        key: usize,
+        key: u64,
         vertices: &[Vertex],
     ) {
         let required_size = std::mem::size_of_val(vertices) as wgpu::BufferAddress;
-        let entry = self
-            .instances
-            .entry(key)
-            .or_insert_with(|| InstanceBuffer::new(device, required_size.max(1)));
+        let (frame, threshold) = self.cache.advance();
+
+        let entry = self.instances.entry(key).or_insert_with(|| InstanceRecord {
+            buffer: InstanceBuffer::new(device, VERTEX_LABEL, required_size.max(1)),
+            last_used: frame,
+        });
+
+        entry.last_used = frame;
 
         if vertices.is_empty() {
-            entry.vertex_count = 0;
+            entry.buffer.vertex_count = 0;
+            self.prune(threshold);
             return;
         }
 
-        entry.ensure_capacity(device, required_size);
-        queue.write_buffer(&entry.vertex_buffer, 0, bytemuck::cast_slice(vertices));
-        entry.vertex_count = vertices.len() as u32;
+        entry
+            .buffer
+            .ensure_capacity(device, VERTEX_LABEL, required_size);
+        entry.buffer.write(queue, vertices);
+        self.prune(threshold);
     }
 
-    fn instance(&self, key: usize) -> Option<&InstanceBuffer> {
+    fn instance(&self, key: u64) -> Option<&InstanceRecord> {
         self.instances.get(&key)
     }
-}
 
-#[derive(Debug)]
-struct InstanceBuffer {
-    vertex_buffer: wgpu::Buffer,
-    capacity: wgpu::BufferAddress,
-    vertex_count: u32,
-}
-
-impl InstanceBuffer {
-    fn new(device: &wgpu::Device, size: wgpu::BufferAddress) -> Self {
-        let buffer = create_vertex_buffer(device, size.max(1));
-        Self {
-            vertex_buffer: buffer,
-            capacity: size.max(1),
-            vertex_count: 0,
+    fn prune(&mut self, threshold: Option<u64>) {
+        if let Some(threshold) = threshold {
+            self.instances
+                .retain(|_, record| record.last_used >= threshold);
         }
     }
-
-    fn ensure_capacity(&mut self, device: &wgpu::Device, size: wgpu::BufferAddress) {
-        if size <= self.capacity {
-            return;
-        }
-
-        let new_capacity = size.next_power_of_two().max(1);
-        self.vertex_buffer = create_vertex_buffer(device, new_capacity);
-        self.capacity = new_capacity;
-    }
-
-    fn used_bytes(&self) -> wgpu::BufferAddress {
-        self.vertex_count as wgpu::BufferAddress * mem::size_of::<Vertex>() as wgpu::BufferAddress
-    }
-}
-
-fn create_vertex_buffer(device: &wgpu::Device, size: wgpu::BufferAddress) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Oscilloscope vertex buffer"),
-        size,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
 }

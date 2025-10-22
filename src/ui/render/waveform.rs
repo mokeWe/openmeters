@@ -1,12 +1,11 @@
-use bytemuck::{Pod, Zeroable};
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{Primitive, Storage};
 use iced_wgpu::wgpu;
 use std::collections::HashMap;
-use std::mem;
 use std::sync::Arc;
 
+use crate::ui::render::common::{ClipTransform, InstanceBuffer, SimplePipeline, SimpleVertex};
 use crate::ui::render::geometry::compute_normals;
 
 #[derive(Debug, Clone, Copy)]
@@ -55,7 +54,7 @@ impl WaveformPrimitive {
         self.params.instance_key
     }
 
-    fn build_vertices(&self, viewport: &Viewport) -> Vec<Vertex> {
+    fn build_vertices(&self, viewport: &Viewport) -> Vec<SimpleVertex> {
         let channels = self.params.channels.max(1);
         let columns = self.params.columns;
         let total_samples = channels * columns;
@@ -68,10 +67,7 @@ impl WaveformPrimitive {
         }
 
         let bounds = self.params.bounds;
-        let clip = ClipTransform::new(
-            viewport.logical_size().width.max(1.0),
-            viewport.logical_size().height.max(1.0),
-        );
+        let clip = ClipTransform::from_viewport(viewport);
 
         let column_width = self.params.column_width.max(0.5);
         let preview_width = if self.params.preview_active() {
@@ -93,7 +89,7 @@ impl WaveformPrimitive {
 
         let mut vertices = Vec::with_capacity(channels * (columns + 1) * 6);
 
-        let append_strip = |dest: &mut Vec<Vertex>, strip: Vec<Vertex>| {
+        let append_strip = |dest: &mut Vec<SimpleVertex>, strip: Vec<SimpleVertex>| {
             if strip.is_empty() {
                 return;
             }
@@ -141,11 +137,11 @@ impl WaveformPrimitive {
                     .unwrap_or([1.0; 4]);
                 let fill_color = [color[0], color[1], color[2], self.params.fill_alpha];
 
-                area_vertices.push(Vertex {
+                area_vertices.push(SimpleVertex {
                     position: clip.to_clip(x, top_y),
                     color: fill_color,
                 });
-                area_vertices.push(Vertex {
+                area_vertices.push(SimpleVertex {
                     position: clip.to_clip(x, bottom_y),
                     color: fill_color,
                 });
@@ -171,11 +167,11 @@ impl WaveformPrimitive {
                     self.params.fill_alpha,
                 ];
 
-                area_vertices.push(Vertex {
+                area_vertices.push(SimpleVertex {
                     position: clip.to_clip(x, top_y),
                     color: fill_color,
                 });
-                area_vertices.push(Vertex {
+                area_vertices.push(SimpleVertex {
                     position: clip.to_clip(x, bottom_y),
                     color: fill_color,
                 });
@@ -232,11 +228,11 @@ impl WaveformPrimitive {
                 let left = clip.to_clip(position.0 - offset_x, position.1 - offset_y);
                 let right = clip.to_clip(position.0 + offset_x, position.1 + offset_y);
 
-                line_vertices.push(Vertex {
+                line_vertices.push(SimpleVertex {
                     position: left,
                     color: line_color,
                 });
-                line_vertices.push(Vertex {
+                line_vertices.push(SimpleVertex {
                     position: right,
                     color: line_color,
                 });
@@ -311,64 +307,15 @@ impl Primitive for WaveformPrimitive {
             clip_bounds.width.max(1),
             clip_bounds.height.max(1),
         );
-        pass.set_pipeline(&pipeline.pipeline);
+        pass.set_pipeline(&pipeline.inner.pipeline);
         pass.set_vertex_buffer(0, instance.vertex_buffer.slice(0..instance.used_bytes()));
         pass.draw(0..instance.vertex_count, 0..1);
     }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    color: [f32; 4],
-}
-
-impl Vertex {
-    fn layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: 8,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-            ],
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct ClipTransform {
-    scale_x: f32,
-    scale_y: f32,
-}
-
-impl ClipTransform {
-    fn new(width: f32, height: f32) -> Self {
-        Self {
-            scale_x: 2.0 / width,
-            scale_y: 2.0 / height,
-        }
-    }
-
-    #[inline]
-    fn to_clip(self, x: f32, y: f32) -> [f32; 2] {
-        [x * self.scale_x - 1.0, 1.0 - y * self.scale_y]
-    }
-}
-
 #[derive(Debug)]
 struct Pipeline {
-    pipeline: wgpu::RenderPipeline,
-    instances: HashMap<u64, InstanceBuffer>,
+    inner: SimplePipeline<u64>,
 }
 
 impl Pipeline {
@@ -390,7 +337,7 @@ impl Pipeline {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[Vertex::layout()],
+                buffers: &[SimpleVertex::layout()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -420,8 +367,10 @@ impl Pipeline {
         });
 
         Self {
-            pipeline,
-            instances: HashMap::new(),
+            inner: SimplePipeline {
+                pipeline,
+                instances: HashMap::new(),
+            },
         }
     }
 
@@ -430,66 +379,13 @@ impl Pipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         key: u64,
-        vertices: &[Vertex],
+        vertices: &[SimpleVertex],
     ) {
-        let required_size = std::mem::size_of_val(vertices) as wgpu::BufferAddress;
-        let entry = self
-            .instances
-            .entry(key)
-            .or_insert_with(|| InstanceBuffer::new(device, required_size.max(1)));
-
-        if vertices.is_empty() {
-            entry.vertex_count = 0;
-            return;
-        }
-
-        entry.ensure_capacity(device, required_size);
-        queue.write_buffer(&entry.vertex_buffer, 0, bytemuck::cast_slice(vertices));
-        entry.vertex_count = vertices.len() as u32;
+        self.inner
+            .prepare_instance(device, queue, "Waveform vertex buffer", key, vertices);
     }
 
-    fn instance(&self, key: u64) -> Option<&InstanceBuffer> {
-        self.instances.get(&key)
+    fn instance(&self, key: u64) -> Option<&InstanceBuffer<SimpleVertex>> {
+        self.inner.instance(key)
     }
-}
-
-#[derive(Debug)]
-struct InstanceBuffer {
-    vertex_buffer: wgpu::Buffer,
-    capacity: wgpu::BufferAddress,
-    vertex_count: u32,
-}
-
-impl InstanceBuffer {
-    fn new(device: &wgpu::Device, size: wgpu::BufferAddress) -> Self {
-        let buffer = create_vertex_buffer(device, size.max(1));
-        Self {
-            vertex_buffer: buffer,
-            capacity: size.max(1),
-            vertex_count: 0,
-        }
-    }
-
-    fn ensure_capacity(&mut self, device: &wgpu::Device, size: wgpu::BufferAddress) {
-        if size <= self.capacity {
-            return;
-        }
-
-        let new_capacity = size.next_power_of_two().max(1);
-        self.vertex_buffer = create_vertex_buffer(device, new_capacity);
-        self.capacity = new_capacity;
-    }
-
-    fn used_bytes(&self) -> wgpu::BufferAddress {
-        self.vertex_count as wgpu::BufferAddress * mem::size_of::<Vertex>() as wgpu::BufferAddress
-    }
-}
-
-fn create_vertex_buffer(device: &wgpu::Device, size: wgpu::BufferAddress) -> wgpu::Buffer {
-    device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Waveform vertex buffer"),
-        size,
-        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    })
 }

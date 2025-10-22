@@ -16,7 +16,14 @@ use iced::{Background, Color, Element, Length, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+
+static NEXT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_instance_id() -> u64 {
+    NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DisplayMode {
@@ -100,6 +107,7 @@ pub struct OscilloscopeState {
     fade_alpha: f32,
     persistence: f32,
     display_mode: DisplayMode,
+    instance_id: u64,
 }
 
 impl OscilloscopeState {
@@ -111,6 +119,7 @@ impl OscilloscopeState {
             fade_alpha: 1.0,
             persistence: 0.85,
             display_mode: DisplayMode::default(),
+            instance_id: next_instance_id(),
         }
     }
 
@@ -201,6 +210,7 @@ impl OscilloscopeState {
         let samples = self.build_render_samples(mode);
 
         OscilloscopeParams {
+            instance_id: self.instance_id,
             bounds,
             channels,
             samples_per_channel: self.snapshot.samples_per_channel,

@@ -1,3 +1,4 @@
+pub mod common;
 pub mod geometry;
 pub mod loudness;
 pub mod oscilloscope;
