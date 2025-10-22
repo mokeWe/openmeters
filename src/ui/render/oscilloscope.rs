@@ -2,6 +2,7 @@ use bytemuck::{Pod, Zeroable};
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{Primitive, Storage};
+use iced_wgpu::wgpu;
 use std::collections::HashMap;
 use std::mem;
 

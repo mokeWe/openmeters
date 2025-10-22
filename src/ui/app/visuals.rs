@@ -90,7 +90,7 @@ impl VisualPane {
                 )
             }
             VisualContent::Waveform { state } => {
-                let wave = waveform::widget(state);
+                let wave = waveform::widget(state.as_ref());
                 Element::from(
                     container(wave)
                         .width(Length::Fill)

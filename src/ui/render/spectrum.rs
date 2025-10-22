@@ -2,16 +2,18 @@ use bytemuck::{Pod, Zeroable};
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{Primitive, Storage};
+use iced_wgpu::wgpu;
 use std::collections::HashMap;
 use std::mem;
+use std::sync::Arc;
 
 use crate::ui::render::geometry::compute_normals;
 
 #[derive(Debug, Clone)]
 pub struct SpectrumParams {
     pub bounds: Rectangle,
-    pub normalized_points: Vec<[f32; 2]>,
-    pub secondary_points: Vec<[f32; 2]>,
+    pub normalized_points: Arc<Vec<[f32; 2]>>,
+    pub secondary_points: Arc<Vec<[f32; 2]>>,
     pub line_color: [f32; 4],
     pub line_width: f32,
     pub secondary_line_color: [f32; 4],
@@ -42,7 +44,7 @@ impl SpectrumPrimitive {
         );
 
         let mut positions = Vec::with_capacity(self.params.normalized_points.len());
-        for point in &self.params.normalized_points {
+        for point in self.params.normalized_points.iter() {
             let amp = point[1].clamp(0.0, 1.0);
             let x = bounds.x + bounds.width * point[0].clamp(0.0, 1.0);
             let y = bounds.y + bounds.height * (1.0 - amp);
@@ -129,7 +131,7 @@ impl SpectrumPrimitive {
 
         if !self.params.secondary_points.is_empty() {
             let mut overlay_positions = Vec::with_capacity(self.params.secondary_points.len());
-            for point in &self.params.secondary_points {
+            for point in self.params.secondary_points.iter() {
                 let x = bounds.x + bounds.width * point[0].clamp(0.0, 1.0);
                 let y = bounds.y + bounds.height * (1.0 - point[1].clamp(0.0, 1.0));
                 overlay_positions.push((x, y));

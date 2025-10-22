@@ -2,10 +2,19 @@ use bytemuck::{Pod, Zeroable};
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{Primitive, Storage};
+use iced_wgpu::wgpu;
 use std::collections::HashMap;
 use std::mem;
+use std::sync::Arc;
 
 use crate::ui::render::geometry::compute_normals;
+
+#[derive(Debug, Clone, Copy)]
+pub struct PreviewSample {
+    pub min: f32,
+    pub max: f32,
+    pub color: [f32; 4],
+}
 
 #[derive(Debug, Clone)]
 pub struct WaveformParams {
@@ -13,12 +22,9 @@ pub struct WaveformParams {
     pub channels: usize,
     pub column_width: f32,
     pub columns: usize,
-    pub min_values: Vec<f32>,
-    pub max_values: Vec<f32>,
-    pub colors: Vec<[f32; 4]>,
-    pub preview_min: Vec<f32>,
-    pub preview_max: Vec<f32>,
-    pub preview_colors: Vec<[f32; 4]>,
+    pub samples: Arc<Vec<[f32; 2]>>,
+    pub colors: Arc<Vec<[f32; 4]>>,
+    pub preview_samples: Arc<Vec<PreviewSample>>,
     pub preview_progress: f32,
     pub fill_alpha: f32,
     pub line_alpha: f32,
@@ -31,10 +37,7 @@ pub struct WaveformParams {
 
 impl WaveformParams {
     pub fn preview_active(&self) -> bool {
-        self.preview_progress > 0.0
-            && self.preview_min.len() >= self.channels
-            && self.preview_max.len() >= self.channels
-            && self.preview_colors.len() >= self.channels
+        self.preview_progress > 0.0 && self.preview_samples.len() >= self.channels
     }
 }
 
@@ -57,8 +60,7 @@ impl WaveformPrimitive {
         let columns = self.params.columns;
         let total_samples = channels * columns;
         if (columns > 0
-            && (self.params.min_values.len() < total_samples
-                || self.params.max_values.len() < total_samples
+            && (self.params.samples.len() < total_samples
                 || self.params.colors.len() < total_samples))
             || (columns == 0 && !self.params.preview_active())
         {
@@ -117,8 +119,9 @@ impl WaveformPrimitive {
             let mut area_vertices = Vec::with_capacity((columns + 1) * 2);
             for index in 0..columns {
                 let sample_index = channel * columns + index;
-                let mut min_value = self.params.min_values[sample_index];
-                let mut max_value = self.params.max_values[sample_index];
+                let pair = self.params.samples[sample_index];
+                let mut min_value = pair[0];
+                let mut max_value = pair[1];
                 if min_value > max_value {
                     std::mem::swap(&mut min_value, &mut max_value);
                 }
@@ -149,8 +152,9 @@ impl WaveformPrimitive {
             }
 
             if self.params.preview_active() {
-                let mut min_value = self.params.preview_min[channel];
-                let mut max_value = self.params.preview_max[channel];
+                let sample = self.params.preview_samples[channel];
+                let mut min_value = sample.min;
+                let mut max_value = sample.max;
                 if min_value > max_value {
                     std::mem::swap(&mut min_value, &mut max_value);
                 }
@@ -159,12 +163,7 @@ impl WaveformPrimitive {
                 let x = right_edge.round();
                 let top_y = center - max_value * amplitude_scale;
                 let bottom_y = center - min_value * amplitude_scale;
-                let preview_base = self
-                    .params
-                    .preview_colors
-                    .get(channel)
-                    .copied()
-                    .unwrap_or([1.0; 4]);
+                let preview_base = sample.color;
                 let fill_color = [
                     preview_base[0],
                     preview_base[1],
@@ -188,8 +187,9 @@ impl WaveformPrimitive {
             let mut line_colors = Vec::with_capacity(columns + 1);
             for index in 0..columns {
                 let sample_index = channel * columns + index;
-                let min_value = self.params.min_values[sample_index].clamp(-1.0, 1.0);
-                let max_value = self.params.max_values[sample_index].clamp(-1.0, 1.0);
+                let pair = self.params.samples[sample_index];
+                let min_value = pair[0].clamp(-1.0, 1.0);
+                let max_value = pair[1].clamp(-1.0, 1.0);
                 let average = 0.5 * (min_value + max_value);
                 let x =
                     (right_edge - preview_width - column_width * ((columns - 1 - index) as f32))
@@ -206,19 +206,14 @@ impl WaveformPrimitive {
             }
 
             if self.params.preview_active() {
-                let min_value = self.params.preview_min[channel].clamp(-1.0, 1.0);
-                let max_value = self.params.preview_max[channel].clamp(-1.0, 1.0);
+                let sample = self.params.preview_samples[channel];
+                let min_value = sample.min.clamp(-1.0, 1.0);
+                let max_value = sample.max.clamp(-1.0, 1.0);
                 let average = 0.5 * (min_value + max_value);
                 let x = right_edge.round();
                 let y = center - average * amplitude_scale;
                 positions.push((x, y));
-                let preview_base = self
-                    .params
-                    .preview_colors
-                    .get(channel)
-                    .copied()
-                    .unwrap_or([1.0; 4]);
-                line_colors.push(preview_base);
+                line_colors.push(sample.color);
             }
 
             if positions.len() < 2 {

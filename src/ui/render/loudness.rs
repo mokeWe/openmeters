@@ -4,6 +4,7 @@ use bytemuck::{Pod, Zeroable};
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{Primitive, Storage};
+use iced_wgpu::wgpu;
 use std::collections::HashMap;
 use std::mem;
 
@@ -644,7 +645,7 @@ impl InstanceBuffer {
 
 fn create_vertex_buffer(device: &wgpu::Device, size: wgpu::BufferAddress) -> wgpu::Buffer {
     device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("Loudness meter vertex buffer"),
+        label: Some("Loudness vertex buffer"),
         size,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,

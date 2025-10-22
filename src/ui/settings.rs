@@ -503,16 +503,12 @@ const fn default_spectrum_peak_hold_decay() -> f32 {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum SpectrumAveragingMode {
     None,
+    #[default]
     Exponential,
     PeakHold,
-}
-
-impl Default for SpectrumAveragingMode {
-    fn default() -> Self {
-        SpectrumAveragingMode::Exponential
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

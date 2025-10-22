@@ -122,7 +122,7 @@ pub enum VisualContent {
     Oscilloscope { state: OscilloscopeState },
     Spectrogram { state: Box<SpectrogramState> },
     Spectrum { state: SpectrumState },
-    Waveform { state: WaveformState },
+    Waveform { state: Box<WaveformState> },
 }
 
 trait VisualModule {
@@ -355,13 +355,14 @@ impl Default for WaveformVisual {
 impl VisualModule for WaveformVisual {
     fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
         self.ensure_capacity();
-        let snapshot = self.processor.ingest(samples, format);
-        self.state.apply_snapshot(snapshot);
+        if let Some(snapshot) = self.processor.ingest(samples, format) {
+            self.state.apply_snapshot(snapshot);
+        }
     }
 
     fn content(&self) -> VisualContent {
         VisualContent::Waveform {
-            state: self.state.clone(),
+            state: Box::new(self.state.clone()),
         }
     }
 

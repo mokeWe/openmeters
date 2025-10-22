@@ -185,10 +185,6 @@ impl WaveformProcessor {
         self.config
     }
 
-    pub fn snapshot(&self) -> &WaveformSnapshot {
-        &self.snapshot
-    }
-
     fn rebuild_for_config(&mut self) {
         self.use_average = self.config.downsample == DownsampleStrategy::Average;
         self.column_period_seconds = column_period_seconds(&self.config);

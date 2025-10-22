@@ -16,6 +16,7 @@ use iced::alignment::{Horizontal, Vertical};
 use iced::{Background, Color, Element, Font, Length, Pixels, Point, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
+use std::sync::Arc;
 use std::time::Instant;
 
 const DEFAULT_RESOLUTION: usize = 1024;
@@ -137,9 +138,9 @@ impl Default for SpectrumStyle {
 #[derive(Debug, Clone)]
 pub struct SpectrumState {
     style: SpectrumStyle,
-    weighted_points: Vec<[f32; 2]>,
-    unweighted_points: Vec<[f32; 2]>,
-    frequency_grid: Vec<GridLineSpec>,
+    weighted_points: Arc<Vec<[f32; 2]>>,
+    unweighted_points: Arc<Vec<[f32; 2]>>,
+    frequency_grid: Arc<Vec<GridLineSpec>>,
     min_freq: f32,
     max_freq: f32,
     peak_frequency_hz: Option<f32>,
@@ -164,9 +165,9 @@ impl SpectrumState {
     pub fn new() -> Self {
         Self {
             style: SpectrumStyle::default(),
-            weighted_points: Vec::new(),
-            unweighted_points: Vec::new(),
-            frequency_grid: Vec::new(),
+            weighted_points: Arc::new(Vec::new()),
+            unweighted_points: Arc::new(Vec::new()),
+            frequency_grid: Arc::new(Vec::new()),
             min_freq: MIN_FREQUENCY_HZ,
             max_freq: MAX_FREQUENCY_HZ,
             peak_frequency_hz: None,
@@ -202,14 +203,6 @@ impl SpectrumState {
         self.peak_frequency_hz = snapshot.peak_frequency_hz;
 
         let resolution = self.style.resolution.max(32);
-        if self.weighted_points.len() != resolution {
-            self.weighted_points = Vec::with_capacity(resolution);
-        }
-        if self.unweighted_points.len() != resolution {
-            self.unweighted_points = Vec::with_capacity(resolution);
-        }
-        self.weighted_points.clear();
-        self.unweighted_points.clear();
 
         // Precompute scale-specific parameters
         let log_min = min_freq.max(EPSILON).log10();
@@ -220,56 +213,67 @@ impl SpectrumState {
         let mel_max = hz_to_mel(max_freq);
         let mel_range = (mel_max - mel_min).max(EPSILON);
 
-        for i in 0..resolution {
-            let t = if resolution == 1 {
-                0.0
-            } else {
-                i as f32 / (resolution - 1) as f32
-            };
+        {
+            let weighted_points = Arc::make_mut(&mut self.weighted_points);
+            weighted_points.clear();
+            weighted_points.reserve(resolution);
 
-            // Map normalized position to frequency based on selected scale
-            let freq = match self.style.frequency_scale {
-                FrequencyScale::Linear => min_freq + (max_freq - min_freq) * t,
-                FrequencyScale::Logarithmic => 10.0f32.powf(log_min + log_range * t),
-                FrequencyScale::Mel => {
-                    let mel = mel_min + mel_range * t;
-                    mel_to_hz(mel)
-                }
-            };
+            let unweighted_points = Arc::make_mut(&mut self.unweighted_points);
+            unweighted_points.clear();
+            unweighted_points.reserve(resolution);
 
-            let magnitude_weighted =
-                interpolate_magnitude(&snapshot.frequency_bins, &snapshot.magnitudes_db, freq);
-            let magnitude_unweighted = interpolate_magnitude(
-                &snapshot.frequency_bins,
-                &snapshot.magnitudes_unweighted_db,
-                freq,
-            );
-            let normalized_weighted =
-                normalize_db(magnitude_weighted, self.style.min_db, self.style.max_db);
-            let normalized_unweighted =
-                normalize_db(magnitude_unweighted, self.style.min_db, self.style.max_db);
-            self.weighted_points.push([t, normalized_weighted]);
-            self.unweighted_points.push([t, normalized_unweighted]);
+            for i in 0..resolution {
+                let t = if resolution == 1 {
+                    0.0
+                } else {
+                    i as f32 / (resolution - 1) as f32
+                };
+
+                // Map normalized position to frequency based on selected scale
+                let freq = match self.style.frequency_scale {
+                    FrequencyScale::Linear => min_freq + (max_freq - min_freq) * t,
+                    FrequencyScale::Logarithmic => 10.0f32.powf(log_min + log_range * t),
+                    FrequencyScale::Mel => {
+                        let mel = mel_min + mel_range * t;
+                        mel_to_hz(mel)
+                    }
+                };
+
+                let magnitude_weighted =
+                    interpolate_magnitude(&snapshot.frequency_bins, &snapshot.magnitudes_db, freq);
+                let magnitude_unweighted = interpolate_magnitude(
+                    &snapshot.frequency_bins,
+                    &snapshot.magnitudes_unweighted_db,
+                    freq,
+                );
+                let normalized_weighted =
+                    normalize_db(magnitude_weighted, self.style.min_db, self.style.max_db);
+                let normalized_unweighted =
+                    normalize_db(magnitude_unweighted, self.style.min_db, self.style.max_db);
+                weighted_points.push([t, normalized_weighted]);
+                unweighted_points.push([t, normalized_unweighted]);
+            }
+
+            if self.style.smoothing_radius > 0 && self.style.smoothing_passes > 0 {
+                smooth_points(
+                    weighted_points.as_mut_slice(),
+                    self.style.smoothing_radius,
+                    self.style.smoothing_passes,
+                );
+                smooth_points(
+                    unweighted_points.as_mut_slice(),
+                    self.style.smoothing_radius,
+                    self.style.smoothing_passes,
+                );
+            }
         }
 
-        self.frequency_grid = build_frequency_grid(
+        self.frequency_grid = Arc::new(build_frequency_grid(
             min_freq,
             max_freq,
             self.style.grid_major_color,
             self.style.frequency_scale,
-        );
-        if self.style.smoothing_radius > 0 && self.style.smoothing_passes > 0 {
-            smooth_points(
-                &mut self.weighted_points,
-                self.style.smoothing_radius,
-                self.style.smoothing_passes,
-            );
-            smooth_points(
-                &mut self.unweighted_points,
-                self.style.smoothing_radius,
-                self.style.smoothing_passes,
-            );
-        }
+        ));
     }
 
     pub fn visual(&self, bounds: Rectangle) -> Option<SpectrumVisual> {
