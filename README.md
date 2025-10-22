@@ -21,17 +21,17 @@ Checked features are implemented, unchecked features are planned.
     - [x] Slow
   - [x] True Peak
 - [x] **oscilloscope**
-  - [x] XY mode
+  - [x] XY/vectorscope mode
 - [x] **spectrogram**
   - [x] Reassignment for better low-frequency resolution
+  - [ ] Note & frequency tooltips
   - [x] mel, log, and linear scales
+  - [x] Color maps
 - [x] **spectrum analyzer**
   - [x] mel, log, and linear scales
 - [ ] **stereometer**
 - [x] **waveform**
-- [x] configurability
-  - [x] persisted to disk
-  - [ ] themes/color schemes
+  - [x] Color maps
 
 ## build and run
 
@@ -62,7 +62,7 @@ Checked features are implemented, unchecked features are planned.
    cargo run
    ```
 
-5. If you encounter any issues or want to contribute in any way, please feel free to open an issue or a pull request on the GitHub repository.
+5. If you encounter any issues or want to contribute in any way, please feel free to open an issue or a pull request.
 
 ## usage
 
@@ -74,16 +74,6 @@ Switch to the "visuals" tab to view the selected modules. Show/hide the top bar 
 
 Configurations are saved to `~/.config/openmeters/settings.json`. If you want to use settings/values not listed in the GUI, you can edit this file directly, however absurd values often lead to crashes.
 If you encounter a bug that causes OpenMeters to misbehave, you can delete `settings.json` to reset all settings.
-
-## compatibility
-
-OpenMeters is designed to work on Wayland systems running PipeWire. I cannot guarantee it will work on X11 at all. Due to the use of virtual sinks and how we route audio, OpenMeters may conflict with other software. This includes but is not limited to:
-
-- EasyEffects
-- Helvum
-- Carla
-
-I have chosen to use a virtual sink for audio capture because I personally wanted per-application monitoring, but capturing directly from a hardware sink's monitor _is_ planned, and shouldn't be too difficult to implement. If you desperately need this feature, please open an issue and I will prioritize it.
 
 ## credits
 
