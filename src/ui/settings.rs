@@ -7,7 +7,7 @@
 
 use crate::dsp::oscilloscope::OscilloscopeConfig;
 use crate::dsp::spectrogram::{FrequencyScale, SpectrogramConfig, WindowKind};
-use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
+use crate::dsp::spectrum::SpectrumConfig;
 use crate::dsp::waveform::{DownsampleStrategy, WaveformConfig};
 use crate::ui::theme;
 use crate::ui::visualization::loudness::MeterMode;
@@ -481,53 +481,37 @@ impl Default for LoudnessSettings {
 pub struct SpectrumSettings {
     pub fft_size: usize,
     pub hop_size: usize,
+    #[serde(default)]
+    pub averaging_mode: SpectrumAveragingMode,
+    #[serde(default = "default_spectrum_averaging_factor")]
     pub averaging_factor: f32,
+    #[serde(default = "default_spectrum_peak_hold_decay")]
+    pub peak_hold_decay: f32,
     pub frequency_scale: FrequencyScale,
 }
 
-impl Default for SpectrumSettings {
-    fn default() -> Self {
-        let config = SpectrumConfig::default();
-        let factor = match config.averaging {
-            AveragingMode::Exponential { factor } => factor,
-            _ => 0.5,
-        };
-        Self {
-            fft_size: config.fft_size,
-            hop_size: config.hop_size,
-            averaging_factor: factor,
-            frequency_scale: config.frequency_scale,
-        }
-    }
+pub const DEFAULT_SPECTRUM_AVERAGING_FACTOR: f32 = 0.5;
+pub const DEFAULT_SPECTRUM_PEAK_HOLD_DECAY: f32 = 12.0;
+
+const fn default_spectrum_averaging_factor() -> f32 {
+    DEFAULT_SPECTRUM_AVERAGING_FACTOR
 }
 
-impl SpectrumSettings {
-    pub fn from_config(config: &SpectrumConfig) -> Self {
-        let factor = match config.averaging {
-            AveragingMode::Exponential { factor } => factor,
-            _ => 0.5,
-        };
-        Self {
-            fft_size: config.fft_size,
-            hop_size: config.hop_size,
-            averaging_factor: factor,
-            frequency_scale: config.frequency_scale,
-        }
-    }
+const fn default_spectrum_peak_hold_decay() -> f32 {
+    DEFAULT_SPECTRUM_PEAK_HOLD_DECAY
+}
 
-    pub fn apply_to(&self, config: &mut SpectrumConfig) {
-        config.fft_size = self.fft_size.max(128);
-        config.hop_size = self.hop_size.max(1);
-        config.averaging = AveragingMode::Exponential {
-            factor: self.averaging_factor.clamp(0.0, 0.9999),
-        };
-        config.frequency_scale = self.frequency_scale;
-    }
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SpectrumAveragingMode {
+    None,
+    Exponential,
+    PeakHold,
+}
 
-    pub fn to_config(&self) -> SpectrumConfig {
-        let mut config = SpectrumConfig::default();
-        self.apply_to(&mut config);
-        config
+impl Default for SpectrumAveragingMode {
+    fn default() -> Self {
+        SpectrumAveragingMode::Exponential
     }
 }
 

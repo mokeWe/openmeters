@@ -48,7 +48,6 @@ impl Default for SpectrumConfig {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum AveragingMode {
     None,
