@@ -441,7 +441,6 @@ impl Vertex {
 struct Instance {
     vertices: InstanceBuffer<Vertex>,
     resources: Option<GpuResources>,
-    cached_vertices: Option<[Vertex; 6]>,
     last_used: u64,
 }
 
@@ -450,7 +449,6 @@ impl Instance {
         Self {
             vertices: InstanceBuffer::new(device, VERTEX_LABEL, VERTEX_SIZE.max(1)),
             resources: None,
-            cached_vertices: None,
             last_used: 0,
         }
     }
@@ -463,19 +461,13 @@ impl Instance {
     ) {
         let Some(vertices) = vertices else {
             self.vertices.vertex_count = 0;
-            self.cached_vertices = None;
             return;
         };
-
-        if self.cached_vertices == Some(*vertices) {
-            return;
-        }
 
         let required = VERTEX_SIZE * vertices.len() as wgpu::BufferAddress;
         self.vertices
             .ensure_capacity(device, VERTEX_LABEL, required);
         self.vertices.write(queue, vertices);
-        self.cached_vertices = Some(*vertices);
     }
 
     fn update_resources(

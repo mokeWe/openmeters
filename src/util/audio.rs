@@ -1,4 +1,5 @@
 pub mod batcher;
+pub mod musical;
 
 use pipewire::spa;
 use std::convert::TryInto;
@@ -7,9 +8,7 @@ use tracing::warn;
 pub use batcher::SampleBatcher;
 
 /// Default sample rate (Hz) used throughout the audio pipeline.
-pub const DEFAULT_SAMPLE_RATE_HZ: u32 = 48_000;
-/// Default sample rate represented as `f32` for DSP usage.
-pub const DEFAULT_SAMPLE_RATE: f32 = DEFAULT_SAMPLE_RATE_HZ as f32;
+pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
 
 /// Return the number of bytes per sample for the given PipeWire audio format.
 pub fn bytes_per_sample(format: spa::param::audio::AudioFormat) -> Option<usize> {
@@ -48,7 +47,24 @@ pub fn convert_samples_to_f32(
         return None;
     }
 
-    let mut samples = Vec::with_capacity(bytes.len() / sample_bytes);
+    let sample_count = bytes.len() / sample_bytes;
+    let mut samples = Vec::with_capacity(sample_count);
+
+    /// Helper macro to reduce duplication for integer format conversions.
+    macro_rules! convert_int {
+        ($ty:ty, $endian:ident, $divisor:expr, $unsigned_offset:expr) => {{
+            for chunk in bytes.chunks_exact(std::mem::size_of::<$ty>()) {
+                let raw = <$ty>::$endian(chunk.try_into().unwrap());
+                let normalized = if $unsigned_offset != 0.0 {
+                    (raw as f32 - $unsigned_offset) / $unsigned_offset
+                } else {
+                    raw as f32 / $divisor
+                };
+                samples.push(normalized);
+            }
+        }};
+    }
+
     match format {
         Fmt::F32LE => {
             for chunk in bytes.chunks_exact(4) {
@@ -70,42 +86,12 @@ pub fn convert_samples_to_f32(
                 samples.push(f64::from_be_bytes(chunk.try_into().unwrap()) as f32);
             }
         }
-        Fmt::S16LE => {
-            for chunk in bytes.chunks_exact(2) {
-                let sample = i16::from_le_bytes(chunk.try_into().unwrap());
-                samples.push(sample as f32 / i16::MAX as f32);
-            }
-        }
-        Fmt::S16BE => {
-            for chunk in bytes.chunks_exact(2) {
-                let sample = i16::from_be_bytes(chunk.try_into().unwrap());
-                samples.push(sample as f32 / i16::MAX as f32);
-            }
-        }
-        Fmt::S32LE | Fmt::S24_32LE => {
-            for chunk in bytes.chunks_exact(4) {
-                let sample = i32::from_le_bytes(chunk.try_into().unwrap());
-                samples.push(sample as f32 / i32::MAX as f32);
-            }
-        }
-        Fmt::S32BE | Fmt::S24_32BE => {
-            for chunk in bytes.chunks_exact(4) {
-                let sample = i32::from_be_bytes(chunk.try_into().unwrap());
-                samples.push(sample as f32 / i32::MAX as f32);
-            }
-        }
-        Fmt::U16LE => {
-            for chunk in bytes.chunks_exact(2) {
-                let sample = u16::from_le_bytes(chunk.try_into().unwrap());
-                samples.push((sample as f32 - 32_768.0) / 32_768.0);
-            }
-        }
-        Fmt::U16BE => {
-            for chunk in bytes.chunks_exact(2) {
-                let sample = u16::from_be_bytes(chunk.try_into().unwrap());
-                samples.push((sample as f32 - 32_768.0) / 32_768.0);
-            }
-        }
+        Fmt::S16LE => convert_int!(i16, from_le_bytes, i16::MAX as f32, 0.0),
+        Fmt::S16BE => convert_int!(i16, from_be_bytes, i16::MAX as f32, 0.0),
+        Fmt::S32LE | Fmt::S24_32LE => convert_int!(i32, from_le_bytes, i32::MAX as f32, 0.0),
+        Fmt::S32BE | Fmt::S24_32BE => convert_int!(i32, from_be_bytes, i32::MAX as f32, 0.0),
+        Fmt::U16LE => convert_int!(u16, from_le_bytes, 32_768.0, 32_768.0),
+        Fmt::U16BE => convert_int!(u16, from_be_bytes, 32_768.0, 32_768.0),
         Fmt::U8 => {
             for &byte in bytes {
                 samples.push((byte as f32 - 128.0) / 128.0);
@@ -113,8 +99,7 @@ pub fn convert_samples_to_f32(
         }
         Fmt::S8 => {
             for &byte in bytes {
-                let sample = byte as i8;
-                samples.push(sample as f32 / i8::MAX as f32);
+                samples.push((byte as i8) as f32 / i8::MAX as f32);
             }
         }
         _ => return None,
@@ -126,11 +111,6 @@ pub fn convert_samples_to_f32(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn default_sample_rate_constants_align() {
-        assert_eq!(DEFAULT_SAMPLE_RATE_HZ as f32, DEFAULT_SAMPLE_RATE);
-    }
 
     #[test]
     fn bytes_per_sample_matches_expected_widths() {
@@ -150,11 +130,15 @@ mod tests {
             bytes_per_sample(spa::param::audio::AudioFormat::S8),
             Some(1)
         );
+        assert_eq!(
+            bytes_per_sample(spa::param::audio::AudioFormat::Unknown),
+            None
+        );
     }
 
     #[test]
     fn convert_s16le_samples_to_f32() {
-        let bytes = [0x00, 0x80, 0xFF, 0x7F];
+        let bytes = [0x00, 0x80, 0xFF, 0x7F]; // -32768 (min), 32767 (max)
         let converted = convert_samples_to_f32(&bytes, spa::param::audio::AudioFormat::S16LE)
             .expect("conversion should succeed");
         assert_eq!(converted.len(), 2);
@@ -165,6 +149,13 @@ mod tests {
     #[test]
     fn conversion_fails_for_unsupported_format() {
         let bytes = [0u8; 4];
-        assert!(convert_samples_to_f32(&bytes, spa::param::audio::AudioFormat::Unknown,).is_none());
+        assert!(convert_samples_to_f32(&bytes, spa::param::audio::AudioFormat::Unknown).is_none());
+    }
+
+    #[test]
+    fn conversion_fails_for_misaligned_buffer() {
+        let bytes = [0u8; 3]; // 3 bytes cannot be evenly divided into 2-byte or 4-byte samples
+        assert!(convert_samples_to_f32(&bytes, spa::param::audio::AudioFormat::S16LE).is_none());
+        assert!(convert_samples_to_f32(&bytes, spa::param::audio::AudioFormat::F32LE).is_none());
     }
 }

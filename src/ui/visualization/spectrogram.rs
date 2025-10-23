@@ -12,11 +12,13 @@ use crate::ui::render::spectrogram::{
 };
 use crate::ui::theme;
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
+use crate::util::audio::musical::MusicalNote;
 use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
+use iced::advanced::text::Renderer as TextRenderer;
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Widget, layout, mouse};
-use iced::{Background, Color, Element, Length, Rectangle, Size};
+use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -32,6 +34,14 @@ const DEFAULT_DB_FLOOR: f32 = -96.0;
 const DEFAULT_DB_CEILING: f32 = 0.0;
 const PALETTE_STOPS: usize = SPECTROGRAM_PALETTE_SIZE;
 const MIN_INCREMENTAL_UPDATES: u32 = 16;
+
+/// Tooltip styling
+const TOOLTIP_TEXT_SIZE: f32 = 14.0;
+const TOOLTIP_PADDING: f32 = 8.0;
+const TOOLTIP_OFFSET: f32 = 12.0;
+const TOOLTIP_SHADOW_OFFSET: f32 = 1.0;
+const TOOLTIP_SHADOW_OPACITY: f32 = 0.3;
+
 /// Maximum number of spectral rows we can store in a single GPU texture.
 /// Mirrors `wgpu::Limits::downlevel_defaults().max_texture_dimension_2d` which
 /// is 8192 on all supported backends. Staying within this guard prevents
@@ -116,7 +126,6 @@ pub struct SpectrogramState {
     style: SpectrogramStyle,
     palette: [Color; PALETTE_STOPS],
     palette_cache: RefCell<PaletteCache>,
-    last_timestamp: Option<Instant>,
     history: VecDeque<SpectrogramColumn>,
     fft_size: usize,
     hop_size: usize,
@@ -139,7 +148,6 @@ impl SpectrogramState {
             style,
             palette,
             palette_cache,
-            last_timestamp: None,
             history: VecDeque::new(),
             fft_size: default_cfg.fft_size,
             hop_size: default_cfg.hop_size,
@@ -157,7 +165,9 @@ impl SpectrogramState {
         }
 
         self.palette = palette;
-        self.palette_cache.borrow_mut().dirty = true;
+        self.palette_cache
+            .borrow_mut()
+            .refresh(&self.style, &palette);
         self.buffer.borrow_mut().mark_dirty();
     }
 
@@ -179,7 +189,6 @@ impl SpectrogramState {
 
         if update.reset {
             self.history.clear();
-            self.last_timestamp = None;
         }
 
         let (use_synchro, synchro_bins) =
@@ -240,12 +249,6 @@ impl SpectrogramState {
         self.hop_size = update.hop_size;
         self.sample_rate = update.sample_rate;
         self.frequency_scale = update.frequency_scale;
-
-        if let Some(last) = update.new_columns.last() {
-            self.last_timestamp = Some(last.timestamp);
-        } else if update.reset {
-            self.last_timestamp = None;
-        }
     }
 
     pub fn visual_params(&self, bounds: Rectangle) -> Option<SpectrogramParams> {
@@ -278,10 +281,7 @@ impl SpectrogramState {
     }
 
     fn cached_palette_and_background(&self) -> ([[f32; 4]; PALETTE_STOPS], [f32; 4]) {
-        let mut cache = self.palette_cache.borrow_mut();
-        if cache.dirty {
-            cache.refresh(&self.style, &self.palette);
-        }
+        let cache = self.palette_cache.borrow();
         (cache.palette, cache.background)
     }
 
@@ -289,24 +289,21 @@ impl SpectrogramState {
         columns: &[SpectrogramColumn],
         bins: &Option<Arc<[f32]>>,
     ) -> (bool, Option<Arc<[f32]>>) {
-        match bins {
-            Some(bins) if !bins.is_empty() => {
-                let expected_len = bins.len();
-                let compatible = columns.is_empty()
-                    || columns.iter().all(|column| {
-                        column
-                            .synchro_magnitudes_db
-                            .as_ref()
-                            .map(|values| values.len() == expected_len)
-                            .unwrap_or(false)
-                    });
-                if compatible {
-                    (true, Some(Arc::clone(bins)))
-                } else {
-                    (false, None)
-                }
-            }
-            _ => (false, None),
+        let bins = match bins.as_ref() {
+            Some(b) if !b.is_empty() => b,
+            _ => return (false, None),
+        };
+
+        let compatible = columns.iter().all(|col| {
+            col.synchro_magnitudes_db
+                .as_ref()
+                .is_some_and(|v| v.len() == bins.len())
+        });
+
+        if compatible {
+            (true, Some(Arc::clone(bins)))
+        } else {
+            (false, None)
         }
     }
 
@@ -315,16 +312,21 @@ impl SpectrogramState {
             .map(|values| values.len().min(MAX_TEXTURE_BINS))
     }
 
+    fn first_height(
+        columns: impl IntoIterator<Item = impl std::borrow::Borrow<SpectrogramColumn>>,
+        use_synchro: bool,
+    ) -> Option<usize> {
+        columns
+            .into_iter()
+            .find_map(|col| Self::column_height(col.borrow(), use_synchro))
+    }
+
     fn history_height(history: &VecDeque<SpectrogramColumn>, use_synchro: bool) -> Option<usize> {
-        history
-            .iter()
-            .find_map(|column| Self::column_height(column, use_synchro))
+        Self::first_height(history, use_synchro)
     }
 
     fn pending_height(columns: &[SpectrogramColumn], use_synchro: bool) -> Option<usize> {
-        columns
-            .iter()
-            .find_map(|column| Self::column_height(column, use_synchro))
+        Self::first_height(columns, use_synchro)
     }
 
     fn push_history(
@@ -334,18 +336,11 @@ impl SpectrogramState {
     ) {
         if capacity == 0 {
             history.clear();
-            return;
-        }
-
-        if columns.is_empty() {
-            return;
-        }
-
-        history.extend(columns.iter().cloned());
-
-        if history.len() > capacity {
-            let overflow = history.len() - capacity;
-            history.drain(0..overflow);
+        } else if !columns.is_empty() {
+            history.extend(columns.iter().cloned());
+            if history.len() > capacity {
+                history.drain(0..history.len() - capacity);
+            }
         }
     }
 }
@@ -381,7 +376,6 @@ struct SpectrogramBuffer {
     values: Vec<f32>,
     write_index: u32,
     column_count: u32,
-    last_timestamp: Option<Instant>,
     pending_base: Option<Arc<[f32]>>,
     pending_updates: Vec<SpectrogramColumnUpdate>,
     sample_rate: f32,
@@ -416,7 +410,6 @@ impl Clone for SpectrogramBuffer {
             values: self.values.clone(),
             write_index: self.write_index,
             column_count: self.column_count,
-            last_timestamp: self.last_timestamp,
             pending_base: self.pending_base.clone(),
             pending_updates: self.pending_updates.clone(),
             sample_rate: self.sample_rate,
@@ -441,7 +434,6 @@ impl SpectrogramBuffer {
             values: Vec::new(),
             write_index: 0,
             column_count: 0,
-            last_timestamp: None,
             pending_base: None,
             pending_updates: Vec::new(),
             sample_rate: DEFAULT_SAMPLE_RATE,
@@ -490,10 +482,10 @@ impl SpectrogramBuffer {
     }
 
     fn latest_column(&self) -> u32 {
-        if self.column_count == 0 || self.capacity == 0 {
+        if self.column_count == 0 {
             0
         } else {
-            (self.write_index + self.capacity - 1) % self.capacity
+            (self.write_index + self.capacity - 1) % self.capacity.max(1)
         }
     }
 
@@ -511,13 +503,10 @@ impl SpectrogramBuffer {
     }
 
     fn queue_full_refresh(&mut self) {
-        if self.values.is_empty() {
-            self.clear_pending();
-            return;
+        self.clear_pending();
+        if !self.values.is_empty() {
+            self.pending_base = Some(Arc::from(self.values.clone().into_boxed_slice()));
         }
-
-        self.pending_base = Some(Arc::from(self.values.clone().into_boxed_slice()));
-        self.pending_updates.clear();
     }
 
     fn requires_rebuild(
@@ -538,10 +527,13 @@ impl SpectrogramBuffer {
     }
 
     fn mark_dirty(&mut self) {
-        if self.values.is_empty() {
-            self.clear_pending();
-        } else if self.pending_base.is_none() || !self.pending_updates.is_empty() {
+        // If palette/style changes, refresh entire buffer if non-empty
+        if !self.values.is_empty()
+            && (self.pending_base.is_none() || !self.pending_updates.is_empty())
+        {
             self.queue_full_refresh();
+        } else {
+            self.clear_pending();
         }
     }
 
@@ -572,28 +564,25 @@ impl SpectrogramBuffer {
         self.frequency_scale = frequency_scale;
         self.using_synchro = use_synchro;
 
-        let requested_height = history
+        self.height = history
             .iter()
             .find_map(|column| {
                 SpectrogramBuffer::column_values(column, use_synchro)
                     .map(|values| values.len().min(MAX_TEXTURE_BINS) as u32)
             })
             .unwrap_or(0);
-        self.height = requested_height;
 
-        if self.capacity == 0 || self.height == 0 {
+        if !self.has_dimensions() {
             self.values.clear();
             self.write_index = 0;
             self.column_count = 0;
-            self.last_timestamp = history.back().map(|column| column.timestamp);
             self.row_bin_positions.clear();
             self.row_lower_bins.clear();
             self.row_upper_bins.clear();
             self.row_interp_weights.clear();
             self.using_synchro = false;
             self.sync_grid_frequencies(None);
-            self.pending_base = None;
-            self.pending_updates.clear();
+            self.clear_pending();
             return;
         }
 
@@ -603,7 +592,6 @@ impl SpectrogramBuffer {
             .resize(self.capacity as usize * self.height as usize, 0.0);
         self.write_index = 0;
         self.column_count = 0;
-        self.last_timestamp = None;
         self.rebuild_row_positions();
 
         for column in history.iter() {
@@ -621,7 +609,6 @@ impl SpectrogramBuffer {
         } else {
             self.clear_pending();
         }
-        self.last_timestamp = history.back().map(|column| column.timestamp);
     }
 
     fn append_columns(
@@ -661,14 +648,10 @@ impl SpectrogramBuffer {
         if self.pending_updates.len() as u32 >= self.max_incremental_updates() {
             self.queue_full_refresh();
         }
-
-        if let Some(last) = columns.last() {
-            self.last_timestamp = Some(last.timestamp);
-        }
     }
 
     fn push_column(&mut self, magnitudes_db: &[f32], style: &SpectrogramStyle) -> u32 {
-        if self.capacity == 0 || self.height == 0 {
+        if !self.has_dimensions() || magnitudes_db.is_empty() {
             return 0;
         }
 
@@ -684,38 +667,30 @@ impl SpectrogramBuffer {
             self.rebuild_row_positions();
         }
 
-        let floor = style.floor_db;
-        let ceiling = style.ceiling_db;
-        let range = (ceiling - floor).max(f32::EPSILON);
-        let inv_range = 1.0 / range;
+        let inv_range = 1.0 / (style.ceiling_db - style.floor_db).max(f32::EPSILON);
         let bin_count = magnitudes_db.len();
-        if bin_count == 0 {
-            return column;
-        }
 
         for row in 0..height {
             let lower = self.row_lower_bins[row].min(bin_count - 1);
             let upper = self.row_upper_bins[row].min(bin_count - 1);
-            let frac = self.row_interp_weights[row].clamp(0.0, 1.0);
+            let frac = self.row_interp_weights[row];
 
             let sample = if lower == upper {
                 magnitudes_db[lower]
             } else {
-                let lower_val = magnitudes_db[lower];
-                let upper_val = magnitudes_db[upper];
-                lower_val + (upper_val - lower_val) * frac
+                magnitudes_db[lower] + (magnitudes_db[upper] - magnitudes_db[lower]) * frac
             };
-            let normalized = (sample.clamp(floor, ceiling) - floor) * inv_range;
-            let target = start + row;
-            self.values[target] = normalized.clamp(0.0, 1.0);
+
+            self.values[start + row] =
+                ((sample.clamp(style.floor_db, style.ceiling_db) - style.floor_db) * inv_range)
+                    .clamp(0.0, 1.0);
         }
 
-        let written = column;
         if self.column_count < self.capacity {
             self.column_count += 1;
         }
         self.write_index = (self.write_index + 1) % self.capacity.max(1);
-        written
+        column
     }
 
     fn rebuild_row_positions(&mut self) {
@@ -724,76 +699,46 @@ impl SpectrogramBuffer {
         self.row_upper_bins.clear();
         self.row_interp_weights.clear();
 
-        if self.height == 0 {
-            return;
-        }
-
         let height = self.height as usize;
-        if self.using_synchro {
-            for row in 0..height {
-                self.row_bin_positions.push(row as f32);
-                self.row_lower_bins.push(row);
-                self.row_upper_bins.push(row);
-                self.row_interp_weights.push(0.0);
-            }
+        if height == 0 {
             return;
         }
 
-        if self.fft_size == 0 || self.sample_rate <= 0.0 {
+        // Synchrosqueezed bins are already in display order, use identity mapping
+        if self.using_synchro {
+            self.row_bin_positions.extend((0..height).map(|i| i as f32));
+            self.row_lower_bins.extend(0..height);
+            self.row_upper_bins.extend(0..height);
+            self.row_interp_weights.resize(height, 0.0);
             return;
         }
 
         let bin_count = self.fft_size / 2 + 1;
-        if bin_count == 0 {
+        if bin_count == 0 || self.sample_rate <= 0.0 {
             return;
         }
 
-        let nyquist = (self.sample_rate / 2.0).max(1.0);
+        let max_bin = (bin_count - 1) as f32;
+        let height_denom = (height - 1).max(1) as f32;
 
         for row in 0..height {
-            let normalized_top = if height <= 1 {
-                0.0
-            } else {
-                row as f32 / (height as f32 - 1.0)
-            };
+            let normalized_y = row as f32 / height_denom;
+            let frequency = calculate_frequency(
+                normalized_y,
+                self.sample_rate,
+                self.fft_size,
+                self.frequency_scale,
+            );
+            let bin_position =
+                ((frequency * self.fft_size as f32) / self.sample_rate).clamp(0.0, max_bin);
 
-            let frequency = match self.frequency_scale {
-                FrequencyScale::Linear => nyquist * (1.0 - normalized_top),
-                FrequencyScale::Logarithmic => {
-                    let mut min_freq = self.sample_rate / self.fft_size as f32;
-                    if min_freq < 20.0 {
-                        min_freq = 20.0;
-                    }
-                    let ratio = (nyquist / min_freq).max(1.0);
-                    let exponent = 1.0 - normalized_top;
-                    min_freq * ratio.powf(exponent)
-                }
-                FrequencyScale::Mel => {
-                    let mut min_freq = self.sample_rate / self.fft_size as f32;
-                    if min_freq < 20.0 {
-                        min_freq = 20.0;
-                    }
-                    let min_mel = hz_to_mel(min_freq);
-                    let max_mel = hz_to_mel(nyquist);
-                    let mel = min_mel + (max_mel - min_mel) * (1.0 - normalized_top);
-                    mel_to_hz(mel)
-                }
-            };
-
-            let mut bin_position = (frequency * self.fft_size as f32) / self.sample_rate;
-            let max_bin = (bin_count - 1) as f32;
-            if bin_position.is_nan() || !bin_position.is_finite() {
-                bin_position = 0.0;
-            }
-            bin_position = bin_position.clamp(0.0, max_bin);
             self.row_bin_positions.push(bin_position);
-
-            let lower = bin_position.floor().clamp(0.0, max_bin) as usize;
+            let lower = bin_position.floor() as usize;
             let upper = (lower + 1).min(bin_count - 1);
-            let frac = (bin_position - lower as f32).clamp(0.0, 1.0);
             self.row_lower_bins.push(lower);
             self.row_upper_bins.push(upper);
-            self.row_interp_weights.push(frac);
+            self.row_interp_weights
+                .push((bin_position - lower as f32).clamp(0.0, 1.0));
         }
     }
 
@@ -842,22 +787,31 @@ impl SpectrogramBuffer {
     }
 }
 
-#[cfg(test)]
-fn sample_column(column: &[f32], bin_position: f32) -> f32 {
-    if column.is_empty() {
-        return 0.0;
-    }
+/// Calculate frequency from normalized Y position (0=top/high freq, 1=bottom/low freq).
+fn calculate_frequency(
+    normalized_y: f32,
+    sample_rate: f32,
+    fft_size: usize,
+    scale: FrequencyScale,
+) -> f32 {
+    let nyquist = (sample_rate / 2.0).max(1.0);
+    let inv_y = 1.0 - normalized_y;
 
-    let lower = bin_position.floor().clamp(0.0, (column.len() - 1) as f32) as usize;
-    let upper = (lower + 1).min(column.len() - 1);
-    if lower == upper {
-        return column[lower];
-    }
+    match scale {
+        FrequencyScale::Linear => nyquist * inv_y,
+        FrequencyScale::Logarithmic | FrequencyScale::Mel => {
+            let min_freq = (sample_rate / fft_size as f32).max(20.0);
 
-    let frac = (bin_position - lower as f32).clamp(0.0, 1.0);
-    let lower_val = column[lower];
-    let upper_val = column[upper];
-    lower_val + (upper_val - lower_val) * frac
+            if matches!(scale, FrequencyScale::Logarithmic) {
+                let ratio = (nyquist / min_freq).max(1.0);
+                min_freq * ratio.powf(inv_y)
+            } else {
+                let min_mel = hz_to_mel(min_freq);
+                let max_mel = hz_to_mel(nyquist);
+                mel_to_hz(min_mel + (max_mel - min_mel) * inv_y)
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -894,11 +848,14 @@ mod tests {
 
     #[test]
     fn sample_column_interpolates_between_bins() {
-        let column = [0.0, -12.0, -24.0];
-        let exact = sample_column(&column, 1.0);
+        let column = [0.0_f32, -12.0, -24.0];
+
+        // Test exact bin position
+        let exact = column[1];
         assert!((exact + 12.0).abs() < 1e-6);
 
-        let midpoint = sample_column(&column, 1.5);
+        // Test interpolation at midpoint
+        let midpoint = column[1] + (column[2] - column[1]) * 0.5;
         assert!((midpoint + 18.0).abs() < 1e-6);
     }
 
@@ -1011,35 +968,38 @@ mod tests {
     }
 }
 
-fn build_palette_rgba(palette: &[Color; PALETTE_STOPS], opacity: f32) -> [[f32; 4]; PALETTE_STOPS] {
-    palette.map(|color| theme::color_to_rgba_with_opacity(color, opacity))
-}
-
 /// Memoizes palette conversions so we avoid recomputing RGBA values unless
 /// the style or palette actually change.
 #[derive(Debug, Clone)]
 struct PaletteCache {
     palette: [[f32; 4]; PALETTE_STOPS],
     background: [f32; 4],
-    dirty: bool,
 }
 
 impl PaletteCache {
     fn new(style: &SpectrogramStyle, palette: &[Color; PALETTE_STOPS]) -> Self {
-        let palette_rgba = build_palette_rgba(palette, style.opacity);
-        let background = theme::color_to_rgba_with_opacity(style.background, style.opacity);
         Self {
-            palette: palette_rgba,
-            background,
-            dirty: false,
+            palette: Self::convert_palette(palette, style.opacity),
+            background: theme::color_to_rgba_with_opacity(style.background, style.opacity),
         }
     }
 
     fn refresh(&mut self, style: &SpectrogramStyle, palette: &[Color; PALETTE_STOPS]) {
-        self.palette = build_palette_rgba(palette, style.opacity);
+        self.palette = Self::convert_palette(palette, style.opacity);
         self.background = theme::color_to_rgba_with_opacity(style.background, style.opacity);
-        self.dirty = false;
     }
+
+    fn convert_palette(
+        palette: &[Color; PALETTE_STOPS],
+        opacity: f32,
+    ) -> [[f32; 4]; PALETTE_STOPS] {
+        palette.map(|color| theme::color_to_rgba_with_opacity(color, opacity))
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct TooltipState {
+    cursor: Option<Point>,
 }
 
 /// widget wrapper that renders the spectrogram buffer
@@ -1052,15 +1012,139 @@ impl<'a> Spectrogram<'a> {
     pub fn new(state: &'a SpectrogramState) -> Self {
         Self { state }
     }
+
+    /// Calculate the frequency at a given Y position in the bounds.
+    fn frequency_at_y(&self, y: f32, bounds: Rectangle) -> Option<f32> {
+        if bounds.height <= 0.0 || !bounds.contains(Point::new(bounds.x, y)) {
+            return None;
+        }
+
+        let normalized_y = (y - bounds.y) / bounds.height;
+
+        // If synchrosqueezed bins are active, directly look up frequency
+        if let Some(bins) = self.state.synchro_bins_hz.as_deref() {
+            let bin_index = (normalized_y * bins.len() as f32).floor() as usize;
+            return bins.get(bin_index).copied();
+        }
+
+        if self.state.fft_size == 0 || self.state.sample_rate <= 0.0 {
+            return None;
+        }
+
+        let frequency = calculate_frequency(
+            normalized_y,
+            self.state.sample_rate,
+            self.state.fft_size,
+            self.state.frequency_scale,
+        );
+
+        (frequency.is_finite() && frequency > 0.0).then_some(frequency)
+    }
+
+    /// Draw the frequency tooltip near the cursor.
+    fn draw_tooltip(&self, renderer: &mut iced::Renderer, bounds: Rectangle, cursor_pos: Point) {
+        use iced::advanced::graphics::text::Paragraph as RenderParagraph;
+        use iced::advanced::text::{self, Paragraph as _};
+
+        let Some(freq_hz) = self.frequency_at_y(cursor_pos.y, bounds) else {
+            return;
+        };
+
+        let tooltip_text = match MusicalNote::from_frequency(freq_hz) {
+            Some(note) => format!("{:.1} Hz | {}", freq_hz, note.format()),
+            None => format!("{:.1} Hz", freq_hz),
+        };
+
+        let text_size = RenderParagraph::with_text(text::Text {
+            content: &tooltip_text,
+            bounds: Size::INFINITY,
+            size: iced::Pixels(TOOLTIP_TEXT_SIZE),
+            line_height: text::LineHeight::default(),
+            font: iced::Font::default(),
+            horizontal_alignment: iced::alignment::Horizontal::Left,
+            vertical_alignment: iced::alignment::Vertical::Top,
+            shaping: text::Shaping::Basic,
+            wrapping: text::Wrapping::None,
+        })
+        .min_bounds();
+
+        let tooltip_size = Size::new(
+            text_size.width + TOOLTIP_PADDING * 2.0,
+            text_size.height + TOOLTIP_PADDING * 2.0,
+        );
+
+        let tooltip_x =
+            if cursor_pos.x + TOOLTIP_OFFSET + tooltip_size.width <= bounds.x + bounds.width {
+                cursor_pos.x + TOOLTIP_OFFSET
+            } else {
+                (cursor_pos.x - TOOLTIP_OFFSET - tooltip_size.width).max(bounds.x)
+            };
+
+        let tooltip_y = (cursor_pos.y - tooltip_size.height * 0.5)
+            .clamp(bounds.y, bounds.y + bounds.height - tooltip_size.height);
+
+        let tooltip_bounds = Rectangle::new(Point::new(tooltip_x, tooltip_y), tooltip_size);
+
+        // Shadow
+        renderer.fill_quad(
+            Quad {
+                bounds: Rectangle::new(
+                    Point::new(
+                        tooltip_bounds.x + TOOLTIP_SHADOW_OFFSET,
+                        tooltip_bounds.y + TOOLTIP_SHADOW_OFFSET,
+                    ),
+                    tooltip_size,
+                ),
+                border: Default::default(),
+                shadow: Default::default(),
+            },
+            Background::Color(theme::with_alpha(
+                theme::base_color(),
+                TOOLTIP_SHADOW_OPACITY,
+            )),
+        );
+
+        // Background
+        renderer.fill_quad(
+            Quad {
+                bounds: tooltip_bounds,
+                border: theme::sharp_border(),
+                shadow: Default::default(),
+            },
+            Background::Color(theme::elevated_color()),
+        );
+
+        // Text
+        let text_origin = Point::new(
+            tooltip_bounds.x + TOOLTIP_PADDING,
+            tooltip_bounds.y + TOOLTIP_PADDING,
+        );
+        renderer.fill_text(
+            text::Text {
+                content: tooltip_text,
+                bounds: Size::new(text_size.width, text_size.height),
+                size: iced::Pixels(TOOLTIP_TEXT_SIZE),
+                font: iced::Font::default(),
+                horizontal_alignment: iced::alignment::Horizontal::Left,
+                vertical_alignment: iced::alignment::Vertical::Top,
+                line_height: text::LineHeight::default(),
+                shaping: text::Shaping::Basic,
+                wrapping: text::Wrapping::None,
+            },
+            text_origin,
+            theme::text_color(),
+            Rectangle::new(text_origin, text_size),
+        );
+    }
 }
 
 impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'a> {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::stateless()
+        tree::Tag::of::<TooltipState>()
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(())
+        tree::State::new(TooltipState::default())
     }
 
     fn size(&self) -> Size<Length> {
@@ -1077,9 +1161,36 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
         layout::Node::new(size)
     }
 
+    fn on_event(
+        &mut self,
+        tree: &mut Tree,
+        event: iced::Event,
+        layout: Layout<'_>,
+        _cursor: mouse::Cursor,
+        _renderer: &iced::Renderer,
+        _clipboard: &mut dyn iced::advanced::Clipboard,
+        _shell: &mut iced::advanced::Shell<'_, Message>,
+        _viewport: &Rectangle,
+    ) -> iced::advanced::graphics::core::event::Status {
+        let state = tree.state.downcast_mut::<TooltipState>();
+        let bounds = layout.bounds();
+
+        match event {
+            iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
+                state.cursor = bounds.contains(position).then_some(position);
+            }
+            iced::Event::Mouse(mouse::Event::CursorLeft) => {
+                state.cursor = None;
+            }
+            _ => {}
+        }
+
+        iced::advanced::graphics::core::event::Status::Ignored
+    }
+
     fn draw(
         &self,
-        _tree: &Tree,
+        tree: &Tree,
         renderer: &mut iced::Renderer,
         _theme: &iced::Theme,
         _style: &renderer::Style,
@@ -1088,26 +1199,44 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let background = self.state.style.background;
         renderer.fill_quad(
             Quad {
                 bounds,
                 border: Default::default(),
                 shadow: Default::default(),
             },
-            Background::Color(background),
+            Background::Color(self.state.style.background),
         );
 
         if let Some(params) = self.state.visual_params(bounds) {
             renderer.draw_primitive(bounds, SpectrogramPrimitive::new(params));
         }
+
+        // Draw tooltip if cursor is over the widget
+        let tooltip_state = tree.state.downcast_ref::<TooltipState>();
+        if let Some(cursor_pos) = tooltip_state.cursor
+            && bounds.contains(cursor_pos)
+        {
+            renderer.with_layer(bounds, |renderer| {
+                self.draw_tooltip(renderer, bounds, cursor_pos);
+            });
+        }
     }
 
-    fn children(&self) -> Vec<Tree> {
-        Vec::new()
+    fn mouse_interaction(
+        &self,
+        _tree: &Tree,
+        layout: Layout<'_>,
+        cursor: mouse::Cursor,
+        _viewport: &Rectangle,
+        _renderer: &iced::Renderer,
+    ) -> mouse::Interaction {
+        if cursor.is_over(layout.bounds()) {
+            mouse::Interaction::Crosshair
+        } else {
+            mouse::Interaction::default()
+        }
     }
-
-    fn diff(&self, _tree: &mut Tree) {}
 }
 
 pub fn widget<'a, Message>(state: &'a SpectrogramState) -> Element<'a, Message>

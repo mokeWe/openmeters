@@ -1,74 +1,47 @@
 //! geometry utilities for rendering.
 
 pub fn compute_normals(positions: &[(f32, f32)]) -> Vec<(f32, f32)> {
-    let count = positions.len();
-    if count == 0 {
-        return Vec::new();
-    }
+    match positions.len() {
+        0 => Vec::new(),
+        1 => vec![(0.0, 1.0)],
+        _ => {
+            // Compute segment normals inline
+            let segment_normals: Vec<_> = positions
+                .windows(2)
+                .map(|w| {
+                    let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+                    let len_sq = dx * dx + dy * dy;
+                    if len_sq <= f32::EPSILON * f32::EPSILON {
+                        None
+                    } else {
+                        let inv_len = len_sq.sqrt().recip();
+                        Some((-dy * inv_len, dx * inv_len))
+                    }
+                })
+                .collect();
 
-    if count == 1 {
-        return vec![(0.0, 1.0)];
-    }
+            // Average adjacent segment normals to get vertex normals
+            (0..positions.len())
+                .map(|i| {
+                    let prev = if i > 0 { segment_normals[i - 1] } else { None };
+                    let next = segment_normals.get(i).copied().flatten();
 
-    let mut normals = Vec::with_capacity(count);
-    let segment_normals: Vec<_> = positions
-        .windows(2)
-        .map(|window| segment_normal(window[0], window[1]))
-        .collect();
-
-    let mut prev_normal: Option<(f32, f32)> = None;
-    let mut next_idx = 0;
-
-    for index in 0..count {
-        while next_idx < segment_normals.len() && segment_normals[next_idx].is_none() {
-            next_idx += 1;
+                    match (prev, next) {
+                        (Some((px, py)), Some((nx, ny))) => {
+                            let (sx, sy) = (px + nx, py + ny);
+                            let len_sq = sx * sx + sy * sy;
+                            if len_sq <= f32::EPSILON * f32::EPSILON {
+                                (nx, ny) // Fall back to next if sum is degenerate
+                            } else {
+                                let inv_len = len_sq.sqrt().recip();
+                                (sx * inv_len, sy * inv_len)
+                            }
+                        }
+                        (Some(n), None) | (None, Some(n)) => n,
+                        (None, None) => (0.0, 1.0),
+                    }
+                })
+                .collect()
         }
-
-        let next_normal = if next_idx < segment_normals.len() {
-            segment_normals[next_idx]
-        } else {
-            None
-        };
-
-        let normal = match (prev_normal, next_normal) {
-            (Some(prev), Some(next)) => {
-                let nx = prev.0 + next.0;
-                let ny = prev.1 + next.1;
-                let len = (nx * nx + ny * ny).sqrt();
-                if len <= f32::EPSILON {
-                    next
-                } else {
-                    let inv_len = len.recip();
-                    (nx * inv_len, ny * inv_len)
-                }
-            }
-            (Some(prev), None) => prev,
-            (None, Some(next)) => next,
-            (None, None) => (0.0, 1.0),
-        };
-
-        normals.push(normal);
-
-        if index < segment_normals.len()
-            && let Some(current) = segment_normals[index] {
-                prev_normal = Some(current);
-            }
-
-        if next_idx == index {
-            next_idx += 1;
-        }
-    }
-
-    normals
-}
-
-fn segment_normal(a: (f32, f32), b: (f32, f32)) -> Option<(f32, f32)> {
-    let dx = b.0 - a.0;
-    let dy = b.1 - a.1;
-    let length = (dx * dx + dy * dy).sqrt();
-    if length <= f32::EPSILON {
-        None
-    } else {
-        Some((-dy / length, dx / length))
     }
 }
