@@ -24,7 +24,7 @@ Checked features are implemented, unchecked features are planned.
   - [x] XY/vectorscope mode
 - [x] **spectrogram**
   - [x] Reassignment for better low-frequency resolution
-  - [ ] Note & frequency tooltips
+  - [x] Note & frequency tooltips
   - [x] mel, log, and linear scales
   - [x] Color maps
 - [x] **spectrum analyzer**
@@ -81,7 +81,7 @@ If you encounter a bug that causes OpenMeters to misbehave, you can delete `sett
 
 - **EasyEffects** (<https://github.com/wwmm/easyeffects>) for being a great source of inspiration and for their excellent work in audio processing. Reading through their codebase taught me a lot about PipeWire.
 - **MiniMeters** (<https://minimeters.app/>) for inspiring this entire project and for doing it better than I ever could. If you can, please support their work!
-- **Andura's Scrolloscope** (<https://github.com/ardura/Scrollscope>) for making a simple oscilloscope complex and open-source.
+- **Ardura's Scrolloscope** (<https://github.com/ardura/Scrollscope>) for making a simple oscilloscope complex and open-source.
 - **Tim Strasser's Oszilloskop** (<https://github.com/timstr/oszilloskop>)
 
 ### libraries used
