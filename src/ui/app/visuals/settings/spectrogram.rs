@@ -4,7 +4,10 @@ use super::widgets::{
     update_f32_range, update_usize_from_f32,
 };
 use super::{ModuleSettingsPane, SettingsMessage};
-use crate::dsp::spectrogram::{FrequencyScale, SpectrogramConfig, WindowKind};
+use crate::dsp::spectrogram::{
+    FrequencyScale, PLANCK_BESSEL_DEFAULT_BETA, PLANCK_BESSEL_DEFAULT_EPSILON, SpectrogramConfig,
+    WindowKind,
+};
 use crate::ui::render::spectrogram::SPECTROGRAM_PALETTE_SIZE;
 use crate::ui::settings::{ModuleSettings, PaletteSettings, SettingsHandle, SpectrogramSettings};
 use crate::ui::theme;
@@ -33,6 +36,8 @@ const TEMPORAL_BLEND_HZ_RANGE: SliderRange = SliderRange::new(0.0, 4000.0, 1.0);
 const FREQUENCY_SMOOTHING_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 1.0);
 const FREQUENCY_MAX_HZ_RANGE: SliderRange = SliderRange::new(0.0, 4000.0, 1.0);
 const FREQUENCY_BLEND_HZ_RANGE: SliderRange = SliderRange::new(0.0, 4000.0, 1.0);
+const PLANCK_BESSEL_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
+const PLANCK_BESSEL_BETA_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 0.25);
 const SECTION_PADDING: f32 = 12.0;
 const SECTION_SPACING: f32 = 10.0;
 const ROW_SPACING: f32 = 10.0;
@@ -52,6 +57,22 @@ pub struct SpectrogramSettingsPane {
     frequency_scale: FrequencyScale,
     hop_ratio: HopRatio,
     palette: PaletteEditor,
+    planck_bessel: PlanckBesselParams,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct PlanckBesselParams {
+    epsilon: f32,
+    beta: f32,
+}
+
+impl Default for PlanckBesselParams {
+    fn default() -> Self {
+        Self {
+            epsilon: PLANCK_BESSEL_DEFAULT_EPSILON,
+            beta: PLANCK_BESSEL_DEFAULT_BETA,
+        }
+    }
 }
 
 impl SpectrogramSettingsPane {
@@ -130,10 +151,32 @@ impl SpectrogramSettingsPane {
         .spacing(ROW_SPACING)
         .width(Length::Fill);
 
-        section_container(
-            "Core controls",
-            column![paired_pick_lists, history_slider].spacing(CONTROL_SPACING),
-        )
+        let mut body = column![paired_pick_lists].spacing(CONTROL_SPACING);
+
+        if self.window == WindowPreset::PlanckBessel {
+            let (epsilon, beta) = self.planck_bessel_params();
+            let epsilon_slider = labeled_slider(
+                "Planck-Bessel epsilon",
+                epsilon,
+                format!("{epsilon:.3}"),
+                PLANCK_BESSEL_EPSILON_RANGE,
+                |value| SettingsMessage::Spectrogram(Message::PlanckBesselEpsilon(value)),
+            );
+
+            let beta_slider = labeled_slider(
+                "Planck-Bessel beta",
+                beta,
+                format!("{beta:.2}"),
+                PLANCK_BESSEL_BETA_RANGE,
+                |value| SettingsMessage::Spectrogram(Message::PlanckBesselBeta(value)),
+            );
+
+            body = body.push(column![epsilon_slider, beta_slider].spacing(CONTROL_SPACING));
+        }
+
+        body = body.push(history_slider);
+
+        section_container("Core controls", body)
     }
 
     fn advanced_section(&self) -> container::Container<'_, SettingsMessage> {
@@ -261,6 +304,10 @@ impl SpectrogramSettingsPane {
 
         section_container("Colors", column![controls].spacing(CONTROL_SPACING))
     }
+
+    fn planck_bessel_params(&self) -> (f32, f32) {
+        (self.planck_bessel.epsilon, self.planck_bessel.beta)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -269,6 +316,8 @@ pub enum Message {
     HopRatio(HopRatio),
     HistoryLength(f32),
     Window(WindowPreset),
+    PlanckBesselEpsilon(f32),
+    PlanckBesselBeta(f32),
     FrequencyScale(FrequencyScale),
     UseReassignment(bool),
     ReassignmentFloor(f32),
@@ -311,6 +360,11 @@ pub fn create(
     let frequency_scale = config.frequency_scale;
     let hop_ratio = HopRatio::from_config(config.fft_size, config.hop_size);
 
+    let mut planck_bessel = PlanckBesselParams::default();
+    if let WindowKind::PlanckBessel { epsilon, beta } = config.window {
+        planck_bessel = PlanckBesselParams { epsilon, beta };
+    }
+
     SpectrogramSettingsPane {
         visual_id,
         config,
@@ -318,6 +372,7 @@ pub fn create(
         frequency_scale,
         hop_ratio,
         palette: PaletteEditor::new(&palette, &theme::DEFAULT_SPECTROGRAM_PALETTE),
+        planck_bessel,
     }
 }
 
@@ -390,9 +445,44 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             }
             Message::Window(preset) => {
                 if self.window != *preset {
+                    if let WindowKind::PlanckBessel { epsilon, beta } = self.config.window {
+                        self.planck_bessel = PlanckBesselParams { epsilon, beta };
+                    }
                     self.window = *preset;
-                    self.config.window = preset.to_window_kind();
+                    self.config.window = match preset {
+                        WindowPreset::PlanckBessel => WindowKind::PlanckBessel {
+                            epsilon: self.planck_bessel.epsilon,
+                            beta: self.planck_bessel.beta,
+                        },
+                        _ => preset.to_window_kind(),
+                    };
                     changed = true;
+                }
+            }
+            Message::PlanckBesselEpsilon(value) => {
+                if let WindowKind::PlanckBessel { epsilon, beta } = self.config.window {
+                    let mut new_epsilon = epsilon;
+                    if update_f32_range(&mut new_epsilon, *value, PLANCK_BESSEL_EPSILON_RANGE) {
+                        self.planck_bessel.epsilon = new_epsilon;
+                        self.config.window = WindowKind::PlanckBessel {
+                            epsilon: new_epsilon,
+                            beta,
+                        };
+                        changed = true;
+                    }
+                }
+            }
+            Message::PlanckBesselBeta(value) => {
+                if let WindowKind::PlanckBessel { epsilon, beta } = self.config.window {
+                    let mut new_beta = beta;
+                    if update_f32_range(&mut new_beta, *value, PLANCK_BESSEL_BETA_RANGE) {
+                        self.planck_bessel.beta = new_beta;
+                        self.config.window = WindowKind::PlanckBessel {
+                            epsilon,
+                            beta: new_beta,
+                        };
+                        changed = true;
+                    }
                 }
             }
             Message::FrequencyScale(scale) => {
@@ -528,8 +618,8 @@ impl WindowPreset {
             Self::Hamming => WindowKind::Hamming,
             Self::Blackman => WindowKind::Blackman,
             Self::PlanckBessel => WindowKind::PlanckBessel {
-                epsilon: 0.3,
-                beta: 11.0,
+                epsilon: PLANCK_BESSEL_DEFAULT_EPSILON,
+                beta: PLANCK_BESSEL_DEFAULT_BETA,
             },
         }
     }

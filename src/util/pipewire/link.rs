@@ -1,4 +1,3 @@
-use crate::util::pipewire::graph::GraphPort;
 use pipewire as pw;
 use pw::properties::properties;
 
@@ -28,16 +27,4 @@ pub fn create_passive_audio_link(
     };
 
     core.create_object::<pw::link::Link>(LINK_FACTORY_NAME, &props)
-}
-
-/// Produce a compact human-readable description of a PipeWire port.
-pub fn format_port_debug(port: &GraphPort) -> String {
-    format!(
-        "port={} dir={:?} monitor={} channel={} name={}",
-        port.port_id,
-        port.direction,
-        port.is_monitor,
-        port.channel.as_deref().unwrap_or("unknown"),
-        port.name.as_deref().unwrap_or("unnamed")
-    )
 }

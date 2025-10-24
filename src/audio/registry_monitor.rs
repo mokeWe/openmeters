@@ -1,5 +1,6 @@
-use crate::audio::{VIRTUAL_SINK_NAME, pw_registry, pw_router};
+use crate::audio::{VIRTUAL_SINK_NAME, pw_loopback, pw_registry, pw_router};
 use crate::ui::RoutingCommand;
+use crate::ui::app::config::{CaptureMode, DeviceSelection};
 use crate::util::log;
 use async_channel::Sender;
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -120,13 +121,19 @@ struct RoutingManager {
     commands: mpsc::Receiver<RoutingCommand>,
     preferences: FxHashMap<u32, bool>,
     routed_nodes: FxHashMap<u32, RouteState>,
+    capture_mode: CaptureMode,
+    device_target: DeviceSelection,
     last_sink_id: Option<u32>,
     sink_warning_logged: bool,
     last_snapshot: Option<Arc<pw_registry::RegistrySnapshot>>,
     last_hardware_sink_id: Option<u32>,
     last_hardware_sink_label: Option<String>,
+    last_capture_node_id: Option<u32>,
+    last_capture_label: Option<String>,
+    capture_warning_logged: bool,
     router_retry_after: Option<Instant>,
     router_epoch: u64,
+    loopback_mode: Option<pw_loopback::LoopbackMode>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -199,13 +206,19 @@ impl RoutingManager {
             commands,
             preferences: FxHashMap::default(),
             routed_nodes: FxHashMap::default(),
+            capture_mode: CaptureMode::Applications,
+            device_target: DeviceSelection::Default,
             last_sink_id: None,
             sink_warning_logged: false,
             last_snapshot: None,
             last_hardware_sink_id: None,
             last_hardware_sink_label: None,
+            last_capture_node_id: None,
+            last_capture_label: None,
+            capture_warning_logged: false,
             router_retry_after: None,
             router_epoch,
+            loopback_mode: None,
         }
     }
 
@@ -226,17 +239,49 @@ impl RoutingManager {
         {
             self.last_hardware_sink_id = None;
         }
+
+        if let Some(id) = self.last_capture_node_id
+            && !observed.contains(&id)
+        {
+            self.last_capture_node_id = None;
+            self.last_capture_label = None;
+        }
     }
 
     fn consume_commands(&mut self) -> bool {
         let mut changed = false;
         while let Ok(command) = self.commands.try_recv() {
-            match command {
+            changed |= match command {
                 RoutingCommand::SetApplicationEnabled { node_id, enabled } => {
-                    self.preferences.insert(node_id, enabled);
-                    changed = true;
+                    let was_enabled = self.preferences.get(&node_id).copied().unwrap_or(true);
+                    if was_enabled != enabled {
+                        if enabled {
+                            self.preferences.remove(&node_id);
+                        } else {
+                            self.preferences.insert(node_id, false);
+                        }
+                        true
+                    } else {
+                        false
+                    }
                 }
-            }
+                RoutingCommand::SetCaptureMode(mode) => {
+                    if self.capture_mode != mode {
+                        self.capture_mode = mode;
+                        true
+                    } else {
+                        false
+                    }
+                }
+                RoutingCommand::SelectCaptureDevice(selection) => {
+                    if self.device_target != selection {
+                        self.device_target = selection;
+                        true
+                    } else {
+                        false
+                    }
+                }
+            };
         }
         changed
     }
@@ -257,12 +302,12 @@ impl RoutingManager {
         let observed: FxHashSet<u32> = snapshot.nodes.iter().map(|node| node.id).collect();
         self.cleanup_removed_nodes(&observed);
 
+        let desired_loopback = self.desired_loopback_mode(snapshot);
+        self.ensure_loopback_mode(desired_loopback);
+
         let Some(sink) = snapshot.find_node_by_label(VIRTUAL_SINK_NAME) else {
             if log_sink_missing && !self.sink_warning_logged {
-                warn!(
-                    "[router] virtual sink '{}' not yet available; will retry on future updates",
-                    VIRTUAL_SINK_NAME
-                );
+                warn!("[router] virtual sink '{VIRTUAL_SINK_NAME}' not yet available");
                 self.sink_warning_logged = true;
             }
             return;
@@ -275,20 +320,14 @@ impl RoutingManager {
 
         self.sink_warning_logged = false;
 
+        let candidates: Vec<_> = snapshot.route_candidates(sink).collect();
         let hardware_sink = self.resolve_hardware_sink(snapshot);
 
-        for node in snapshot.route_candidates(sink) {
-            if self.is_node_enabled(node.id) {
-                self.route_to_target(node, sink, RouteTarget::Virtual(sink.id));
-            } else if let Some(hardware) = hardware_sink {
-                self.route_to_target(node, hardware, RouteTarget::Hardware(hardware.id));
-            } else if self.routed_nodes.remove(&node.id).is_some() {
-                warn!(
-                    "[router] no hardware sink available to restore '{}' (id={})",
-                    node.display_name(),
-                    node.id
-                );
+        match self.capture_mode {
+            CaptureMode::Applications => {
+                self.handle_applications_mode(&candidates, sink, hardware_sink)
             }
+            CaptureMode::Device => self.handle_device_mode(&candidates, hardware_sink),
         }
     }
 
@@ -307,15 +346,12 @@ impl RoutingManager {
             return;
         }
 
-        let route_result = {
-            let router = match self.ensure_router() {
-                Some(router) => router,
-                None => return,
-            };
-
-            router.route_application_to_sink(node, target)
+        let route_result = match self.ensure_router() {
+            Some(router) => router.route_application_to_sink(node, target),
+            None => return,
         };
 
+        let node_label = node.display_name();
         if route_result.is_ok() {
             let state = self
                 .routed_nodes
@@ -323,13 +359,14 @@ impl RoutingManager {
                 .or_insert_with(|| RouteState::new(desired));
             state.mark_success(desired, now, self.router_epoch);
 
-            let action = match desired {
-                RouteTarget::Virtual(_) => "routed",
-                RouteTarget::Hardware(_) => "restored",
+            let action = if matches!(desired, RouteTarget::Virtual(_)) {
+                "routed"
+            } else {
+                "restored"
             };
             info!(
-                "[router] {action} '{}' (id={}) -> '{}' (id={})",
-                node.display_name(),
+                "[router] {action} '{}' #{} -> '{}' #{}",
+                node_label,
                 node.id,
                 target.display_name(),
                 target.id
@@ -339,9 +376,8 @@ impl RoutingManager {
 
         let err = route_result.err().unwrap();
         error!(
-            "[router] failed to route node '{}' (id={}): {err:?}",
-            node.display_name(),
-            node.id
+            "[router] route failed '{}' #{}: {err:?}",
+            node_label, node.id
         );
         let state = self
             .routed_nodes
@@ -424,21 +460,24 @@ impl RoutingManager {
         if let Some(target) = snapshot.defaults.audio_sink.as_ref()
             && let Some(node) = snapshot.resolve_default_target(target)
         {
-            self.cache_hardware_sink(node);
+            self.last_hardware_sink_id = Some(node.id);
+            self.last_hardware_sink_label = Some(node.display_name());
             return Some(node);
         }
 
         if let Some(id) = self.last_hardware_sink_id
             && let Some(node) = snapshot.nodes.iter().find(|node| node.id == id)
         {
-            self.cache_hardware_sink(node);
+            self.last_hardware_sink_id = Some(node.id);
+            self.last_hardware_sink_label = Some(node.display_name());
             return Some(node);
         }
 
         if let Some(label) = self.last_hardware_sink_label.as_deref()
             && let Some(node) = snapshot.nodes.iter().find(|node| node.matches_label(label))
         {
-            self.cache_hardware_sink(node);
+            self.last_hardware_sink_id = Some(node.id);
+            self.last_hardware_sink_label = Some(node.display_name());
             return Some(node);
         }
 
@@ -446,12 +485,108 @@ impl RoutingManager {
         None
     }
 
-    fn cache_hardware_sink(&mut self, node: &pw_registry::NodeInfo) {
-        self.last_hardware_sink_id = Some(node.id);
-        self.last_hardware_sink_label = Some(node.display_name());
+    fn desired_loopback_mode(
+        &mut self,
+        snapshot: &pw_registry::RegistrySnapshot,
+    ) -> pw_loopback::LoopbackMode {
+        use pw_loopback::{DeviceCaptureTarget, LoopbackMode};
+
+        let mode = match (self.capture_mode, self.device_target) {
+            (CaptureMode::Applications, _) => LoopbackMode::ForwardToDefaultSink,
+            (CaptureMode::Device, DeviceSelection::Default) => {
+                LoopbackMode::CaptureFromDevice(DeviceCaptureTarget::Default)
+            }
+            (CaptureMode::Device, DeviceSelection::Node(id)) => {
+                return self.capture_specific_node(snapshot, id);
+            }
+        };
+        self.last_capture_node_id = None;
+        self.last_capture_label = None;
+        self.capture_warning_logged = false;
+        mode
+    }
+
+    fn ensure_loopback_mode(&mut self, desired: pw_loopback::LoopbackMode) {
+        if self.loopback_mode != Some(desired) {
+            self.loopback_mode = pw_loopback::set_mode(desired).then_some(desired);
+        }
     }
 
     fn is_node_enabled(&self, node_id: u32) -> bool {
         self.preferences.get(&node_id).copied().unwrap_or(true)
+    }
+
+    fn handle_applications_mode(
+        &mut self,
+        nodes: &[&pw_registry::NodeInfo],
+        sink: &pw_registry::NodeInfo,
+        hardware_sink: Option<&pw_registry::NodeInfo>,
+    ) {
+        for node in nodes {
+            if self.is_node_enabled(node.id) {
+                self.route_to_target(node, sink, RouteTarget::Virtual(sink.id));
+            } else if let Some(hardware) = hardware_sink {
+                self.route_to_target(node, hardware, RouteTarget::Hardware(hardware.id));
+            } else if self.routed_nodes.remove(&node.id).is_some() {
+                warn!(
+                    "[router] no hardware sink for '{}' (id={})",
+                    node.display_name(),
+                    node.id
+                );
+            }
+        }
+    }
+
+    fn handle_device_mode(
+        &mut self,
+        nodes: &[&pw_registry::NodeInfo],
+        hardware_sink: Option<&pw_registry::NodeInfo>,
+    ) {
+        match hardware_sink {
+            Some(hardware) => {
+                for node in nodes {
+                    self.route_to_target(node, hardware, RouteTarget::Hardware(hardware.id));
+                }
+            }
+            None => {
+                for node in nodes {
+                    if self.routed_nodes.remove(&node.id).is_some() {
+                        warn!(
+                            "[router] unable to restore '{}' (id={}); no sink",
+                            node.display_name(),
+                            node.id
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    fn capture_specific_node(
+        &mut self,
+        snapshot: &pw_registry::RegistrySnapshot,
+        node_id: u32,
+    ) -> pw_loopback::LoopbackMode {
+        use pw_loopback::{DeviceCaptureTarget, LoopbackMode};
+
+        if let Some(node) = snapshot.nodes.iter().find(|n| n.id == node_id) {
+            self.last_capture_node_id = Some(node_id);
+            self.last_capture_label = Some(node.display_name());
+            self.capture_warning_logged = false;
+            return LoopbackMode::CaptureFromDevice(DeviceCaptureTarget::Node(node_id));
+        }
+
+        if !self.capture_warning_logged {
+            let label = self.last_capture_label.as_deref().unwrap_or("unknown");
+            warn!(
+                "[router] capture node '{}' (#{node_id}) unavailable; using default",
+                label
+            );
+            self.capture_warning_logged = true;
+        }
+
+        self.last_capture_node_id = None;
+        self.last_capture_label = None;
+        LoopbackMode::CaptureFromDevice(DeviceCaptureTarget::Default)
     }
 }

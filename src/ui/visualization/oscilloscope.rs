@@ -117,7 +117,7 @@ impl OscilloscopeState {
             style: OscilloscopeStyle::default(),
             display_samples: Vec::new(),
             fade_alpha: 1.0,
-            persistence: 0.85,
+            persistence: 0.1,
             display_mode: DisplayMode::default(),
             instance_id: next_instance_id(),
         }

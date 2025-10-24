@@ -80,7 +80,6 @@ pub struct GraphPort {
     pub global_id: u32,
     pub port_id: u32,
     pub node_id: u32,
-    pub name: Option<String>,
     pub channel: Option<String>,
     pub direction: PortDirection,
     pub is_monitor: bool,
@@ -139,16 +138,10 @@ impl GraphPort {
             .map(|value| matches!(value.to_ascii_lowercase().as_str(), "true" | "1"))
             .unwrap_or(false);
 
-        let name = props
-            .get(*pw::keys::PORT_NAME)
-            .or_else(|| props.get("port.name"))
-            .cloned();
-
         Some(Self {
             global_id: global.id,
             port_id,
             node_id,
-            name,
             channel,
             direction,
             is_monitor,

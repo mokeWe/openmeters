@@ -13,14 +13,34 @@ use state::LoopbackState;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, mpsc};
 use std::thread;
-use tracing::{error, info};
+use std::time::Duration;
+use tracing::{error, info, warn};
 
 const LOOPBACK_THREAD_NAME: &str = "openmeters-pw-loopback";
 const OPENMETERS_SINK_NAME: &str = "openmeters.sink";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LoopbackMode {
+    #[default]
+    ForwardToDefaultSink,
+    CaptureFromDevice(DeviceCaptureTarget),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DeviceCaptureTarget {
+    #[default]
+    Default,
+    Node(u32),
+}
+
+enum LoopbackCommand {
+    SetMode(LoopbackMode),
+}
+
 static LOOPBACK_THREAD: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
+static LOOPBACK_COMMAND: OnceLock<mpsc::Sender<LoopbackCommand>> = OnceLock::new();
 
 /// Start the loopback controller in a background thread if it is not already running.
 pub fn run() {
@@ -28,21 +48,42 @@ pub fn run() {
         return;
     }
 
+    let (command_tx, command_rx) = mpsc::channel();
+
     match thread::Builder::new()
         .name(LOOPBACK_THREAD_NAME.into())
-        .spawn(|| {
-            if let Err(err) = run_loopback() {
+        .spawn(move || {
+            if let Err(err) = run_loopback(command_rx) {
                 error!("[loopback] stopped: {err:?}");
             }
         }) {
         Ok(handle) => {
+            if LOOPBACK_COMMAND.set(command_tx).is_err() {
+                warn!("[loopback] loopback command channel already initialised");
+            }
             let _ = LOOPBACK_THREAD.set(handle);
         }
         Err(err) => error!("[loopback] failed to spawn thread: {err}"),
     }
 }
 
-fn run_loopback() -> Result<()> {
+pub fn set_mode(mode: LoopbackMode) -> bool {
+    run();
+
+    if let Some(sender) = LOOPBACK_COMMAND.get() {
+        if sender.send(LoopbackCommand::SetMode(mode)).is_err() {
+            warn!("[loopback] failed to dispatch mode change command");
+            false
+        } else {
+            true
+        }
+    } else {
+        warn!("[loopback] loopback thread not initialised; mode request dropped");
+        false
+    }
+}
+
+fn run_loopback(command_rx: mpsc::Receiver<LoopbackCommand>) -> Result<()> {
     pw::init();
 
     let mainloop =
@@ -71,7 +112,27 @@ fn run_loopback() -> Result<()> {
         .register();
 
     info!("[loopback] PipeWire loopback thread running");
-    mainloop.run();
+    let loop_ref = mainloop.loop_();
+    let mut commands_disconnected = false;
+
+    loop {
+        if !commands_disconnected {
+            loop {
+                match command_rx.try_recv() {
+                    Ok(command) => runtime.handle_command(command),
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        commands_disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if loop_ref.iterate(Duration::from_millis(50)) < 0 {
+            break;
+        }
+    }
     info!("[loopback] PipeWire loopback loop exited");
 
     Ok(())
@@ -168,5 +229,11 @@ impl LoopbackRuntime {
         self.state
             .borrow_mut()
             .update_default_sink(metadata_id, subject, type_hint, value);
+    }
+
+    fn handle_command(&self, command: LoopbackCommand) {
+        match command {
+            LoopbackCommand::SetMode(mode) => self.state.borrow_mut().set_mode(mode),
+        }
     }
 }

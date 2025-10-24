@@ -11,16 +11,45 @@ use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;
 use iced::alignment;
-use iced::widget::{Column, Row, Space, button, container, scrollable, text};
+use iced::widget::text::Style as TextStyle;
+use iced::widget::{Column, Row, Space, button, container, pick_list, radio, scrollable, text};
 use iced::{Element, Length, Subscription, Task};
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, mpsc};
 
 const GRID_COLUMNS: usize = 4;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeviceOption(String, DeviceSelection);
+
+impl std::fmt::Display for DeviceOption {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureMode {
+    #[default]
+    Applications,
+    Device,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceSelection {
+    #[default]
+    Default,
+    Node(u32),
+}
+
 #[derive(Debug, Clone)]
 pub enum RoutingCommand {
     SetApplicationEnabled { node_id: u32, enabled: bool },
+    SetCaptureMode(CaptureMode),
+    SelectCaptureDevice(DeviceSelection),
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +58,8 @@ pub enum ConfigMessage {
     ToggleChanged { node_id: u32, enabled: bool },
     ToggleApplicationsVisibility,
     VisualToggled { kind: VisualKind, enabled: bool },
+    CaptureModeChanged(CaptureMode),
+    CaptureDeviceChanged(DeviceSelection),
 }
 
 #[derive(Debug)]
@@ -42,6 +73,9 @@ pub struct ConfigPage {
     hardware_sink: HardwareSinkCache,
     registry_ready: bool,
     applications_expanded: bool,
+    capture_mode: CaptureMode,
+    device_choices: Vec<DeviceOption>,
+    selected_device: DeviceSelection,
 }
 
 impl ConfigPage {
@@ -51,7 +85,7 @@ impl ConfigPage {
         visual_manager: VisualManagerHandle,
         settings: SettingsHandle,
     ) -> Self {
-        Self {
+        let ret = Self {
             routing_sender,
             registry_updates,
             visual_manager,
@@ -61,7 +95,12 @@ impl ConfigPage {
             hardware_sink: HardwareSinkCache::new(),
             registry_ready: false,
             applications_expanded: false,
-        }
+            capture_mode: CaptureMode::Applications,
+            device_choices: Vec::new(),
+            selected_device: DeviceSelection::Default,
+        };
+        ret.dispatch_capture_state();
+        ret
     }
 
     pub fn subscription(&self) -> Subscription<ConfigMessage> {
@@ -107,6 +146,18 @@ impl ConfigPage {
                 self.settings
                     .update(|settings| settings.set_visual_enabled(kind, enabled));
             }
+            ConfigMessage::CaptureModeChanged(mode) => {
+                if self.capture_mode != mode {
+                    self.capture_mode = mode;
+                    self.dispatch_capture_state();
+                }
+            }
+            ConfigMessage::CaptureDeviceChanged(selection) => {
+                if self.selected_device != selection {
+                    self.selected_device = selection;
+                    self.dispatch_capture_state();
+                }
+            }
         }
 
         Task::none()
@@ -114,15 +165,21 @@ impl ConfigPage {
 
     pub fn view(&self) -> Element<'_, ConfigMessage> {
         let visuals_snapshot = self.visual_manager.snapshot();
-        let sink_label = format!("Hardware sink: {}", self.hardware_sink.label());
+        let status_label = self.capture_status_label();
 
-        let applications_section = self.render_applications_section();
+        let capture_controls = self.render_capture_mode_controls();
+        let primary_section: Element<'_, ConfigMessage> = match self.capture_mode {
+            CaptureMode::Applications => self.render_applications_section().into(),
+            CaptureMode::Device => self.render_device_section().into(),
+        };
+
         let visuals_section = self.render_visuals_section(&visuals_snapshot);
 
         let content = Column::new()
             .spacing(16)
-            .push(text(sink_label).size(14))
-            .push(applications_section)
+            .push(text(status_label).size(14))
+            .push(capture_controls)
+            .push(primary_section)
             .push(visuals_section);
 
         container(content)
@@ -167,7 +224,14 @@ impl ConfigPage {
 
         if self.applications_expanded {
             let content = if self.applications.is_empty() {
-                text(self.applications_empty_message()).into()
+                let msg = if self.registry_updates.is_none() {
+                    "Registry unavailable; routing controls disabled."
+                } else if self.registry_ready {
+                    "No audio applications detected. Launch something to see it here."
+                } else {
+                    "Waiting for PipeWire registry snapshots..."
+                };
+                text(msg).into()
             } else {
                 self.render_applications_grid()
             };
@@ -175,18 +239,6 @@ impl ConfigPage {
         }
 
         section
-    }
-
-    fn applications_empty_message(&self) -> &'static str {
-        if self.registry_updates.is_some() {
-            if self.registry_ready {
-                "No audio applications detected. Launch something to see it here."
-            } else {
-                "Waiting for PipeWire registry snapshots..."
-            }
-        } else {
-            "Registry unavailable; routing controls disabled."
-        }
     }
 
     fn render_applications_grid(&self) -> Element<'_, ConfigMessage> {
@@ -207,13 +259,113 @@ impl ConfigPage {
         .into()
     }
 
+    fn capture_status_label(&self) -> String {
+        match self.capture_mode {
+            CaptureMode::Applications => {
+                format!("Default hardware sink: {}", self.hardware_sink.label())
+            }
+            CaptureMode::Device => format!("Capturing from: {}", self.selected_device_label()),
+        }
+    }
+
+    fn render_capture_mode_controls(&self) -> Row<'_, ConfigMessage> {
+        Row::new()
+            .spacing(12)
+            .push(radio(
+                "Applications",
+                CaptureMode::Applications,
+                Some(self.capture_mode),
+                ConfigMessage::CaptureModeChanged,
+            ))
+            .push(radio(
+                "Devices",
+                CaptureMode::Device,
+                Some(self.capture_mode),
+                ConfigMessage::CaptureModeChanged,
+            ))
+    }
+
+    fn render_device_section(&self) -> Column<'_, ConfigMessage> {
+        let selected = self
+            .device_choices
+            .iter()
+            .find(|opt| opt.1 == self.selected_device)
+            .cloned();
+        let mut picker = pick_list(
+            self.device_choices.clone(),
+            selected,
+            |opt: DeviceOption| ConfigMessage::CaptureDeviceChanged(opt.1),
+        );
+        if self.device_choices.len() <= 1 {
+            picker = picker.placeholder("No devices available");
+        }
+
+        Column::new()
+            .spacing(8)
+            .push(text("Device capture").size(14))
+            .push(picker)
+            .push(
+                text("Direct device capture. Application routing disabled.")
+                    .size(12)
+                    .style(|_| TextStyle {
+                        color: Some(theme::text_secondary()),
+                    }),
+            )
+    }
+
+    fn selected_device_label(&self) -> String {
+        self.device_choices
+            .iter()
+            .find(|opt| opt.1 == self.selected_device)
+            .map(|opt| opt.0.clone())
+            .unwrap_or_else(|| match self.selected_device {
+                DeviceSelection::Default => format!("Default ({})", self.hardware_sink.label()),
+                DeviceSelection::Node(id) => format!("Node #{id}"),
+            })
+    }
+
+    fn build_device_choices(&self, snapshot: &RegistrySnapshot) -> Vec<DeviceOption> {
+        let mut choices = Vec::new();
+
+        // Use the cached hardware sink label which has fallback to last known value
+        let default_label = format!("Default sink - {}", self.hardware_sink.label());
+        choices.push(DeviceOption(default_label, DeviceSelection::Default));
+
+        let mut nodes: Vec<_> = snapshot
+            .nodes
+            .iter()
+            .filter(|node| Self::is_capture_candidate(node))
+            .map(|node| (node.display_name(), node.id))
+            .collect();
+        nodes.sort_by(|a, b| a.0.to_ascii_lowercase().cmp(&b.0.to_ascii_lowercase()));
+
+        for (label, id) in nodes {
+            choices.push(DeviceOption(label, DeviceSelection::Node(id)));
+        }
+        choices
+    }
+
+    fn is_capture_candidate(node: &crate::audio::pw_registry::NodeInfo) -> bool {
+        if node.is_virtual || node.app_name().is_some() {
+            return false;
+        }
+        let has_audio =
+            |s: Option<&String>| s.is_some_and(|t| t.to_ascii_lowercase().contains("audio"));
+        let has_monitor =
+            |s: Option<&String>| s.is_some_and(|t| t.to_ascii_lowercase().contains("monitor"));
+
+        has_audio(node.media_class.as_ref())
+            || has_monitor(node.name.as_ref())
+            || has_monitor(node.description.as_ref())
+    }
+
     fn render_visuals_section(
         &self,
         snapshot: &crate::ui::visualization::visual_manager::VisualSnapshot,
     ) -> Column<'_, ConfigMessage> {
         let total = snapshot.slots.len();
         let enabled = snapshot.slots.iter().filter(|slot| slot.enabled).count();
-        let header = text(format!("Visual modules – {enabled}/{total} enabled")).size(14);
+        let header = text(format!("Visual modules - {enabled}/{total} enabled")).size(14);
 
         let section = Column::new().spacing(8).push(header);
 
@@ -241,6 +393,12 @@ impl ConfigPage {
 
     fn apply_snapshot(&mut self, snapshot: RegistrySnapshot) {
         self.hardware_sink.update(&snapshot);
+        let choices = self.build_device_choices(&snapshot);
+        if !choices.iter().any(|opt| opt.1 == self.selected_device) {
+            self.selected_device = DeviceSelection::Default;
+            self.dispatch_capture_state();
+        }
+        self.device_choices = choices;
 
         let mut entries = Vec::new();
         let mut seen = HashSet::new();
@@ -257,6 +415,17 @@ impl ConfigPage {
 
         entries.sort_by_key(|a| a.sort_key());
         self.applications = entries;
+    }
+}
+
+impl ConfigPage {
+    fn dispatch_capture_state(&self) {
+        let _ = self
+            .routing_sender
+            .send(RoutingCommand::SetCaptureMode(self.capture_mode));
+        let _ = self
+            .routing_sender
+            .send(RoutingCommand::SelectCaptureDevice(self.selected_device));
     }
 }
 

@@ -16,6 +16,8 @@ use std::time::{Duration, Instant};
 const LOG_FACTOR: f32 = 10.0 * core::f32::consts::LOG10_E;
 const POWER_EPSILON: f32 = 1.0e-18;
 const DB_FLOOR: f32 = -120.0;
+pub const PLANCK_BESSEL_DEFAULT_EPSILON: f32 = 0.3;
+pub const PLANCK_BESSEL_DEFAULT_BETA: f32 = 11.0;
 
 #[inline(always)]
 fn power_to_db(power: f32) -> f32 {
@@ -69,26 +71,26 @@ impl Default for SpectrogramConfig {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: 4096,
-            hop_size: 512,
+            hop_size: 256,
             // I'm not sure what the "best" alpha/beta value is for spectral analysis.
             // going for moderate sidelobe suppression without excessive main lobe widening.
             window: WindowKind::PlanckBessel {
-                epsilon: 0.1,
-                beta: 5.5,
+                epsilon: PLANCK_BESSEL_DEFAULT_EPSILON,
+                beta: PLANCK_BESSEL_DEFAULT_BETA,
             },
             frequency_scale: FrequencyScale::default(),
-            history_length: 480,
+            history_length: 240,
             use_reassignment: true,
             reassignment_power_floor_db: -80.0,
             reassignment_low_bin_limit: 0,
-            zero_padding_factor: 2,
+            zero_padding_factor: 4,
             use_synchrosqueezing: true,
             synchrosqueezing_bin_count: 1024,
             synchrosqueezing_min_hz: 20.0,
             temporal_smoothing: 0.4,
             temporal_smoothing_max_hz: 900.0,
             temporal_smoothing_blend_hz: 400.0,
-            frequency_smoothing_radius: 5,
+            frequency_smoothing_radius: 0,
             frequency_smoothing_max_hz: 2400.0,
             frequency_smoothing_blend_hz: 600.0,
         }

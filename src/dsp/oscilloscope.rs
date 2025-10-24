@@ -18,7 +18,7 @@ impl Default for OscilloscopeConfig {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
             segment_duration: 0.02,
-            trigger_level: 0.05,
+            trigger_level: 0.0,
             trigger_rising: true,
             target_sample_count: 1_024,
         }

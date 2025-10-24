@@ -22,21 +22,21 @@ const ACCENT_PRIMARY: Color = Color::from_rgb(0.529, 0.549, 0.584); // #878c95
 const ACCENT_SUCCESS: Color = Color::from_rgb(0.478, 0.557, 0.502); // #7a8e80
 const ACCENT_DANGER: Color = Color::from_rgb(0.557, 0.478, 0.478); // #8e7a7a
 
-// default spectrogram palette (5 stops from dark blue to white)
+// default spectrogram palette
 pub const DEFAULT_SPECTROGRAM_PALETTE: [Color; 5] = [
-    Color::from_rgba(0.08, 0.05, 0.25, 0.0),
-    Color::from_rgba(0.10, 0.10, 0.50, 1.0),
-    Color::from_rgba(0.20, 0.20, 0.65, 1.0),
-    Color::from_rgba(0.35, 0.70, 0.95, 1.0),
-    Color::from_rgba(1.00, 1.00, 1.00, 1.0),
+    Color::from_rgba(0.000, 0.000, 0.000, 0.0), // #000000
+    Color::from_rgba(0.039, 0.011, 0.09, 1.0),  // #0A0317
+    Color::from_rgba(0.329, 0.000, 0.000, 1.0), // #540000
+    Color::from_rgba(1.000, 0.502, 0.102, 1.0), // #FF801A
+    Color::from_rgba(1.000, 1.000, 1.000, 1.0), // #FFFFFF
 ];
 
 pub const DEFAULT_WAVEFORM_PALETTE: [Color; 5] = [
-    Color::from_rgb(1.0, 0.00, 0.00),
-    Color::from_rgb(1.000, 0.02, 0.000),
-    Color::from_rgb(0.9, 0.3, 0.000),
-    Color::from_rgb(0.000, 0.718, 0.961),
-    Color::from_rgb(0.553, 0.239, 1.000),
+    Color::from_rgb(0.400, 0.000, 0.000), // dark red
+    Color::from_rgb(1.000, 0.000, 0.000), // bright red
+    Color::from_rgb(1.000, 0.400, 0.000), // orange
+    Color::from_rgb(0.600, 0.200, 0.800), // purple-magenta
+    Color::from_rgb(0.400, 0.000, 0.800), // deep purple
 ];
 
 /// Returns the default spectrogram color palette.
