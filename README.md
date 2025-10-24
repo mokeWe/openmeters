@@ -11,7 +11,7 @@ OpenMeters is an audio metering program for Linux, written in Rust for PipeWire 
 Checked features are implemented, unchecked features are planned.
 
 - [x] Per-application capture
-- [ ] Per-device capture
+- [x] Per-device capture
 - [x] **loudness**
   - [x] LUFS
     - [x] Short-term
