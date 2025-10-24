@@ -488,6 +488,8 @@ pub struct SpectrumSettings {
     #[serde(default = "default_spectrum_peak_hold_decay")]
     pub peak_hold_decay: f32,
     pub frequency_scale: FrequencyScale,
+    #[serde(default)]
+    pub reverse_frequency: bool,
 }
 
 pub const DEFAULT_SPECTRUM_AVERAGING_FACTOR: f32 = 0.5;

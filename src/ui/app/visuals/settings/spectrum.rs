@@ -8,7 +8,7 @@ use crate::ui::settings::{
 };
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
-use iced::widget::column;
+use iced::widget::{column, toggler};
 use std::fmt;
 
 const AVERAGING_MIN: f32 = 0.0;
@@ -62,6 +62,7 @@ pub enum Message {
     AveragingFactor(f32),
     PeakHoldDecay(f32),
     FrequencyScale(FrequencyScale),
+    ReverseFrequency(bool),
 }
 
 pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> SpectrumSettingsPane {
@@ -106,6 +107,18 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
         )
         .spacing(12);
 
+        let direction_label = if self.config.reverse_frequency {
+            "High → Low"
+        } else {
+            "Low → High"
+        };
+
+        let direction_toggle = toggler(self.config.reverse_frequency)
+            .label(direction_label)
+            .spacing(8)
+            .text_size(11)
+            .on_toggle(|value| SettingsMessage::Spectrum(Message::ReverseFrequency(value)));
+
         let mode_row = labeled_pick_list(
             "Averaging mode",
             AVERAGING_OPTIONS.as_slice(),
@@ -114,7 +127,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
         )
         .spacing(12);
 
-        let mut content = column![fft_row, scale_row, mode_row].spacing(16);
+        let mut content = column![fft_row, scale_row, direction_toggle, mode_row].spacing(16);
 
         match self.averaging_mode {
             SpectrumAveragingMode::Exponential => {
@@ -196,6 +209,14 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                     false
                 }
             }
+            Message::ReverseFrequency(value) => {
+                if self.config.reverse_frequency != *value {
+                    self.config.reverse_frequency = *value;
+                    true
+                } else {
+                    false
+                }
+            }
         };
 
         if changed {
@@ -257,6 +278,7 @@ impl SpectrumSettings {
             averaging_factor: factor,
             peak_hold_decay: decay,
             frequency_scale: config.frequency_scale,
+            reverse_frequency: config.reverse_frequency,
         }
     }
 
@@ -265,6 +287,7 @@ impl SpectrumSettings {
         config.hop_size = self.hop_size.max(1);
         config.averaging = self.averaging_config();
         config.frequency_scale = self.frequency_scale;
+        config.reverse_frequency = self.reverse_frequency;
     }
 
     pub fn to_config(&self) -> SpectrumConfig {

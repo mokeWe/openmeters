@@ -494,6 +494,7 @@ impl VisualModule for SpectrumVisual {
             stored.apply_to(&mut config);
             self.processor.update_config(config);
             self.state.style_mut().frequency_scale = config.frequency_scale;
+            self.state.style_mut().reverse_frequency = config.reverse_frequency;
         }
     }
 

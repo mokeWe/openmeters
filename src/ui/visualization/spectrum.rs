@@ -106,6 +106,7 @@ pub struct SpectrumStyle {
     pub highlight_threshold: f32,
     pub highlight_color: Color,
     pub frequency_scale: FrequencyScale,
+    pub reverse_frequency: bool,
 }
 
 impl Default for SpectrumStyle {
@@ -131,6 +132,7 @@ impl Default for SpectrumStyle {
             highlight_threshold: 0.65,
             highlight_color: theme::with_alpha(theme::accent_primary(), 0.9),
             frequency_scale: FrequencyScale::Logarithmic,
+            reverse_frequency: false,
         }
     }
 }
@@ -266,6 +268,26 @@ impl SpectrumState {
                     self.style.smoothing_passes,
                 );
             }
+
+            if self.style.reverse_frequency {
+                weighted_points.reverse();
+                unweighted_points.reverse();
+                // Update t values to maintain correct horizontal positioning
+                for (i, point) in weighted_points.iter_mut().enumerate() {
+                    point[0] = if resolution == 1 {
+                        0.0
+                    } else {
+                        i as f32 / (resolution - 1) as f32
+                    };
+                }
+                for (i, point) in unweighted_points.iter_mut().enumerate() {
+                    point[0] = if resolution == 1 {
+                        0.0
+                    } else {
+                        i as f32 / (resolution - 1) as f32
+                    };
+                }
+            }
         }
 
         self.frequency_grid = Arc::new(build_frequency_grid(
@@ -273,6 +295,7 @@ impl SpectrumState {
             max_freq,
             self.style.grid_major_color,
             self.style.frequency_scale,
+            self.style.reverse_frequency,
         ));
     }
 
@@ -424,6 +447,8 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> 
             }
 
             let center_x = bounds.x + bounds.width * line.position;
+            
+            // Position horizontally centered above the grid line
             let mut x = center_x - text_bounds.width * 0.5;
             let max_x = bounds.x + bounds.width - text_bounds.width;
             if max_x < bounds.x {
@@ -496,6 +521,7 @@ fn build_frequency_grid(
     max_freq: f32,
     major_color: Color,
     scale: FrequencyScale,
+    reverse: bool,
 ) -> Vec<GridLineSpec> {
     const STANDARD_FREQUENCIES: &[f32] = &[
         31.5, 63.0, 125.0, 250.0, 500.0, 1_000.0, 2_000.0, 4_000.0, 8_000.0, 16_000.0,
@@ -527,8 +553,14 @@ fn build_frequency_grid(
                 }
             };
 
+            let position = if reverse {
+                1.0 - ratio.clamp(0.0, 1.0)
+            } else {
+                ratio.clamp(0.0, 1.0)
+            };
+
             GridLineSpec {
-                position: ratio.clamp(0.0, 1.0),
+                position,
                 frequency_hz: frequency,
                 color: major_color,
                 thickness: 1.5,
@@ -537,14 +569,15 @@ fn build_frequency_grid(
         .collect();
 
     if lines.is_empty() {
+        let (low_pos, high_pos) = if reverse { (1.0, 0.0) } else { (0.0, 1.0) };
         lines.push(GridLineSpec {
-            position: 0.0,
+            position: low_pos,
             frequency_hz: min_freq,
             color: major_color,
             thickness: 1.5,
         });
         lines.push(GridLineSpec {
-            position: 1.0,
+            position: high_pos,
             frequency_hz: max_freq,
             color: major_color,
             thickness: 1.5,

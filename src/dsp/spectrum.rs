@@ -33,6 +33,7 @@ pub struct SpectrumConfig {
     pub window: WindowKind,
     pub averaging: AveragingMode,
     pub frequency_scale: FrequencyScale,
+    pub reverse_frequency: bool,
 }
 
 impl Default for SpectrumConfig {
@@ -44,6 +45,7 @@ impl Default for SpectrumConfig {
             window: WindowKind::Hann,
             averaging: AveragingMode::Exponential { factor: 0.5 },
             frequency_scale: FrequencyScale::Logarithmic,
+            reverse_frequency: false,
         }
     }
 }
