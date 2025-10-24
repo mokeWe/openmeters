@@ -386,7 +386,7 @@ impl WaveformStyle {
 impl Default for WaveformStyle {
     fn default() -> Self {
         let background = theme::with_alpha(theme::base_color(), 0.0);
-        let palette = theme::waveform_palette().to_vec();
+        let palette = theme::DEFAULT_WAVEFORM_PALETTE.to_vec();
         let gradient = Self::build_gradient(&palette);
 
         Self {

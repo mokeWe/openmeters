@@ -2,10 +2,7 @@ use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
-use crate::ui::settings::{
-    DEFAULT_SPECTRUM_AVERAGING_FACTOR, DEFAULT_SPECTRUM_PEAK_HOLD_DECAY, ModuleSettings,
-    SettingsHandle, SpectrumAveragingMode, SpectrumSettings,
-};
+use crate::ui::settings::{ModuleSettings, SettingsHandle};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::{column, toggler};
@@ -35,6 +32,14 @@ const PEAK_HOLD_DECAY_RANGE: SliderRange = SliderRange::new(
     PEAK_HOLD_DECAY_MAX,
     PEAK_HOLD_DECAY_STEP,
 );
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum SpectrumAveragingMode {
+    None,
+    #[default]
+    Exponential,
+    PeakHold,
+}
 
 impl fmt::Display for SpectrumAveragingMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -71,8 +76,7 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Spec
         .module_settings(VisualKind::SPECTRUM)
         .and_then(|stored| stored.spectrum_config())
         .unwrap_or_default();
-    let (averaging_mode, averaging_factor, peak_hold_decay) =
-        SpectrumSettings::split_averaging(config.averaging);
+    let (averaging_mode, averaging_factor, peak_hold_decay) = split_averaging(config.averaging);
 
     let mut pane = SpectrumSettingsPane {
         visual_id,
@@ -184,7 +188,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 }
             }
             Message::AveragingFactor(value) => {
-                let snapped = SpectrumSettings::normalized_factor(*value);
+                let snapped = normalize_factor(*value);
                 if set_f32(&mut self.averaging_factor, snapped) {
                     self.sync_averaging_config();
                     true
@@ -193,7 +197,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 }
             }
             Message::PeakHoldDecay(value) => {
-                let snapped = SpectrumSettings::normalized_decay(*value);
+                let snapped = normalize_decay(*value);
                 if set_f32(&mut self.peak_hold_decay, snapped) {
                     self.sync_averaging_config();
                     true
@@ -244,17 +248,17 @@ fn apply_spectrum_config(
 
 impl SpectrumSettingsPane {
     fn sync_averaging_config(&mut self) {
-        let factor = SpectrumSettings::normalized_factor(self.averaging_factor);
+        let factor = normalize_factor(self.averaging_factor);
         if factor.to_bits() != self.averaging_factor.to_bits() {
             self.averaging_factor = factor;
         }
 
-        let decay = SpectrumSettings::normalized_decay(self.peak_hold_decay);
+        let decay = normalize_decay(self.peak_hold_decay);
         if decay.to_bits() != self.peak_hold_decay.to_bits() {
             self.peak_hold_decay = decay;
         }
 
-        self.config.averaging = SpectrumSettings::combine_averaging(
+        self.config.averaging = combine_averaging(
             self.averaging_mode,
             self.averaging_factor,
             self.peak_hold_decay,
@@ -262,89 +266,53 @@ impl SpectrumSettingsPane {
     }
 }
 
-impl Default for SpectrumSettings {
-    fn default() -> Self {
-        Self::from_config(&SpectrumConfig::default())
+fn normalize_factor(value: f32) -> f32 {
+    let snapped = EXPONENTIAL_RANGE.snap(value);
+    AveragingMode::clamp_factor(snapped)
+}
+
+fn normalize_decay(value: f32) -> f32 {
+    let snapped = PEAK_HOLD_DECAY_RANGE.snap(value);
+    AveragingMode::clamp_decay(snapped)
+}
+
+fn split_averaging(averaging: AveragingMode) -> (SpectrumAveragingMode, f32, f32) {
+    match averaging.normalized() {
+        AveragingMode::None => (
+            SpectrumAveragingMode::None,
+            default_averaging_factor(),
+            default_peak_hold_decay(),
+        ),
+        AveragingMode::Exponential { factor } => (
+            SpectrumAveragingMode::Exponential,
+            normalize_factor(factor),
+            default_peak_hold_decay(),
+        ),
+        AveragingMode::PeakHold { decay_per_second } => (
+            SpectrumAveragingMode::PeakHold,
+            default_averaging_factor(),
+            normalize_decay(decay_per_second),
+        ),
     }
 }
 
-impl SpectrumSettings {
-    pub fn from_config(config: &SpectrumConfig) -> Self {
-        let (mode, factor, decay) = Self::split_averaging(config.averaging);
-        Self {
-            fft_size: config.fft_size,
-            hop_size: config.hop_size,
-            averaging_mode: mode,
-            averaging_factor: factor,
-            peak_hold_decay: decay,
-            frequency_scale: config.frequency_scale,
-            reverse_frequency: config.reverse_frequency,
-        }
-    }
+fn combine_averaging(mode: SpectrumAveragingMode, factor: f32, decay: f32) -> AveragingMode {
+    let mode = match mode {
+        SpectrumAveragingMode::None => AveragingMode::None,
+        SpectrumAveragingMode::Exponential => AveragingMode::Exponential {
+            factor: normalize_factor(factor),
+        },
+        SpectrumAveragingMode::PeakHold => AveragingMode::PeakHold {
+            decay_per_second: normalize_decay(decay),
+        },
+    };
+    mode.normalized()
+}
 
-    pub fn apply_to(&self, config: &mut SpectrumConfig) {
-        config.fft_size = self.fft_size.max(128);
-        config.hop_size = self.hop_size.max(1);
-        config.averaging = self.averaging_config();
-        config.frequency_scale = self.frequency_scale;
-        config.reverse_frequency = self.reverse_frequency;
-    }
+fn default_averaging_factor() -> f32 {
+    normalize_factor(AveragingMode::default_exponential_factor())
+}
 
-    pub fn to_config(&self) -> SpectrumConfig {
-        let mut config = SpectrumConfig::default();
-        self.apply_to(&mut config);
-        config
-    }
-
-    pub fn averaging_config(&self) -> AveragingMode {
-        Self::combine_averaging(
-            self.averaging_mode,
-            self.averaging_factor,
-            self.peak_hold_decay,
-        )
-    }
-
-    pub fn normalized_factor(value: f32) -> f32 {
-        EXPONENTIAL_RANGE.snap(value)
-    }
-
-    pub fn normalized_decay(value: f32) -> f32 {
-        PEAK_HOLD_DECAY_RANGE.snap(value).max(0.0)
-    }
-
-    pub fn split_averaging(averaging: AveragingMode) -> (SpectrumAveragingMode, f32, f32) {
-        match averaging {
-            AveragingMode::None => (
-                SpectrumAveragingMode::None,
-                DEFAULT_SPECTRUM_AVERAGING_FACTOR,
-                DEFAULT_SPECTRUM_PEAK_HOLD_DECAY,
-            ),
-            AveragingMode::Exponential { factor } => (
-                SpectrumAveragingMode::Exponential,
-                Self::normalized_factor(factor),
-                DEFAULT_SPECTRUM_PEAK_HOLD_DECAY,
-            ),
-            AveragingMode::PeakHold { decay_per_second } => (
-                SpectrumAveragingMode::PeakHold,
-                DEFAULT_SPECTRUM_AVERAGING_FACTOR,
-                Self::normalized_decay(decay_per_second),
-            ),
-        }
-    }
-
-    pub fn combine_averaging(
-        mode: SpectrumAveragingMode,
-        factor: f32,
-        decay: f32,
-    ) -> AveragingMode {
-        match mode {
-            SpectrumAveragingMode::None => AveragingMode::None,
-            SpectrumAveragingMode::Exponential => AveragingMode::Exponential {
-                factor: Self::normalized_factor(factor),
-            },
-            SpectrumAveragingMode::PeakHold => AveragingMode::PeakHold {
-                decay_per_second: Self::normalized_decay(decay),
-            },
-        }
-    }
+fn default_peak_hold_decay() -> f32 {
+    normalize_decay(AveragingMode::default_peak_decay())
 }

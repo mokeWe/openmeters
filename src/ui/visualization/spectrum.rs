@@ -7,15 +7,11 @@ use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::spectrum::{SpectrumParams, SpectrumPrimitive};
 use crate::ui::theme;
 use iced::advanced::Renderer as _;
-use iced::advanced::graphics::text::Paragraph as RenderParagraph;
 use iced::advanced::renderer::{self, Quad};
-use iced::advanced::text::{self, LineHeight, Paragraph as _, Renderer as _, Shaping, Wrapping};
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Widget, layout, mouse};
-use iced::alignment::{Horizontal, Vertical};
-use iced::{Background, Color, Element, Font, Length, Pixels, Point, Rectangle, Size};
+use iced::{Background, Color, Element, Length, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
-use std::cell::RefCell;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -23,10 +19,6 @@ const DEFAULT_RESOLUTION: usize = 1024;
 const MIN_FREQUENCY_HZ: f32 = 10.0;
 const MAX_FREQUENCY_HZ: f32 = 20_000.0;
 const EPSILON: f32 = 1.0e-6;
-const GRID_LABEL_FONT_SIZE: f32 = 12.0;
-const GRID_LABEL_WIDTH: f32 = 72.0;
-const GRID_LABEL_HEIGHT: f32 = 18.0;
-const GRID_LABEL_PADDING: f32 = 4.0;
 
 /// High-level wrapper around the shared spectrum processor.
 pub struct SpectrumProcessor {
@@ -92,7 +84,6 @@ impl SpectrumProcessor {
 pub struct SpectrumStyle {
     pub background: Color,
     pub line_color: Color,
-    pub grid_major_color: Color,
     pub min_db: f32,
     pub max_db: f32,
     pub min_frequency: f32,
@@ -113,12 +104,10 @@ impl Default for SpectrumStyle {
     fn default() -> Self {
         let background = Color::from_rgba(0.0, 0.0, 0.0, 0.0);
         let line_color = theme::mix_colors(theme::accent_primary(), theme::text_color(), 0.35);
-        let major_grid = theme::with_alpha(theme::text_secondary(), 0.22);
 
         Self {
             background,
             line_color,
-            grid_major_color: major_grid,
             min_db: -120.0,
             max_db: 0.0,
             min_frequency: MIN_FREQUENCY_HZ,
@@ -140,26 +129,12 @@ impl Default for SpectrumStyle {
 #[derive(Debug, Clone)]
 pub struct SpectrumState {
     style: SpectrumStyle,
-    weighted_points: Arc<Vec<[f32; 2]>>,
-    unweighted_points: Arc<Vec<[f32; 2]>>,
-    frequency_grid: Arc<Vec<GridLineSpec>>,
-    min_freq: f32,
-    max_freq: f32,
-    peak_frequency_hz: Option<f32>,
-}
-
-#[derive(Debug, Clone)]
-pub struct GridLineSpec {
-    pub position: f32,
-    pub frequency_hz: f32,
-    pub color: Color,
-    pub thickness: f32,
+    points: PointSeries,
 }
 
 #[derive(Debug)]
 pub struct SpectrumVisual {
     pub primitive: SpectrumParams,
-    pub grid_lines: Vec<GridLineSpec>,
     pub background: Color,
 }
 
@@ -167,12 +142,7 @@ impl SpectrumState {
     pub fn new() -> Self {
         Self {
             style: SpectrumStyle::default(),
-            weighted_points: Arc::new(Vec::new()),
-            unweighted_points: Arc::new(Vec::new()),
-            frequency_grid: Arc::new(Vec::new()),
-            min_freq: MIN_FREQUENCY_HZ,
-            max_freq: MAX_FREQUENCY_HZ,
-            peak_frequency_hz: None,
+            points: PointSeries::new(),
         }
     }
 
@@ -188,131 +158,28 @@ impl SpectrumState {
             return;
         }
 
-        let nyquist = snapshot
-            .frequency_bins
-            .last()
-            .copied()
-            .unwrap_or(self.style.max_frequency);
+        let Some((scale, resolution)) = domain_parameters(&self.style, snapshot) else {
+            return;
+        };
 
-        let min_freq = self.style.min_frequency.max(EPSILON);
-        let mut max_freq = self.style.max_frequency.min(nyquist);
-        if max_freq <= min_freq {
-            max_freq = nyquist.max(min_freq * 1.02);
-        }
-
-        self.min_freq = min_freq;
-        self.max_freq = max_freq;
-        self.peak_frequency_hz = snapshot.peak_frequency_hz;
-
-        let resolution = self.style.resolution.max(32);
-
-        // Precompute scale-specific parameters
-        let log_min = min_freq.max(EPSILON).log10();
-        let log_max = max_freq.max(min_freq * 1.01).log10();
-        let log_range = (log_max - log_min).max(EPSILON);
-
-        let mel_min = hz_to_mel(min_freq);
-        let mel_max = hz_to_mel(max_freq);
-        let mel_range = (mel_max - mel_min).max(EPSILON);
-
-        {
-            let weighted_points = Arc::make_mut(&mut self.weighted_points);
-            weighted_points.clear();
-            weighted_points.reserve(resolution);
-
-            let unweighted_points = Arc::make_mut(&mut self.unweighted_points);
-            unweighted_points.clear();
-            unweighted_points.reserve(resolution);
-
-            for i in 0..resolution {
-                let t = if resolution == 1 {
-                    0.0
-                } else {
-                    i as f32 / (resolution - 1) as f32
-                };
-
-                // Map normalized position to frequency based on selected scale
-                let freq = match self.style.frequency_scale {
-                    FrequencyScale::Linear => min_freq + (max_freq - min_freq) * t,
-                    FrequencyScale::Logarithmic => 10.0f32.powf(log_min + log_range * t),
-                    FrequencyScale::Mel => {
-                        let mel = mel_min + mel_range * t;
-                        mel_to_hz(mel)
-                    }
-                };
-
-                let magnitude_weighted =
-                    interpolate_magnitude(&snapshot.frequency_bins, &snapshot.magnitudes_db, freq);
-                let magnitude_unweighted = interpolate_magnitude(
-                    &snapshot.frequency_bins,
-                    &snapshot.magnitudes_unweighted_db,
-                    freq,
-                );
-                let normalized_weighted =
-                    normalize_db(magnitude_weighted, self.style.min_db, self.style.max_db);
-                let normalized_unweighted =
-                    normalize_db(magnitude_unweighted, self.style.min_db, self.style.max_db);
-                weighted_points.push([t, normalized_weighted]);
-                unweighted_points.push([t, normalized_unweighted]);
-            }
-
-            if self.style.smoothing_radius > 0 && self.style.smoothing_passes > 0 {
-                smooth_points(
-                    weighted_points.as_mut_slice(),
-                    self.style.smoothing_radius,
-                    self.style.smoothing_passes,
-                );
-                smooth_points(
-                    unweighted_points.as_mut_slice(),
-                    self.style.smoothing_radius,
-                    self.style.smoothing_passes,
-                );
-            }
-
-            if self.style.reverse_frequency {
-                weighted_points.reverse();
-                unweighted_points.reverse();
-                // Update t values to maintain correct horizontal positioning
-                for (i, point) in weighted_points.iter_mut().enumerate() {
-                    point[0] = if resolution == 1 {
-                        0.0
-                    } else {
-                        i as f32 / (resolution - 1) as f32
-                    };
-                }
-                for (i, point) in unweighted_points.iter_mut().enumerate() {
-                    point[0] = if resolution == 1 {
-                        0.0
-                    } else {
-                        i as f32 / (resolution - 1) as f32
-                    };
-                }
-            }
-        }
-
-        self.frequency_grid = Arc::new(build_frequency_grid(
-            min_freq,
-            max_freq,
-            self.style.grid_major_color,
-            self.style.frequency_scale,
-            self.style.reverse_frequency,
-        ));
+        self.points
+            .update(&self.style, &scale, snapshot, resolution);
     }
 
     pub fn visual(&self, bounds: Rectangle) -> Option<SpectrumVisual> {
-        if self.weighted_points.len() < 2 {
+        if !self.points.is_ready() {
             return None;
         }
 
-        let normalized_points = self.weighted_points.clone();
-        let unweighted_points = self.unweighted_points.clone();
-
-        let grid_lines = self.frequency_grid.to_vec();
+        let normalized_points = self.points.weighted();
+        let unweighted_points = self.points.unweighted();
+        let instance_key = points_key(&normalized_points, &unweighted_points);
 
         let primitive = SpectrumParams {
             bounds,
             normalized_points,
             secondary_points: unweighted_points,
+            instance_key,
             line_color: theme::color_to_rgba(self.style.line_color),
             line_width: self.style.line_thickness,
             secondary_line_color: theme::color_to_rgba(self.style.unweighted_line_color),
@@ -323,10 +190,15 @@ impl SpectrumState {
 
         Some(SpectrumVisual {
             primitive,
-            grid_lines,
             background: self.style.background,
         })
     }
+}
+
+fn points_key(primary: &Arc<Vec<[f32; 2]>>, secondary: &Arc<Vec<[f32; 2]>>) -> usize {
+    let primary_ptr = Arc::as_ptr(primary) as usize;
+    let secondary_ptr = Arc::as_ptr(secondary) as usize;
+    primary_ptr ^ secondary_ptr.wrapping_mul(31)
 }
 
 #[derive(Debug)]
@@ -342,11 +214,11 @@ impl<'a> Spectrum<'a> {
 
 impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> {
     fn tag(&self) -> tree::Tag {
-        tree::Tag::of::<FrequencyLabelCache>()
+        tree::Tag::of::<()>()
     }
 
     fn state(&self) -> tree::State {
-        tree::State::new(FrequencyLabelCache::default())
+        tree::State::None
     }
 
     fn size(&self) -> Size<Length> {
@@ -365,7 +237,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> 
 
     fn draw(
         &self,
-        tree: &Tree,
+        _tree: &Tree,
         renderer: &mut iced::Renderer,
         _theme: &iced::Theme,
         _style: &renderer::Style,
@@ -374,11 +246,8 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> 
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let cache = tree.state.downcast_ref::<FrequencyLabelCache>();
-        let mut cache_entries = cache.entries.borrow_mut();
 
         let Some(visual) = self.state.visual(bounds) else {
-            cache_entries.clear();
             renderer.fill_quad(
                 Quad {
                     bounds,
@@ -399,69 +268,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> 
             Background::Color(visual.background),
         );
 
-        for line in &visual.grid_lines {
-            let x = bounds.x + bounds.width * line.position;
-            let half = line.thickness * 0.5;
-            let rect = Rectangle {
-                x: x - half,
-                y: bounds.y,
-                width: line.thickness,
-                height: bounds.height,
-            };
-            renderer.fill_quad(
-                Quad {
-                    bounds: rect,
-                    border: Default::default(),
-                    shadow: Default::default(),
-                },
-                Background::Color(line.color),
-            );
-        }
-
         renderer.draw_primitive(bounds, SpectrumPrimitive::new(visual.primitive));
-
-        let label_color = theme::with_alpha(theme::text_secondary(), 0.85);
-        let clip_bounds = Rectangle {
-            x: bounds.x,
-            y: bounds.y,
-            width: bounds.width,
-            height: GRID_LABEL_HEIGHT + GRID_LABEL_PADDING * 2.0,
-        };
-
-        for entry in cache_entries.iter_mut() {
-            entry.in_use = false;
-        }
-
-        for line in &visual.grid_lines {
-            let label = format_frequency_label(line.frequency_hz);
-            if label.is_empty() {
-                continue;
-            }
-
-            let label_bounds = Size::new(GRID_LABEL_WIDTH, GRID_LABEL_HEIGHT);
-            let index = ensure_grid_label(&mut cache_entries, label.as_str(), label_bounds);
-            let paragraph = &cache_entries[index].paragraph;
-            let text_bounds = paragraph.min_bounds();
-            if text_bounds.width <= 0.0 || clip_bounds.width <= 0.0 {
-                continue;
-            }
-
-            let center_x = bounds.x + bounds.width * line.position;
-            
-            // Position horizontally centered above the grid line
-            let mut x = center_x - text_bounds.width * 0.5;
-            let max_x = bounds.x + bounds.width - text_bounds.width;
-            if max_x < bounds.x {
-                x = bounds.x;
-            } else {
-                x = x.clamp(bounds.x, max_x);
-            }
-            let y = bounds.y + GRID_LABEL_PADDING;
-            let position = Point::new(x, y);
-            renderer.fill_paragraph(paragraph, position, label_color, clip_bounds);
-        }
-
-        cache_entries.retain(|entry| entry.in_use);
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -476,6 +283,207 @@ where
     Message: 'a,
 {
     Element::new(Spectrum::new(state))
+}
+
+#[derive(Debug, Clone)]
+struct PointSeries {
+    weighted: Arc<Vec<[f32; 2]>>,
+    unweighted: Arc<Vec<[f32; 2]>>,
+    smoothing_scratch: Vec<f32>,
+}
+
+impl PointSeries {
+    fn new() -> Self {
+        Self {
+            weighted: Arc::new(Vec::new()),
+            unweighted: Arc::new(Vec::new()),
+            smoothing_scratch: Vec::new(),
+        }
+    }
+
+    fn weighted(&self) -> Arc<Vec<[f32; 2]>> {
+        Arc::clone(&self.weighted)
+    }
+
+    fn unweighted(&self) -> Arc<Vec<[f32; 2]>> {
+        Arc::clone(&self.unweighted)
+    }
+
+    fn is_ready(&self) -> bool {
+        self.weighted.len() >= 2
+    }
+
+    fn update(
+        &mut self,
+        style: &SpectrumStyle,
+        scale: &ScaleContext,
+        snapshot: &SpectrumSnapshot,
+        resolution: usize,
+    ) {
+        let weighted = Arc::make_mut(&mut self.weighted);
+        let unweighted = Arc::make_mut(&mut self.unweighted);
+
+        rebuild_point_sets(weighted, unweighted, resolution, style, scale, snapshot);
+
+        apply_smoothing_if_needed(
+            style,
+            weighted.as_mut_slice(),
+            unweighted.as_mut_slice(),
+            &mut self.smoothing_scratch,
+        );
+
+        if style.reverse_frequency {
+            reverse_and_reindex(weighted);
+            reverse_and_reindex(unweighted);
+        }
+    }
+}
+
+fn domain_parameters(
+    style: &SpectrumStyle,
+    snapshot: &SpectrumSnapshot,
+) -> Option<(ScaleContext, usize)> {
+    let nyquist = snapshot
+        .frequency_bins
+        .last()
+        .copied()
+        .unwrap_or(style.max_frequency);
+
+    let min_freq = style.min_frequency.max(EPSILON);
+    let mut max_freq = style.max_frequency.min(nyquist);
+    if max_freq <= min_freq {
+        max_freq = nyquist.max(min_freq * 1.02);
+    }
+
+    (max_freq > min_freq).then(|| {
+        (
+            ScaleContext::new(min_freq, max_freq),
+            style.resolution.max(32),
+        )
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ScaleContext {
+    min_hz: f32,
+    max_hz: f32,
+    log_min: f32,
+    log_range: f32,
+    mel_min: f32,
+    mel_range: f32,
+}
+
+impl ScaleContext {
+    fn new(min_hz: f32, max_hz: f32) -> Self {
+        let log_min = min_hz.max(EPSILON).log10();
+        let log_max = max_hz.max(min_hz * 1.01).log10();
+        let log_range = (log_max - log_min).max(EPSILON);
+
+        let mel_min = hz_to_mel(min_hz);
+        let mel_max = hz_to_mel(max_hz);
+        let mel_range = (mel_max - mel_min).max(EPSILON);
+
+        Self {
+            min_hz,
+            max_hz,
+            log_min,
+            log_range,
+            mel_min,
+            mel_range,
+        }
+    }
+
+    fn frequency_for(&self, scale: FrequencyScale, t: f32) -> f32 {
+        match scale {
+            FrequencyScale::Linear => self.min_hz + (self.max_hz - self.min_hz) * t,
+            FrequencyScale::Logarithmic => 10.0f32.powf(self.log_min + self.log_range * t),
+            FrequencyScale::Mel => {
+                let mel = self.mel_min + self.mel_range * t;
+                mel_to_hz(mel)
+            }
+        }
+    }
+}
+
+fn rebuild_point_sets(
+    weighted: &mut Vec<[f32; 2]>,
+    unweighted: &mut Vec<[f32; 2]>,
+    resolution: usize,
+    style: &SpectrumStyle,
+    scale: &ScaleContext,
+    snapshot: &SpectrumSnapshot,
+) {
+    weighted.clear();
+    unweighted.clear();
+    weighted.reserve(resolution);
+    unweighted.reserve(resolution);
+
+    for step in 0..resolution {
+        let t = normalized_position(step, resolution);
+        let freq = scale.frequency_for(style.frequency_scale, t);
+
+        let magnitude_weighted =
+            interpolate_magnitude(&snapshot.frequency_bins, &snapshot.magnitudes_db, freq);
+        let magnitude_unweighted = interpolate_magnitude(
+            &snapshot.frequency_bins,
+            &snapshot.magnitudes_unweighted_db,
+            freq,
+        );
+
+        let normalized_weighted = normalize_db(magnitude_weighted, style.min_db, style.max_db);
+        let normalized_unweighted = normalize_db(magnitude_unweighted, style.min_db, style.max_db);
+
+        weighted.push([t, normalized_weighted]);
+        unweighted.push([t, normalized_unweighted]);
+    }
+}
+
+fn apply_smoothing_if_needed(
+    style: &SpectrumStyle,
+    weighted: &mut [[f32; 2]],
+    unweighted: &mut [[f32; 2]],
+    scratch: &mut Vec<f32>,
+) {
+    if style.smoothing_radius == 0 || style.smoothing_passes == 0 {
+        return;
+    }
+
+    smooth_points(
+        weighted,
+        style.smoothing_radius,
+        style.smoothing_passes,
+        scratch,
+    );
+    smooth_points(
+        unweighted,
+        style.smoothing_radius,
+        style.smoothing_passes,
+        scratch,
+    );
+}
+
+fn reverse_and_reindex(points: &mut Vec<[f32; 2]>) {
+    if points.is_empty() {
+        return;
+    }
+
+    points.reverse();
+    refresh_abscissa(points.as_mut_slice());
+}
+
+fn refresh_abscissa(points: &mut [[f32; 2]]) {
+    let count = points.len();
+    for (index, point) in points.iter_mut().enumerate() {
+        point[0] = normalized_position(index, count);
+    }
+}
+
+fn normalized_position(index: usize, count: usize) -> f32 {
+    if count <= 1 {
+        0.0
+    } else {
+        index as f32 / (count - 1) as f32
+    }
 }
 
 fn normalize_db(value: f32, min_db: f32, max_db: f32) -> f32 {
@@ -516,186 +524,16 @@ fn interpolate_magnitude(bins: &[f32], magnitudes: &[f32], target: f32) -> f32 {
     }
 }
 
-fn build_frequency_grid(
-    min_freq: f32,
-    max_freq: f32,
-    major_color: Color,
-    scale: FrequencyScale,
-    reverse: bool,
-) -> Vec<GridLineSpec> {
-    const STANDARD_FREQUENCIES: &[f32] = &[
-        31.5, 63.0, 125.0, 250.0, 500.0, 1_000.0, 2_000.0, 4_000.0, 8_000.0, 16_000.0,
-    ];
-
-    const MIN_LABEL_SPACING: f32 = 0.08;
-
-    // Precompute scale parameters
-    let log_min = min_freq.max(EPSILON).log10();
-    let log_max = max_freq.max(min_freq * 1.01).log10();
-    let log_range = (log_max - log_min).max(EPSILON);
-
-    let mel_min = hz_to_mel(min_freq);
-    let mel_max = hz_to_mel(max_freq);
-    let mel_range = (mel_max - mel_min).max(EPSILON);
-
-    let mut lines: Vec<GridLineSpec> = STANDARD_FREQUENCIES
-        .iter()
-        .copied()
-        .filter(|f| *f >= min_freq && *f <= max_freq)
-        .map(|frequency| {
-            // Calculate position based on the selected scale
-            let ratio = match scale {
-                FrequencyScale::Linear => (frequency - min_freq) / (max_freq - min_freq),
-                FrequencyScale::Logarithmic => (frequency.log10() - log_min) / log_range,
-                FrequencyScale::Mel => {
-                    let mel = hz_to_mel(frequency);
-                    (mel - mel_min) / mel_range
-                }
-            };
-
-            let position = if reverse {
-                1.0 - ratio.clamp(0.0, 1.0)
-            } else {
-                ratio.clamp(0.0, 1.0)
-            };
-
-            GridLineSpec {
-                position,
-                frequency_hz: frequency,
-                color: major_color,
-                thickness: 1.5,
-            }
-        })
-        .collect();
-
-    if lines.is_empty() {
-        let (low_pos, high_pos) = if reverse { (1.0, 0.0) } else { (0.0, 1.0) };
-        lines.push(GridLineSpec {
-            position: low_pos,
-            frequency_hz: min_freq,
-            color: major_color,
-            thickness: 1.5,
-        });
-        lines.push(GridLineSpec {
-            position: high_pos,
-            frequency_hz: max_freq,
-            color: major_color,
-            thickness: 1.5,
-        });
-        return lines;
-    }
-
-    lines.sort_by(|a, b| {
-        a.position
-            .partial_cmp(&b.position)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    let mut filtered_lines = Vec::with_capacity(lines.len());
-
-    for line in lines {
-        if line.position >= MIN_LABEL_SPACING {
-            filtered_lines.push(line);
-        }
-    }
-
-    filtered_lines
-}
-
-fn ensure_grid_label(entries: &mut Vec<GridLabelParagraph>, label: &str, bounds: Size) -> usize {
-    if let Some((index, entry)) = entries
-        .iter_mut()
-        .enumerate()
-        .find(|(_, entry)| entry.label == label)
-    {
-        entry.ensure(label, bounds);
-        entry.in_use = true;
-        index
-    } else {
-        entries.push(GridLabelParagraph::new(label, bounds));
-        entries.len() - 1
-    }
-}
-
-#[derive(Default)]
-struct FrequencyLabelCache {
-    entries: RefCell<Vec<GridLabelParagraph>>,
-}
-
-struct GridLabelParagraph {
-    label: String,
-    bounds: Size,
-    paragraph: RenderParagraph,
-    in_use: bool,
-}
-
-impl GridLabelParagraph {
-    fn new(label: &str, bounds: Size) -> Self {
-        Self {
-            label: label.to_owned(),
-            bounds,
-            paragraph: build_grid_label_paragraph(label, bounds),
-            in_use: true,
-        }
-    }
-
-    fn ensure(&mut self, label: &str, bounds: Size) {
-        if self.label != label {
-            self.label = label.to_owned();
-            self.paragraph = build_grid_label_paragraph(label, bounds);
-            self.bounds = bounds;
-        } else if !size_eq(self.bounds, bounds) {
-            self.paragraph.resize(bounds);
-            self.bounds = bounds;
-        }
-        self.in_use = true;
-    }
-}
-
-fn build_grid_label_paragraph(label: &str, bounds: Size) -> RenderParagraph {
-    RenderParagraph::with_text(text::Text {
-        content: label,
-        bounds,
-        size: Pixels(GRID_LABEL_FONT_SIZE),
-        line_height: LineHeight::Relative(1.0),
-        font: Font::default(),
-        horizontal_alignment: Horizontal::Center,
-        vertical_alignment: Vertical::Top,
-        shaping: Shaping::Advanced,
-        wrapping: Wrapping::None,
-    })
-}
-
-fn size_eq(a: Size, b: Size) -> bool {
-    (a.width - b.width).abs() <= f32::EPSILON && (a.height - b.height).abs() <= f32::EPSILON
-}
-
-fn format_frequency_label(frequency_hz: f32) -> String {
-    if !frequency_hz.is_finite() || frequency_hz <= 0.0 {
-        return String::new();
-    }
-
-    if frequency_hz >= 1_000.0 {
-        let kilo = frequency_hz / 1_000.0;
-        if (kilo - kilo.round()).abs() < 0.05 {
-            format!("{:.0}k", kilo.round())
-        } else {
-            format!("{:.1}k", kilo)
-        }
-    } else if (frequency_hz - frequency_hz.round()).abs() < 0.05 {
-        format!("{:.0}", frequency_hz.round())
-    } else {
-        format!("{:.1}", frequency_hz)
-    }
-}
-
-fn smooth_points(points: &mut [[f32; 2]], radius: usize, passes: usize) {
+fn smooth_points(points: &mut [[f32; 2]], radius: usize, passes: usize, scratch: &mut Vec<f32>) {
     if radius == 0 || passes == 0 || points.len() < 3 {
         return;
     }
 
     let len = points.len();
-    let mut scratch = vec![0.0f32; len];
+    if scratch.len() != len {
+        scratch.clear();
+        scratch.resize(len, 0.0);
+    }
 
     for _ in 0..passes {
         for (dst, point) in scratch.iter_mut().zip(points.iter()) {

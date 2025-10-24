@@ -39,16 +39,6 @@ pub const DEFAULT_WAVEFORM_PALETTE: [Color; 5] = [
     Color::from_rgb(0.400, 0.000, 0.800), // deep purple
 ];
 
-/// Returns the default spectrogram color palette.
-pub fn spectrogram_palette() -> [Color; 5] {
-    DEFAULT_SPECTROGRAM_PALETTE
-}
-
-/// Returns the waveform color palette.
-pub fn waveform_palette() -> [Color; 5] {
-    DEFAULT_WAVEFORM_PALETTE
-}
-
 /// Returns the monochrome theme for the application.
 pub fn theme() -> Theme {
     Theme::custom_with_fn(

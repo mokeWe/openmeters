@@ -138,8 +138,8 @@ pub struct SpectrogramState {
 
 impl SpectrogramState {
     pub fn new() -> Self {
-        let style = SpectrogramStyle::default();
-        let palette = theme::spectrogram_palette();
+    let style = SpectrogramStyle::default();
+    let palette = theme::DEFAULT_SPECTROGRAM_PALETTE;
         let default_cfg = SpectrogramConfig::default();
         let palette_cache = RefCell::new(PaletteCache::new(&style, &palette));
 

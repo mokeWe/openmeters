@@ -12,7 +12,7 @@ use crate::dsp::waveform::{MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY};
 use crate::ui::render::spectrogram::SPECTROGRAM_PALETTE_SIZE;
 use crate::ui::settings::{
     LoudnessSettings, ModuleSettings, OscilloscopeSettings, PaletteSettings, SpectrogramSettings,
-    SpectrumSettings, VisualSettings, WaveformSettings,
+    VisualSettings, WaveformSettings,
 };
 use crate::ui::theme;
 use crate::ui::visualization::loudness::{LoudnessMeterProcessor, LoudnessMeterState};
@@ -489,19 +489,18 @@ impl VisualModule for SpectrumVisual {
     }
 
     fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(stored) = settings.spectrum() {
-            let mut config = self.processor.config();
-            stored.apply_to(&mut config);
+        if let Some(config) = settings.spectrum_config() {
             self.processor.update_config(config);
-            self.state.style_mut().frequency_scale = config.frequency_scale;
-            self.state.style_mut().reverse_frequency = config.reverse_frequency;
+            let updated = self.processor.config();
+            let style = self.state.style_mut();
+            style.frequency_scale = updated.frequency_scale;
+            style.reverse_frequency = updated.reverse_frequency;
         }
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
         let mut settings = ModuleSettings::default();
-        let snapshot = SpectrumSettings::from_config(&self.processor.config());
-        settings.set_spectrum(snapshot);
+        settings.set_spectrum(self.processor.config());
         Some(settings)
     }
 }

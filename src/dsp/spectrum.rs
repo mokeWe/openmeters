@@ -5,6 +5,7 @@ use crate::dsp::spectrogram::{FrequencyScale, WindowKind};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
+use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::Arc;
@@ -13,6 +14,15 @@ use std::time::Instant;
 const LOG_FACTOR: f32 = 10.0 * core::f32::consts::LOG10_E;
 const POWER_EPSILON: f32 = 1.0e-20;
 const DB_FLOOR: f32 = -140.0;
+
+pub const MIN_SPECTRUM_FFT_SIZE: usize = 128;
+pub const DEFAULT_SPECTRUM_HOP_DIVISOR: usize = 4;
+pub const MIN_SPECTRUM_EXP_FACTOR: f32 = 0.0;
+pub const MAX_SPECTRUM_EXP_FACTOR: f32 = 0.95;
+pub const MIN_SPECTRUM_PEAK_DECAY: f32 = 0.0;
+pub const MAX_SPECTRUM_PEAK_DECAY: f32 = 60.0;
+pub const DEFAULT_SPECTRUM_EXP_FACTOR: f32 = 0.5;
+pub const DEFAULT_SPECTRUM_PEAK_DECAY: f32 = 12.0;
 
 /// Output magnitude spectrum.
 #[derive(Debug, Clone, Default)]
@@ -24,7 +34,7 @@ pub struct SpectrumSnapshot {
 }
 
 /// Configuration for the spectrum analyser.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct SpectrumConfig {
     pub sample_rate: f32,
     pub fft_size: usize,
@@ -43,18 +53,86 @@ impl Default for SpectrumConfig {
             fft_size: 2048,
             hop_size: 512,
             window: WindowKind::Hann,
-            averaging: AveragingMode::Exponential { factor: 0.5 },
+            averaging: AveragingMode::Exponential {
+                factor: DEFAULT_SPECTRUM_EXP_FACTOR,
+            },
             frequency_scale: FrequencyScale::Logarithmic,
             reverse_frequency: false,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+impl SpectrumConfig {
+    /// Ensures the configuration respects runtime invariants and sane defaults.
+    pub fn normalize(&mut self) {
+        if !self.sample_rate.is_finite() || self.sample_rate <= 0.0 {
+            self.sample_rate = DEFAULT_SAMPLE_RATE;
+        }
+
+        self.fft_size = self.fft_size.max(MIN_SPECTRUM_FFT_SIZE);
+
+        self.hop_size = if self.hop_size == 0 {
+            (self.fft_size / DEFAULT_SPECTRUM_HOP_DIVISOR).max(1)
+        } else {
+            self.hop_size.min(self.fft_size).max(1)
+        };
+
+        self.averaging = self.averaging.normalized();
+    }
+
+    /// Returns a normalized copy of this configuration.
+    pub fn normalized(mut self) -> Self {
+        self.normalize();
+        self
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
 pub enum AveragingMode {
     None,
     Exponential { factor: f32 },
     PeakHold { decay_per_second: f32 },
+}
+
+impl AveragingMode {
+    pub fn normalized(self) -> Self {
+        match self {
+            AveragingMode::None => AveragingMode::None,
+            AveragingMode::Exponential { factor } => AveragingMode::Exponential {
+                factor: Self::clamp_factor(factor),
+            },
+            AveragingMode::PeakHold { decay_per_second } => AveragingMode::PeakHold {
+                decay_per_second: Self::clamp_decay(decay_per_second),
+            },
+        }
+    }
+
+    pub const fn default_exponential_factor() -> f32 {
+        DEFAULT_SPECTRUM_EXP_FACTOR
+    }
+
+    pub const fn default_peak_decay() -> f32 {
+        DEFAULT_SPECTRUM_PEAK_DECAY
+    }
+
+    pub fn clamp_factor(value: f32) -> f32 {
+        let value = if value.is_finite() {
+            value
+        } else {
+            MIN_SPECTRUM_EXP_FACTOR
+        };
+        value.clamp(MIN_SPECTRUM_EXP_FACTOR, MAX_SPECTRUM_EXP_FACTOR)
+    }
+
+    pub fn clamp_decay(value: f32) -> f32 {
+        let value = if value.is_finite() {
+            value
+        } else {
+            MIN_SPECTRUM_PEAK_DECAY
+        };
+        value.clamp(MIN_SPECTRUM_PEAK_DECAY, MAX_SPECTRUM_PEAK_DECAY)
+    }
 }
 
 pub struct SpectrumProcessor {
@@ -78,8 +156,9 @@ pub struct SpectrumProcessor {
 }
 
 impl SpectrumProcessor {
-    pub fn new(config: SpectrumConfig) -> Self {
-        let fft_size = config.fft_size.max(2);
+    pub fn new(mut config: SpectrumConfig) -> Self {
+        config.normalize();
+        let fft_size = config.fft_size;
         let mut processor = Self {
             config,
             snapshot: SpectrumSnapshot::default(),
@@ -108,7 +187,8 @@ impl SpectrumProcessor {
     }
 
     fn rebuild_fft(&mut self) {
-        let fft_size = self.config.fft_size.max(2);
+        self.config.normalize();
+        let fft_size = self.config.fft_size;
         let mut planner = RealFftPlanner::<f32>::new();
         self.fft = planner.plan_fft_forward(fft_size);
         self.window = self.config.window.coefficients(fft_size);
@@ -133,9 +213,6 @@ impl SpectrumProcessor {
             .iter()
             .map(|&f| a_weight(f))
             .collect();
-        if self.config.hop_size == 0 {
-            self.config.hop_size = fft_size / 4;
-        }
         self.pcm_buffer.clear();
     }
 
@@ -306,7 +383,7 @@ impl AudioProcessor for SpectrumProcessor {
 
 impl Reconfigurable<SpectrumConfig> for SpectrumProcessor {
     fn update_config(&mut self, config: SpectrumConfig) {
-        self.config = config;
+        self.config = config.normalized();
         self.rebuild_fft();
     }
 }

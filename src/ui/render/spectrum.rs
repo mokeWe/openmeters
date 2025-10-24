@@ -15,6 +15,7 @@ pub struct SpectrumParams {
     pub bounds: Rectangle,
     pub normalized_points: Arc<Vec<[f32; 2]>>,
     pub secondary_points: Arc<Vec<[f32; 2]>>,
+    pub instance_key: usize,
     pub line_color: [f32; 4],
     pub line_width: f32,
     pub secondary_line_color: [f32; 4],
@@ -34,21 +35,14 @@ impl SpectrumPrimitive {
     }
 
     fn key(&self) -> usize {
-        self as *const Self as usize
+        self.params.instance_key
     }
 
     fn build_vertices(&self, viewport: &Viewport) -> Vec<SimpleVertex> {
         let bounds = self.params.bounds;
         let clip = ClipTransform::from_viewport(viewport);
 
-        let mut positions = Vec::with_capacity(self.params.normalized_points.len());
-        for point in self.params.normalized_points.iter() {
-            let amp = point[1].clamp(0.0, 1.0);
-            let x = bounds.x + bounds.width * point[0].clamp(0.0, 1.0);
-            let y = bounds.y + bounds.height * (1.0 - amp);
-            positions.push((x, y));
-        }
-
+        let positions = to_cartesian_positions(bounds, self.params.normalized_points.as_ref());
         if positions.len() < 2 {
             return Vec::new();
         }
@@ -56,115 +50,34 @@ impl SpectrumPrimitive {
         let mut vertices = Vec::new();
         let baseline = bounds.y + bounds.height;
 
-        // Highlight energetic columns before drawing the fill so they sit behind the curve.
-        let highlight_color = self.params.highlight_color;
-        let highlight_threshold = self.params.highlight_threshold.clamp(0.0, 1.0);
-        if highlight_color[3] > 0.0 && highlight_threshold < 1.0 {
-            let denom = (1.0 - highlight_threshold).max(1.0e-6);
-            for (segment, points) in positions
-                .windows(2)
-                .zip(self.params.normalized_points.windows(2))
-            {
-                let amp_max = points[0][1]
-                    .clamp(0.0, 1.0)
-                    .max(points[1][1].clamp(0.0, 1.0));
-                if amp_max < highlight_threshold {
-                    continue;
-                }
+        push_highlight_columns(
+            &mut vertices,
+            &clip,
+            baseline,
+            &positions,
+            self.params.normalized_points.as_ref(),
+            self.params.highlight_color,
+            self.params.highlight_threshold,
+        );
 
-                let intensity = ((amp_max - highlight_threshold) / denom).clamp(0.0, 1.0);
-                let alpha = (highlight_color[3] * intensity).clamp(0.0, 1.0);
-                if alpha <= 0.0 {
-                    continue;
-                }
+        push_polyline(
+            &mut vertices,
+            &positions,
+            self.params.line_width,
+            self.params.line_color,
+            &clip,
+        );
 
-                let (x0, y0) = segment[0];
-                let (x1, y1) = segment[1];
-
-                let top_left = clip.to_clip(x0, y0);
-                let top_right = clip.to_clip(x1, y1);
-                let bottom_left = clip.to_clip(x0, baseline);
-                let bottom_right = clip.to_clip(x1, baseline);
-                let column_color = [
-                    highlight_color[0],
-                    highlight_color[1],
-                    highlight_color[2],
-                    alpha,
-                ];
-
-                vertices.extend_from_slice(&triangle_vertices(
-                    bottom_left,
-                    top_left,
-                    top_right,
-                    column_color,
-                ));
-                vertices.extend_from_slice(&triangle_vertices(
-                    bottom_left,
-                    top_right,
-                    bottom_right,
-                    column_color,
-                ));
-            }
-        }
-
-        // Build polyline with thickness.
-        let normals = compute_normals(&positions);
-        let half = self.params.line_width.max(0.1) * 0.5;
-        let line_color = self.params.line_color;
-        let mut prev_pair: Option<([f32; 2], [f32; 2])> = None;
-        for ((x, y), normal) in positions.iter().zip(normals.iter()) {
-            let offset_x = normal.0 * half;
-            let offset_y = normal.1 * half;
-            let current = (
-                clip.to_clip(x - offset_x, y - offset_y),
-                clip.to_clip(x + offset_x, y + offset_y),
+        if self.params.secondary_points.len() >= 2 {
+            let overlay_positions =
+                to_cartesian_positions(bounds, self.params.secondary_points.as_ref());
+            push_polyline(
+                &mut vertices,
+                &overlay_positions,
+                self.params.secondary_line_width,
+                self.params.secondary_line_color,
+                &clip,
             );
-            if let Some((left0, right0)) = prev_pair {
-                let (left1, right1) = current;
-                vertices.extend_from_slice(&triangle_vertices(left0, right0, right1, line_color));
-                vertices.extend_from_slice(&triangle_vertices(left0, right1, left1, line_color));
-            }
-            prev_pair = Some(current);
-        }
-
-        if !self.params.secondary_points.is_empty() {
-            let mut overlay_positions = Vec::with_capacity(self.params.secondary_points.len());
-            for point in self.params.secondary_points.iter() {
-                let x = bounds.x + bounds.width * point[0].clamp(0.0, 1.0);
-                let y = bounds.y + bounds.height * (1.0 - point[1].clamp(0.0, 1.0));
-                overlay_positions.push((x, y));
-            }
-
-            if overlay_positions.len() >= 2 {
-                let overlay_normals = compute_normals(&overlay_positions);
-                let half_overlay = self.params.secondary_line_width.max(0.1) * 0.5;
-                let overlay_color = self.params.secondary_line_color;
-                let mut prev_overlay: Option<([f32; 2], [f32; 2])> = None;
-                for ((x, y), normal) in overlay_positions.iter().zip(overlay_normals.iter()) {
-                    let offset_x = normal.0 * half_overlay;
-                    let offset_y = normal.1 * half_overlay;
-                    let current = (
-                        clip.to_clip(x - offset_x, y - offset_y),
-                        clip.to_clip(x + offset_x, y + offset_y),
-                    );
-                    if let Some((left0, right0)) = prev_overlay {
-                        let (left1, right1) = current;
-                        vertices.extend_from_slice(&triangle_vertices(
-                            left0,
-                            right0,
-                            right1,
-                            overlay_color,
-                        ));
-                        vertices.extend_from_slice(&triangle_vertices(
-                            left0,
-                            right1,
-                            left1,
-                            overlay_color,
-                        ));
-                    }
-                    prev_overlay = Some(current);
-                }
-            }
         }
 
         vertices
@@ -234,6 +147,104 @@ impl Primitive for SpectrumPrimitive {
         pass.set_pipeline(&pipeline.inner.pipeline);
         pass.set_vertex_buffer(0, instance.vertex_buffer.slice(0..instance.used_bytes()));
         pass.draw(0..instance.vertex_count, 0..1);
+    }
+}
+
+fn to_cartesian_positions(bounds: Rectangle, points: &[[f32; 2]]) -> Vec<(f32, f32)> {
+    let mut positions = Vec::with_capacity(points.len());
+    for point in points.iter() {
+        let x = bounds.x + bounds.width * point[0].clamp(0.0, 1.0);
+        let y = bounds.y + bounds.height * (1.0 - point[1].clamp(0.0, 1.0));
+        positions.push((x, y));
+    }
+    positions
+}
+
+fn push_highlight_columns(
+    vertices: &mut Vec<SimpleVertex>,
+    clip: &ClipTransform,
+    baseline: f32,
+    positions: &[(f32, f32)],
+    normalized_points: &[[f32; 2]],
+    highlight_color: [f32; 4],
+    highlight_threshold: f32,
+) {
+    let threshold = highlight_threshold.clamp(0.0, 1.0);
+    if highlight_color[3] <= 0.0 || threshold >= 1.0 {
+        return;
+    }
+
+    let denom = (1.0 - threshold).max(1.0e-6);
+    for (segment, points) in positions.windows(2).zip(normalized_points.windows(2)) {
+        let amp_max = points[0][1]
+            .clamp(0.0, 1.0)
+            .max(points[1][1].clamp(0.0, 1.0));
+        if amp_max < threshold {
+            continue;
+        }
+
+        let intensity = ((amp_max - threshold) / denom).clamp(0.0, 1.0);
+        let alpha = (highlight_color[3] * intensity).clamp(0.0, 1.0);
+        if alpha <= 0.0 {
+            continue;
+        }
+
+        let (x0, y0) = segment[0];
+        let (x1, y1) = segment[1];
+
+        let top_left = clip.to_clip(x0, y0);
+        let top_right = clip.to_clip(x1, y1);
+        let bottom_left = clip.to_clip(x0, baseline);
+        let bottom_right = clip.to_clip(x1, baseline);
+        let column_color = [
+            highlight_color[0],
+            highlight_color[1],
+            highlight_color[2],
+            alpha,
+        ];
+
+        vertices.extend_from_slice(&triangle_vertices(
+            bottom_left,
+            top_left,
+            top_right,
+            column_color,
+        ));
+        vertices.extend_from_slice(&triangle_vertices(
+            bottom_left,
+            top_right,
+            bottom_right,
+            column_color,
+        ));
+    }
+}
+
+fn push_polyline(
+    vertices: &mut Vec<SimpleVertex>,
+    positions: &[(f32, f32)],
+    width: f32,
+    color: [f32; 4],
+    clip: &ClipTransform,
+) {
+    if positions.len() < 2 || width < 0.0 {
+        return;
+    }
+
+    let normals = compute_normals(positions);
+    let half = width.max(0.1) * 0.5;
+    let mut prev_pair: Option<([f32; 2], [f32; 2])> = None;
+    for ((x, y), normal) in positions.iter().zip(normals.iter()) {
+        let offset_x = normal.0 * half;
+        let offset_y = normal.1 * half;
+        let current = (
+            clip.to_clip(x - offset_x, y - offset_y),
+            clip.to_clip(x + offset_x, y + offset_y),
+        );
+        if let Some((left0, right0)) = prev_pair {
+            let (left1, right1) = current;
+            vertices.extend_from_slice(&triangle_vertices(left0, right0, right1, color));
+            vertices.extend_from_slice(&triangle_vertices(left0, right1, left1, color));
+        }
+        prev_pair = Some(current);
     }
 }
 
