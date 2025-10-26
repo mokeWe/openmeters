@@ -68,6 +68,8 @@ pub enum Message {
     PeakHoldDecay(f32),
     FrequencyScale(FrequencyScale),
     ReverseFrequency(bool),
+    ShowGrid(bool),
+    ShowPeakLabel(bool),
 }
 
 pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> SpectrumSettingsPane {
@@ -112,9 +114,9 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
         .spacing(12);
 
         let direction_label = if self.config.reverse_frequency {
-            "High → Low"
+            "High <- Low"
         } else {
-            "Low → High"
+            "Low -> High"
         };
 
         let direction_toggle = toggler(self.config.reverse_frequency)
@@ -122,6 +124,18 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
             .spacing(8)
             .text_size(11)
             .on_toggle(|value| SettingsMessage::Spectrum(Message::ReverseFrequency(value)));
+
+        let grid_toggle = toggler(self.config.show_grid)
+            .label("Show frequency grid")
+            .spacing(8)
+            .text_size(11)
+            .on_toggle(|value| SettingsMessage::Spectrum(Message::ShowGrid(value)));
+
+        let peak_label_toggle = toggler(self.config.show_peak_label)
+            .label("Show peak frequency label")
+            .spacing(8)
+            .text_size(11)
+            .on_toggle(|value| SettingsMessage::Spectrum(Message::ShowPeakLabel(value)));
 
         let mode_row = labeled_pick_list(
             "Averaging mode",
@@ -131,7 +145,15 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
         )
         .spacing(12);
 
-        let mut content = column![fft_row, scale_row, direction_toggle, mode_row].spacing(16);
+        let mut content = column![
+            fft_row,
+            scale_row,
+            direction_toggle,
+            grid_toggle,
+            peak_label_toggle,
+            mode_row
+        ]
+        .spacing(16);
 
         match self.averaging_mode {
             SpectrumAveragingMode::Exponential => {
@@ -216,6 +238,22 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
             Message::ReverseFrequency(value) => {
                 if self.config.reverse_frequency != *value {
                     self.config.reverse_frequency = *value;
+                    true
+                } else {
+                    false
+                }
+            }
+            Message::ShowGrid(value) => {
+                if self.config.show_grid != *value {
+                    self.config.show_grid = *value;
+                    true
+                } else {
+                    false
+                }
+            }
+            Message::ShowPeakLabel(value) => {
+                if self.config.show_peak_label != *value {
+                    self.config.show_peak_label = *value;
                     true
                 } else {
                     false

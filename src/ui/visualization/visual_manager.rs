@@ -492,9 +492,13 @@ impl VisualModule for SpectrumVisual {
         if let Some(config) = settings.spectrum_config() {
             self.processor.update_config(config);
             let updated = self.processor.config();
-            let style = self.state.style_mut();
-            style.frequency_scale = updated.frequency_scale;
-            style.reverse_frequency = updated.reverse_frequency;
+            {
+                let style = self.state.style_mut();
+                style.frequency_scale = updated.frequency_scale;
+                style.reverse_frequency = updated.reverse_frequency;
+            }
+            self.state.update_show_grid(updated.show_grid);
+            self.state.update_show_peak_label(updated.show_peak_label);
         }
     }
 

@@ -44,6 +44,8 @@ pub struct SpectrumConfig {
     pub averaging: AveragingMode,
     pub frequency_scale: FrequencyScale,
     pub reverse_frequency: bool,
+    pub show_grid: bool,
+    pub show_peak_label: bool,
 }
 
 impl Default for SpectrumConfig {
@@ -51,13 +53,18 @@ impl Default for SpectrumConfig {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: 2048,
-            hop_size: 512,
-            window: WindowKind::Hann,
+            hop_size: 256,
+            window: WindowKind::PlanckBessel {
+                epsilon: 0.3,
+                beta: 11.0,
+            },
             averaging: AveragingMode::Exponential {
                 factor: DEFAULT_SPECTRUM_EXP_FACTOR,
             },
             frequency_scale: FrequencyScale::Logarithmic,
             reverse_frequency: false,
+            show_grid: true,
+            show_peak_label: true,
         }
     }
 }
