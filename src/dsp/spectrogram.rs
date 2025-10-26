@@ -16,8 +16,8 @@ use std::time::{Duration, Instant};
 const LOG_FACTOR: f32 = 10.0 * core::f32::consts::LOG10_E;
 const POWER_EPSILON: f32 = 1.0e-18;
 const DB_FLOOR: f32 = -120.0;
-pub const PLANCK_BESSEL_DEFAULT_EPSILON: f32 = 0.3;
-pub const PLANCK_BESSEL_DEFAULT_BETA: f32 = 11.0;
+pub const PLANCK_BESSEL_DEFAULT_EPSILON: f32 = 0.1;
+pub const PLANCK_BESSEL_DEFAULT_BETA: f32 = 5.5;
 
 #[inline(always)]
 fn power_to_db(power: f32) -> f32 {
