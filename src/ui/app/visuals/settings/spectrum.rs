@@ -1,8 +1,10 @@
+use super::palette::{PaletteEditor, PaletteEvent};
 use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
-use crate::ui::settings::{ModuleSettings, SettingsHandle};
+use crate::ui::settings::{ModuleSettings, PaletteSettings, SettingsHandle, SpectrumSettings};
+use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::{column, toggler};
@@ -58,6 +60,7 @@ pub struct SpectrumSettingsPane {
     averaging_mode: SpectrumAveragingMode,
     averaging_factor: f32,
     peak_hold_decay: f32,
+    palette: PaletteEditor,
 }
 
 #[derive(Debug, Clone)]
@@ -70,15 +73,25 @@ pub enum Message {
     ReverseFrequency(bool),
     ShowGrid(bool),
     ShowPeakLabel(bool),
+    Palette(PaletteEvent),
 }
 
 pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> SpectrumSettingsPane {
-    let config = visual_manager
+    let stored_settings = visual_manager
         .borrow()
         .module_settings(VisualKind::SPECTRUM)
-        .and_then(|stored| stored.spectrum_config())
+        .and_then(|stored| stored.spectrum().cloned());
+
+    let config = stored_settings
+        .as_ref()
+        .map(|settings| settings.to_config())
         .unwrap_or_default();
     let (averaging_mode, averaging_factor, peak_hold_decay) = split_averaging(config.averaging);
+
+    let palette = stored_settings
+        .as_ref()
+        .and_then(|settings| settings.palette_array::<5>())
+        .unwrap_or(theme::DEFAULT_SPECTRUM_PALETTE);
 
     let mut pane = SpectrumSettingsPane {
         visual_id,
@@ -86,6 +99,7 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Spec
         averaging_mode,
         averaging_factor,
         peak_hold_decay,
+        palette: PaletteEditor::new(&palette, &theme::DEFAULT_SPECTRUM_PALETTE),
     };
     pane.sync_averaging_config();
     pane
@@ -177,6 +191,16 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
             SpectrumAveragingMode::None => {}
         }
 
+        content = content.push(
+            column![
+                iced::widget::text("Colors").size(14),
+                self.palette
+                    .view()
+                    .map(|e| SettingsMessage::Spectrum(Message::Palette(e)))
+            ]
+            .spacing(8)
+        );
+
         content.into()
     }
 
@@ -259,27 +283,35 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                     false
                 }
             }
+            Message::Palette(event) => self.palette.update(*event),
         };
 
         if changed {
-            apply_spectrum_config(&self.config, visual_manager, settings);
+            apply_spectrum_config(&self.config, &self.palette, visual_manager, settings);
         }
     }
 }
 
 fn apply_spectrum_config(
     config: &SpectrumConfig,
+    palette: &PaletteEditor,
     visual_manager: &VisualManagerHandle,
     settings: &SettingsHandle,
 ) {
-    let module_settings = ModuleSettings::with_spectrum_config(config);
+    let mut stored = SpectrumSettings::from_config(config);
+    stored.palette = PaletteSettings::maybe_from_colors(
+        palette.colors(),
+        &theme::DEFAULT_SPECTRUM_PALETTE,
+    );
+
+    let module_settings = ModuleSettings::with_spectrum_settings(&stored);
 
     if visual_manager
         .borrow_mut()
         .apply_module_settings(VisualKind::SPECTRUM, &module_settings)
     {
         settings.update(|mgr| {
-            mgr.set_spectrum_settings(VisualKind::SPECTRUM, config);
+            mgr.set_spectrum_settings(VisualKind::SPECTRUM, &stored);
         });
     }
 }

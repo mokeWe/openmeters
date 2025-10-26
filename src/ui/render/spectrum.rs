@@ -21,7 +21,7 @@ pub struct SpectrumParams {
     pub secondary_line_color: [f32; 4],
     pub secondary_line_width: f32,
     pub highlight_threshold: f32,
-    pub highlight_color: [f32; 4],
+    pub spectrum_palette: Vec<[f32; 4]>,
 }
 
 #[derive(Debug)]
@@ -56,7 +56,7 @@ impl SpectrumPrimitive {
             baseline,
             &positions,
             self.params.normalized_points.as_ref(),
-            self.params.highlight_color,
+            &self.params.spectrum_palette,
             self.params.highlight_threshold,
         );
 
@@ -166,11 +166,11 @@ fn push_highlight_columns(
     baseline: f32,
     positions: &[(f32, f32)],
     normalized_points: &[[f32; 2]],
-    highlight_color: [f32; 4],
+    spectrum_palette: &[[f32; 4]],
     highlight_threshold: f32,
 ) {
     let threshold = highlight_threshold.clamp(0.0, 1.0);
-    if highlight_color[3] <= 0.0 || threshold >= 1.0 {
+    if spectrum_palette.is_empty() || threshold >= 1.0 {
         return;
     }
 
@@ -184,8 +184,11 @@ fn push_highlight_columns(
         }
 
         let intensity = ((amp_max - threshold) / denom).clamp(0.0, 1.0);
-        let alpha = (highlight_color[3] * intensity).clamp(0.0, 1.0);
-        if alpha <= 0.0 {
+        
+        // Interpolate color from palette based on intensity
+        let column_color = interpolate_palette_color(spectrum_palette, intensity);
+        
+        if column_color[3] <= 0.0 {
             continue;
         }
 
@@ -196,12 +199,6 @@ fn push_highlight_columns(
         let top_right = clip.to_clip(x1, y1);
         let bottom_left = clip.to_clip(x0, baseline);
         let bottom_right = clip.to_clip(x1, baseline);
-        let column_color = [
-            highlight_color[0],
-            highlight_color[1],
-            highlight_color[2],
-            alpha,
-        ];
 
         vertices.extend_from_slice(&triangle_vertices(
             bottom_left,
@@ -216,6 +213,38 @@ fn push_highlight_columns(
             column_color,
         ));
     }
+}
+
+/// Interpolates a color from the palette based on a normalized value [0.0, 1.0].
+/// Returns an RGBA color array.
+fn interpolate_palette_color(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
+    if palette.is_empty() {
+        return [0.0, 0.0, 0.0, 0.0];
+    }
+    
+    if palette.len() == 1 {
+        return palette[0];
+    }
+    
+    let t = t.clamp(0.0, 1.0);
+    let max_index = (palette.len() - 1) as f32;
+    let position = t * max_index;
+    let index = position.floor() as usize;
+    
+    if index >= palette.len() - 1 {
+        return palette[palette.len() - 1];
+    }
+    
+    let fraction = position - index as f32;
+    let color_a = palette[index];
+    let color_b = palette[index + 1];
+    
+    [
+        color_a[0] + (color_b[0] - color_a[0]) * fraction,
+        color_a[1] + (color_b[1] - color_a[1]) * fraction,
+        color_a[2] + (color_b[2] - color_a[2]) * fraction,
+        color_a[3] + (color_b[3] - color_a[3]) * fraction,
+    ]
 }
 
 fn push_polyline(

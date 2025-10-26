@@ -31,6 +31,14 @@ pub const DEFAULT_SPECTROGRAM_PALETTE: [Color; 5] = [
     Color::from_rgba(1.000, 1.000, 1.000, 1.0), // #FFFFFF
 ];
 
+pub const DEFAULT_SPECTRUM_PALETTE: [Color; 5] = [
+    Color::from_rgba(0.039, 0.011, 0.09, 1.0),  // #0A0317 - dark purple (quiet)
+    Color::from_rgba(0.329, 0.000, 0.000, 1.0), // #540000 - dark red
+    Color::from_rgba(0.800, 0.200, 0.000, 1.0), // #CC3300 - red-orange
+    Color::from_rgba(1.000, 0.502, 0.102, 1.0), // #FF801A - orange
+    Color::from_rgba(1.000, 1.000, 0.000, 1.0), // #FFFF00 - yellow (loud)
+];
+
 pub const DEFAULT_WAVEFORM_PALETTE: [Color; 5] = [
     Color::from_rgb(0.400, 0.000, 0.000), // dark red
     Color::from_rgb(1.000, 0.000, 0.000), // bright red

@@ -146,7 +146,7 @@ pub struct SpectrumStyle {
     pub smoothing_radius: usize,
     pub smoothing_passes: usize,
     pub highlight_threshold: f32,
-    pub highlight_color: Color,
+    pub spectrum_palette: [Color; 5],
     pub frequency_scale: FrequencyScale,
     pub reverse_frequency: bool,
     pub show_grid: bool,
@@ -161,18 +161,18 @@ impl Default for SpectrumStyle {
         Self {
             background,
             line_color,
-            min_db: -120.0,
+            min_db: -80.0,
             max_db: 0.0,
             min_frequency: MIN_FREQUENCY_HZ,
             max_frequency: MAX_FREQUENCY_HZ,
             resolution: DEFAULT_RESOLUTION,
-            line_thickness: 2.4,
-            unweighted_line_color: theme::with_alpha(line_color, 0.45),
+            line_thickness: 1.0,
+            unweighted_line_color: theme::with_alpha(theme::text_secondary(), 0.3),
             unweighted_line_thickness: 1.6,
             smoothing_radius: 2,
             smoothing_passes: 2,
-            highlight_threshold: 0.65,
-            highlight_color: theme::with_alpha(theme::accent_primary(), 0.9),
+            highlight_threshold: 0.45,
+            spectrum_palette: theme::DEFAULT_SPECTRUM_PALETTE,
             frequency_scale: FrequencyScale::Logarithmic,
             reverse_frequency: false,
             show_grid: true,
@@ -303,6 +303,27 @@ impl SpectrumState {
         }
     }
 
+    pub fn set_palette(&mut self, palette: &[Color]) {
+        if palette.len() == self.style.spectrum_palette.len()
+            && self
+                .style
+                .spectrum_palette
+                .iter()
+                .zip(palette)
+                .all(|(a, b)| theme::colors_equal(*a, *b))
+        {
+            return;
+        }
+
+        if palette.len() == self.style.spectrum_palette.len() {
+            self.style.spectrum_palette.copy_from_slice(palette);
+        }
+    }
+
+    pub fn palette(&self) -> [Color; 5] {
+        self.style.spectrum_palette
+    }
+
     pub fn apply_snapshot(&mut self, snapshot: &SpectrumSnapshot) {
         if snapshot.frequency_bins.is_empty()
             || snapshot.magnitudes_db.is_empty()
@@ -375,7 +396,12 @@ impl SpectrumState {
                 secondary_line_color: theme::color_to_rgba(self.style.unweighted_line_color),
                 secondary_line_width: self.style.unweighted_line_thickness,
                 highlight_threshold: self.style.highlight_threshold,
-                highlight_color: theme::color_to_rgba(self.style.highlight_color),
+                spectrum_palette: self
+                    .style
+                    .spectrum_palette
+                    .iter()
+                    .map(|&c| theme::color_to_rgba(c))
+                    .collect(),
             },
             background: self.style.background,
             label: self

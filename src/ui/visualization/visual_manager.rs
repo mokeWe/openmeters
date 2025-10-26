@@ -12,7 +12,7 @@ use crate::dsp::waveform::{MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY};
 use crate::ui::render::spectrogram::SPECTROGRAM_PALETTE_SIZE;
 use crate::ui::settings::{
     LoudnessSettings, ModuleSettings, OscilloscopeSettings, PaletteSettings, SpectrogramSettings,
-    VisualSettings, WaveformSettings,
+    SpectrumSettings, VisualSettings, WaveformSettings,
 };
 use crate::ui::theme;
 use crate::ui::visualization::loudness::{LoudnessMeterProcessor, LoudnessMeterState};
@@ -489,14 +489,20 @@ impl VisualModule for SpectrumVisual {
     }
 
     fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(config) = settings.spectrum_config() {
+        if let Some(stored) = settings.spectrum() {
+            let mut config = self.processor.config();
+            stored.apply_to(&mut config);
             self.processor.update_config(config);
+
+            let palette = stored
+                .palette_array::<5>()
+                .unwrap_or(theme::DEFAULT_SPECTRUM_PALETTE);
+            self.state.set_palette(&palette);
+
             let updated = self.processor.config();
-            {
-                let style = self.state.style_mut();
-                style.frequency_scale = updated.frequency_scale;
-                style.reverse_frequency = updated.reverse_frequency;
-            }
+            let style = self.state.style_mut();
+            style.frequency_scale = updated.frequency_scale;
+            style.reverse_frequency = updated.reverse_frequency;
             self.state.update_show_grid(updated.show_grid);
             self.state.update_show_peak_label(updated.show_peak_label);
         }
@@ -504,7 +510,11 @@ impl VisualModule for SpectrumVisual {
 
     fn export_settings(&self) -> Option<ModuleSettings> {
         let mut settings = ModuleSettings::default();
-        settings.set_spectrum(self.processor.config());
+        let mut spectrum_settings = SpectrumSettings::from_config(&self.processor.config());
+        let palette = self.state.palette();
+        spectrum_settings.palette =
+            PaletteSettings::maybe_from_colors(&palette, &theme::DEFAULT_SPECTRUM_PALETTE);
+        settings.set_spectrum(spectrum_settings);
         Some(settings)
     }
 }

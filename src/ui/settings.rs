@@ -63,9 +63,8 @@ impl ModuleSettings {
         self.config = Some(config.into());
     }
 
-    pub fn set_spectrum(&mut self, mut config: SpectrumConfig) {
-        config.normalize();
-        self.config = Some(StoredConfig::Spectrum(config));
+    pub fn set_spectrum(&mut self, config: SpectrumSettings) {
+        self.config = Some(config.into());
     }
 
     pub fn set_oscilloscope(&mut self, config: OscilloscopeSettings) {
@@ -84,8 +83,8 @@ impl ModuleSettings {
         self.config.as_ref().and_then(StoredConfig::as_spectrogram)
     }
 
-    pub fn spectrum_config(&self) -> Option<SpectrumConfig> {
-        self.config.as_ref().and_then(StoredConfig::spectrum_config)
+    pub fn spectrum(&self) -> Option<&SpectrumSettings> {
+        self.config.as_ref().and_then(StoredConfig::as_spectrum)
     }
 
     pub fn oscilloscope(&self) -> Option<&OscilloscopeSettings> {
@@ -107,9 +106,9 @@ impl ModuleSettings {
         }
     }
 
-    pub fn with_spectrum_config(config: &SpectrumConfig) -> Self {
+    pub fn with_spectrum_settings(settings: &SpectrumSettings) -> Self {
         Self {
-            config: Some(StoredConfig::Spectrum(config.normalized())),
+            config: Some(settings.clone().into()),
             ..Default::default()
         }
     }
@@ -155,7 +154,7 @@ impl ModuleSettings {
 #[serde(untagged)]
 enum StoredConfig {
     Spectrogram(SpectrogramSettings),
-    Spectrum(SpectrumConfig),
+    Spectrum(SpectrumSettings),
     Oscilloscope(OscilloscopeSettings),
     Waveform(WaveformSettings),
     Loudness(LoudnessSettings),
@@ -183,6 +182,13 @@ impl StoredConfig {
         }
     }
 
+    fn as_spectrum(&self) -> Option<&SpectrumSettings> {
+        match self {
+            StoredConfig::Spectrum(cfg) => Some(cfg),
+            _ => None,
+        }
+    }
+
     fn as_oscilloscope(&self) -> Option<&OscilloscopeSettings> {
         match self {
             StoredConfig::Oscilloscope(cfg) => Some(cfg),
@@ -204,17 +210,17 @@ impl StoredConfig {
         }
     }
 
-    fn spectrum_config(&self) -> Option<SpectrumConfig> {
-        match self {
-            StoredConfig::Spectrum(cfg) => Some(cfg.normalized()),
-            _ => None,
-        }
-    }
 }
 
 impl From<SpectrogramSettings> for StoredConfig {
     fn from(settings: SpectrogramSettings) -> Self {
         StoredConfig::Spectrogram(settings)
+    }
+}
+
+impl From<SpectrumSettings> for StoredConfig {
+    fn from(settings: SpectrumSettings) -> Self {
+        StoredConfig::Spectrum(settings)
     }
 }
 
@@ -439,6 +445,44 @@ impl WaveformSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct SpectrumSettings {
+    #[serde(flatten)]
+    pub config: SpectrumConfig,
+    #[serde(default)]
+    pub palette: Option<PaletteSettings>,
+}
+
+impl Default for SpectrumSettings {
+    fn default() -> Self {
+        Self::from_config(&SpectrumConfig::default())
+    }
+}
+
+impl SpectrumSettings {
+    pub fn from_config(config: &SpectrumConfig) -> Self {
+        Self {
+            config: config.normalized(),
+            palette: None,
+        }
+    }
+
+    pub fn apply_to(&self, config: &mut SpectrumConfig) {
+        *config = self.config.normalized();
+    }
+
+    pub fn to_config(&self) -> SpectrumConfig {
+        self.config.normalized()
+    }
+
+    pub fn palette_array<const N: usize>(&self) -> Option<[Color; N]> {
+        self.palette
+            .as_ref()
+            .and_then(PaletteSettings::to_array::<N>)
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LoudnessSettings {
@@ -610,9 +654,9 @@ impl SettingsManager {
         entry.set_spectrogram(settings.clone());
     }
 
-    pub fn set_spectrum_settings(&mut self, kind: VisualKind, config: &SpectrumConfig) {
+    pub fn set_spectrum_settings(&mut self, kind: VisualKind, settings: &SpectrumSettings) {
         let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.set_spectrum(*config);
+        entry.set_spectrum(settings.clone());
     }
 
     pub fn set_loudness_settings(&mut self, kind: VisualKind, settings: LoudnessSettings) {
