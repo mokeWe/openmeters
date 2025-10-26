@@ -30,7 +30,7 @@ Checked features are implemented, unchecked features are planned.
 - [x] **spectrum analyzer**
   - [x] dynamic frequency tooltips
   - [x] mel, log, and linear scales
-  - [ ] Color maps
+  - [x] Color maps
 - [ ] **stereometer**
 - [x] **waveform**
   - [x] Color maps
