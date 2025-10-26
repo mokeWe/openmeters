@@ -55,8 +55,8 @@ impl Default for SpectrumConfig {
             fft_size: 2048,
             hop_size: 256,
             window: WindowKind::PlanckBessel {
-                epsilon: 0.3,
-                beta: 11.0,
+                epsilon: 0.1,
+                beta: 5.5,
             },
             averaging: AveragingMode::Exponential {
                 factor: DEFAULT_SPECTRUM_EXP_FACTOR,
