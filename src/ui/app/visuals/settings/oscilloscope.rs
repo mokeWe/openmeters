@@ -1,6 +1,8 @@
+use super::palette::{PaletteEditor, PaletteEvent};
 use super::widgets::{SliderRange, labeled_slider, set_f32};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::ui::settings::{ModuleSettings, OscilloscopeSettings, SettingsHandle};
+use crate::ui::theme;
 use crate::ui::visualization::oscilloscope::DisplayMode;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::widget::{column, pick_list, row, slider, text, toggler};
@@ -10,6 +12,7 @@ use iced::{Element, Length};
 pub struct OscilloscopeSettingsPane {
     visual_id: VisualId,
     settings: OscilloscopeSettings,
+    palette: PaletteEditor,
 }
 
 #[derive(Debug, Clone)]
@@ -19,6 +22,7 @@ pub enum Message {
     Persistence(f32),
     TriggerMode(bool),
     DisplayMode(DisplayMode),
+    Palette(PaletteEvent),
 }
 
 pub fn create(
@@ -31,9 +35,16 @@ pub fn create(
         .and_then(|stored| stored.oscilloscope().cloned())
         .unwrap_or_default();
 
+    let palette = settings
+        .palette
+        .as_ref()
+        .and_then(|p| p.to_array::<2>())
+        .unwrap_or(theme::DEFAULT_OSCILLOSCOPE_PALETTE);
+
     OscilloscopeSettingsPane {
         visual_id,
         settings,
+        palette: PaletteEditor::new(&palette, &theme::DEFAULT_OSCILLOSCOPE_PALETTE),
     }
 }
 
@@ -92,6 +103,13 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
                 .spacing(12),
                 text(format!("Level {:.2}", self.settings.trigger_level)).size(12)
             ]
+            .spacing(8),
+            column![
+                text("Colors").size(14),
+                self.palette
+                    .view()
+                    .map(|e| SettingsMessage::Oscilloscope(Message::Palette(e)))
+            ]
             .spacing(8)
         ]
         .spacing(16)
@@ -134,9 +152,15 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
                     false
                 }
             }
+            Message::Palette(event) => self.palette.update(*event),
         };
 
         if changed {
+            self.settings.palette = crate::ui::settings::PaletteSettings::maybe_from_colors(
+                self.palette.colors(),
+                &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
+            );
+
             let module_settings = ModuleSettings::with_oscilloscope_settings(&self.settings);
 
             if visual_manager

@@ -364,6 +364,8 @@ pub struct OscilloscopeSettings {
     pub persistence: f32,
     #[serde(default)]
     pub display_mode: DisplayMode,
+    #[serde(default)]
+    pub palette: Option<PaletteSettings>,
 }
 
 impl Default for OscilloscopeSettings {
@@ -389,6 +391,7 @@ impl OscilloscopeSettings {
             target_sample_count: config.target_sample_count,
             persistence,
             display_mode,
+            palette: None,
         }
     }
 

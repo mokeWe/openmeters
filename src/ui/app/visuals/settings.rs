@@ -36,7 +36,7 @@ pub trait ModuleSettingsPane: std::fmt::Debug + 'static {
 
 const DEFAULT_UNSUPPORTED_SIZE: Size = Size::new(320.0, 160.0);
 const LOUDNESS_SETTINGS_SIZE: Size = Size::new(360.0, 180.0);
-const OSCILLOSCOPE_SETTINGS_SIZE: Size = Size::new(420.0, 340.0);
+const OSCILLOSCOPE_SETTINGS_SIZE: Size = Size::new(420.0, 720.0);
 const SPECTROGRAM_SETTINGS_SIZE: Size = Size::new(560.0, 880.0);
 const SPECTRUM_SETTINGS_SIZE: Size = Size::new(420.0, 720.0);
 const WAVEFORM_SETTINGS_SIZE: Size = Size::new(500.0, 400.0);

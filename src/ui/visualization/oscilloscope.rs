@@ -129,6 +129,15 @@ impl OscilloscopeState {
         self.recompute_fade_alpha();
     }
 
+    pub fn set_palette(&mut self, palette: &[Color]) {
+        self.style.channel_colors.clear();
+        self.style.channel_colors.extend_from_slice(palette);
+    }
+
+    pub fn palette(&self) -> &[Color] {
+        &self.style.channel_colors
+    }
+
     pub fn apply_snapshot(&mut self, snapshot: &OscilloscopeSnapshot) {
         if snapshot.samples.is_empty() {
             self.snapshot = snapshot.clone();
@@ -267,20 +276,9 @@ pub struct OscilloscopeStyle {
 
 impl Default for OscilloscopeStyle {
     fn default() -> Self {
-        let primary = theme::accent_primary();
-        let success = theme::accent_success();
-        let danger = theme::accent_danger();
-        let text = theme::text_color();
-        let hover = theme::hover_color();
-
         Self {
             background: theme::base_color(),
-            channel_colors: vec![
-                theme::mix_colors(primary, text, 0.35),
-                theme::mix_colors(success, text, 0.25),
-                theme::mix_colors(danger, text, 0.20),
-                theme::mix_colors(primary, hover, 0.55),
-            ],
+            channel_colors: theme::DEFAULT_OSCILLOSCOPE_PALETTE.to_vec(),
             line_alpha: 0.92,
             vertical_padding: 8.0,
             channel_gap: 12.0,

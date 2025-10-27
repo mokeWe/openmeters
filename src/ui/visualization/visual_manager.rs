@@ -239,6 +239,7 @@ const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
 ];
 
 const WAVEFORM_PALETTE_SIZE: usize = theme::DEFAULT_WAVEFORM_PALETTE.len();
+const OSCILLOSCOPE_PALETTE_SIZE: usize = theme::DEFAULT_OSCILLOSCOPE_PALETTE.len();
 
 fn build_module<M>() -> Box<dyn VisualModule>
 where
@@ -322,16 +323,26 @@ impl VisualModule for OscilloscopeVisual {
             stored.apply_to(&mut config);
             self.processor.update_config(config);
             self.state.update_view_settings(stored);
+
+            if let Some(palette) = stored.palette.as_ref().and_then(|p| p.to_array::<OSCILLOSCOPE_PALETTE_SIZE>()) {
+                self.state.set_palette(&palette);
+            } else {
+                self.state.set_palette(&theme::DEFAULT_OSCILLOSCOPE_PALETTE);
+            }
         }
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
         let mut settings = ModuleSettings::default();
         let (persistence, mode) = self.state.view_settings();
-        let snapshot = OscilloscopeSettings::from_config_with_view(
+        let mut snapshot = OscilloscopeSettings::from_config_with_view(
             &self.processor.config(),
             persistence,
             mode,
+        );
+        snapshot.palette = PaletteSettings::maybe_from_colors(
+            self.state.palette(),
+            &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
         );
         settings.set_oscilloscope(snapshot);
         Some(settings)

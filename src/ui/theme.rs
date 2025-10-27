@@ -47,6 +47,11 @@ pub const DEFAULT_WAVEFORM_PALETTE: [Color; 5] = [
     Color::from_rgb(0.400, 0.000, 0.800), // deep purple
 ];
 
+pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 2] = [
+    Color::from_rgb(0.529, 0.549, 0.584), // left channel - primary accent
+    Color::from_rgb(0.529, 0.549, 0.584), // right channel - same
+];
+
 /// Returns the monochrome theme for the application.
 pub fn theme() -> Theme {
     Theme::custom_with_fn(
@@ -234,11 +239,6 @@ pub fn accent_primary() -> Color {
 /// Returns the success accent color.
 pub fn accent_success() -> Color {
     ACCENT_SUCCESS
-}
-
-/// Returns the danger accent color.
-pub fn accent_danger() -> Color {
-    ACCENT_DANGER
 }
 
 /// Linearly interpolates between two colors.
