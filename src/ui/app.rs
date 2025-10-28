@@ -88,6 +88,7 @@ struct UiApp {
     settings_handle: SettingsHandle,
     audio_frames: Option<Arc<AsyncReceiver<Vec<f32>>>>,
     ui_visible: bool,
+    rendering_paused: bool,
     overlay_until: Option<Instant>,
     main_window_id: window::Id,
     settings_window: Option<SettingsWindow>,
@@ -106,6 +107,7 @@ enum Message {
     Visuals(VisualsMessage),
     AudioFrame(Vec<f32>),
     ToggleChrome,
+    TogglePause,
     WindowOpened,
     WindowClosed(window::Id),
     SettingsWindow(window::Id, SettingsWindowMessage),
@@ -237,6 +239,7 @@ impl UiApp {
                 settings_handle: settings,
                 audio_frames,
                 ui_visible: true,
+                rendering_paused: false,
                 overlay_until: None,
                 main_window_id,
                 settings_window: None,
@@ -259,15 +262,16 @@ impl UiApp {
 
         subscriptions.push(window::close_events().map(Message::WindowClosed));
 
-        subscriptions.push(keyboard::on_key_press(|key, modifiers| {
-            if modifiers.control()
-                && modifiers.shift()
-                && matches!(key, Key::Character(value) if value.eq_ignore_ascii_case("h"))
+        subscriptions.push(keyboard::on_key_press(|key, modifiers| match key {
+            Key::Character(ref v)
+                if modifiers.control() && modifiers.shift() && v.eq_ignore_ascii_case("h") =>
             {
-                return Some(Message::ToggleChrome);
+                Some(Message::ToggleChrome)
             }
-
-            None
+            Key::Character(ref v) if modifiers.is_empty() && v.eq_ignore_ascii_case("p") => {
+                Some(Message::TogglePause)
+            }
+            _ => None,
         }));
 
         Subscription::batch(subscriptions)
@@ -398,6 +402,34 @@ impl UiApp {
     }
 
     fn main_window_view(&self) -> Element<'_, Message> {
+        let visuals = self.visuals_page.view().map(Message::Visuals);
+        let show_overlay = self
+            .overlay_until
+            .map(|deadline| Instant::now() < deadline)
+            .unwrap_or(false);
+
+        let mut toasts = Vec::new();
+        if !self.ui_visible && show_overlay {
+            toasts.push("press ctrl+shift+h to restore controls");
+        }
+        if self.rendering_paused {
+            toasts.push("rendering paused (press p to resume)");
+        }
+
+        let toast_bar = if !toasts.is_empty() {
+            let toast_elements: Vec<Element<'_, Message>> = toasts
+                .iter()
+                .map(|msg| container(text(*msg).size(11)).padding([2, 6]).into())
+                .collect();
+            Some(
+                container(row(toast_elements).spacing(12))
+                    .width(Length::Fill)
+                    .align_x(Horizontal::Center),
+            )
+        } else {
+            None
+        };
+
         if self.ui_visible {
             let tabs = row![
                 tab_button("config", Page::Config, self.current_page),
@@ -408,10 +440,10 @@ impl UiApp {
 
             let page_content = match self.current_page {
                 Page::Config => self.config_page.view().map(Message::Config),
-                Page::Visuals => self.visuals_page.view().map(Message::Visuals),
+                Page::Visuals => visuals,
             };
 
-            let layout = column![
+            let mut content = column![
                 tabs,
                 container(page_content)
                     .width(Length::Fill)
@@ -419,39 +451,27 @@ impl UiApp {
             ]
             .spacing(12);
 
-            container(layout)
+            if let Some(toast) = toast_bar {
+                content = column![content, toast].spacing(0);
+            }
+
+            container(content)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .padding(APP_PADDING)
                 .into()
         } else {
-            let overlay_active = self
-                .overlay_until
-                .map(|deadline| Instant::now() < deadline)
-                .unwrap_or(false);
+            let mut content = column![container(visuals).width(Length::Fill).height(Length::Fill)];
 
-            let visuals = self.visuals_page.view().map(Message::Visuals);
+            if let Some(toast) = toast_bar {
+                content = content.push(toast);
+            }
 
-            if overlay_active {
-                let toast =
-                    container(text("press ctrl+shift+h to restore controls").size(14)).padding(12);
-
-                column![
-                    container(visuals).width(Length::Fill).height(Length::Fill),
-                    container(toast)
-                        .width(Length::Fill)
-                        .align_x(Horizontal::Center),
-                ]
-                .spacing(12)
+            content
+                .spacing(0)
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .into()
-            } else {
-                container(visuals)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into()
-            }
         }
     }
 }
@@ -484,7 +504,15 @@ fn update(app: &mut UiApp, message: Message) -> Task<Message> {
             app.toggle_ui_visibility();
             Task::none()
         }
+        Message::TogglePause => {
+            app.rendering_paused = !app.rendering_paused;
+            Task::none()
+        }
         Message::AudioFrame(samples) => {
+            if app.rendering_paused {
+                return Task::none();
+            }
+
             let snapshot = {
                 let mut manager = app.visual_manager.borrow_mut();
                 manager.ingest_samples(&samples);
