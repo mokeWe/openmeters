@@ -8,7 +8,7 @@ OpenMeters is an audio metering program for Linux, written in Rust for PipeWire 
 
 ### features
 
-Checked features are implemented, unchecked features are planned.
+Checked features are implemented, unchecked features are planned. If you have ideas for more features, please feel free to open an issue/pull request!
 
 - [x] Per-application capture
 - [x] Per-device capture
@@ -68,14 +68,14 @@ Checked features are implemented, unchecked features are planned.
 
 ## usage
 
-Upon launch you'll see a configuration page where you can select which applications to monitor, along with a list of available modules to display. By default, all applications are selected, and the loudness meter is enabled.
+Upon launch you'll see a configuration page. Here you can select which applications or devices to monitor, as well as the modules you want to display. By default, we monitor applications. The `loudness` and `waveform` modules are enabled by default as well.
 
-Switch to the "visuals" tab to view the selected modules. Show/hide the top bar by pressing `ctrl+shift+h`. Rearrange modules by dragging and dropping them. Right click on a module to access its settings.
+Switch to the "visuals" tab to view the selected modules. Show/hide the top bar by pressing `ctrl+shift+h`. Rearrange modules by dragging and dropping them. Right click on a module to access its settings. Pause capture by pressing `p`, when paused you can still access settings, rearrange modules, and check frequency tooltips in the spectrogram.
 
 ### configuration
 
-Configurations are saved to `~/.config/openmeters/settings.json`. If you want to use settings/values not listed in the GUI, you can edit this file directly, however absurd values often lead to crashes.
-If you encounter a bug that causes OpenMeters to misbehave, you can delete `settings.json` to reset all settings.
+Configurations are saved to `~/.config/openmeters/settings.json`. If you want to use settings/values not listed in the GUI, you can edit this file directly, however absurd values often lead to crashes. Invalid values will be replaced with defaults on load.
+If you encounter a bug that causes OpenMeters to misbehave, you can delete `settings.json` to reset everything.
 
 ## credits
 
