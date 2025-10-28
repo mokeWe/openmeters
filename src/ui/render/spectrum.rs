@@ -184,10 +184,10 @@ fn push_highlight_columns(
         }
 
         let intensity = ((amp_max - threshold) / denom).clamp(0.0, 1.0);
-        
+
         // Interpolate color from palette based on intensity
         let column_color = interpolate_palette_color(spectrum_palette, intensity);
-        
+
         if column_color[3] <= 0.0 {
             continue;
         }
@@ -221,24 +221,24 @@ fn interpolate_palette_color(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
     if palette.is_empty() {
         return [0.0, 0.0, 0.0, 0.0];
     }
-    
+
     if palette.len() == 1 {
         return palette[0];
     }
-    
+
     let t = t.clamp(0.0, 1.0);
     let max_index = (palette.len() - 1) as f32;
     let position = t * max_index;
     let index = position.floor() as usize;
-    
+
     if index >= palette.len() - 1 {
         return palette[palette.len() - 1];
     }
-    
+
     let fraction = position - index as f32;
     let color_a = palette[index];
     let color_b = palette[index + 1];
-    
+
     [
         color_a[0] + (color_b[0] - color_a[0]) * fraction,
         color_a[1] + (color_b[1] - color_a[1]) * fraction,

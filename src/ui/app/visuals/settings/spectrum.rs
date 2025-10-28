@@ -198,7 +198,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                     .view()
                     .map(|e| SettingsMessage::Spectrum(Message::Palette(e)))
             ]
-            .spacing(8)
+            .spacing(8),
         );
 
         content.into()
@@ -299,10 +299,8 @@ fn apply_spectrum_config(
     settings: &SettingsHandle,
 ) {
     let mut stored = SpectrumSettings::from_config(config);
-    stored.palette = PaletteSettings::maybe_from_colors(
-        palette.colors(),
-        &theme::DEFAULT_SPECTRUM_PALETTE,
-    );
+    stored.palette =
+        PaletteSettings::maybe_from_colors(palette.colors(), &theme::DEFAULT_SPECTRUM_PALETTE);
 
     let module_settings = ModuleSettings::with_spectrum_settings(&stored);
 

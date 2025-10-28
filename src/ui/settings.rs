@@ -209,7 +209,6 @@ impl StoredConfig {
             _ => None,
         }
     }
-
 }
 
 impl From<SpectrogramSettings> for StoredConfig {

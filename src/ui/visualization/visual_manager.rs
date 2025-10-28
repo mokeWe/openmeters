@@ -324,7 +324,11 @@ impl VisualModule for OscilloscopeVisual {
             self.processor.update_config(config);
             self.state.update_view_settings(stored);
 
-            if let Some(palette) = stored.palette.as_ref().and_then(|p| p.to_array::<OSCILLOSCOPE_PALETTE_SIZE>()) {
+            if let Some(palette) = stored
+                .palette
+                .as_ref()
+                .and_then(|p| p.to_array::<OSCILLOSCOPE_PALETTE_SIZE>())
+            {
                 self.state.set_palette(&palette);
             } else {
                 self.state.set_palette(&theme::DEFAULT_OSCILLOSCOPE_PALETTE);
