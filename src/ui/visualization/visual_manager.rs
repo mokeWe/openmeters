@@ -162,6 +162,7 @@ impl VisualSlot {
 struct VisualEntry {
     slot: VisualSlot,
     module: Box<dyn VisualModule>,
+    cached_content: VisualContent,
 }
 
 // describe all available visuals here
@@ -563,10 +564,15 @@ impl VisualManager {
         let id = VisualId::next(&mut self.next_id);
         let slot = VisualSlot::new(id, descriptor);
         let module = (descriptor.build)();
+        let cached_content = module.content();
 
         let index = self.entries.len();
         self.id_index.insert(id, index);
-        self.entries.push(VisualEntry { slot, module });
+        self.entries.push(VisualEntry {
+            slot,
+            module,
+            cached_content,
+        });
     }
 
     fn entry_mut_by_kind(&mut self, kind: VisualKind) -> Option<&mut VisualEntry> {
@@ -587,7 +593,7 @@ impl VisualManager {
                 kind: entry.slot.kind,
                 enabled: entry.slot.enabled,
                 metadata: entry.slot.metadata,
-                content: entry.module.content(),
+                content: entry.cached_content.clone(),
             });
         }
 
@@ -614,6 +620,7 @@ impl VisualManager {
                 entry.slot.enabled = enabled;
             }
             entry.module.apply_settings(module_settings);
+            entry.cached_content = entry.module.content();
             true
         } else {
             false
@@ -635,6 +642,7 @@ impl VisualManager {
                     entry.slot.enabled = enabled;
                 }
                 entry.module.apply_settings(module_settings);
+                entry.cached_content = entry.module.content();
             }
         }
 
@@ -684,6 +692,7 @@ impl VisualManager {
         for entry in &mut self.entries {
             if entry.slot.enabled {
                 entry.module.ingest(samples, format);
+                entry.cached_content = entry.module.content();
             }
         }
     }

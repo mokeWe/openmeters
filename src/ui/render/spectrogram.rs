@@ -22,7 +22,7 @@ pub struct SpectrogramParams {
     pub texture_height: u32,
     pub column_count: u32,
     pub latest_column: u32,
-    pub base_data: Option<Arc<[f32]>>,
+    pub base_data: Option<Arc<Vec<f32>>>,
     pub column_updates: Vec<SpectrogramColumnUpdate>,
     pub palette: [[f32; 4]; SPECTROGRAM_PALETTE_SIZE],
     pub background: [f32; 4],
@@ -43,25 +43,45 @@ pub struct ColumnBufferPool {
 impl ColumnBufferPool {
     pub fn new() -> Self {
         Self {
-            buffers: Arc::new(Mutex::new(Vec::new())),
+            buffers: Arc::new(Mutex::new(Vec::with_capacity(32))),
         }
     }
 
     pub fn acquire(&self, len: usize) -> Vec<f32> {
         let mut buffers = self.buffers.lock().unwrap();
-        buffers
-            .pop()
-            .map(|mut buffer| {
-                buffer.clear();
-                buffer.resize(len, 0.0);
-                buffer
-            })
-            .unwrap_or_else(|| vec![0.0; len])
+
+        // Find a buffer with exact or close capacity to avoid reallocations
+        let pos = buffers.iter().rposition(|b| b.capacity() >= len);
+
+        if let Some(idx) = pos {
+            let mut buffer = buffers.swap_remove(idx);
+            buffer.clear();
+            buffer.resize(len, 0.0);
+            buffer
+        } else {
+            // Pre-allocate with 25% headroom to reduce future reallocations
+            let capacity = (len * 5) / 4;
+            let mut buffer = Vec::with_capacity(capacity);
+            buffer.resize(len, 0.0);
+            buffer
+        }
     }
 
     pub fn release(&self, mut buffer: Vec<f32>) {
+        // Only keep buffers with reasonable capacity to avoid memory bloat
+        const MAX_POOL_SIZE: usize = 64;
+        const MAX_BUFFER_CAPACITY: usize = 16_384;
+
+        if buffer.capacity() > MAX_BUFFER_CAPACITY {
+            return;
+        }
+
         buffer.clear();
-        self.buffers.lock().unwrap().push(buffer);
+        let mut buffers = self.buffers.lock().unwrap();
+
+        if buffers.len() < MAX_POOL_SIZE {
+            buffers.push(buffer);
+        }
     }
 }
 

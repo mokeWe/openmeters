@@ -236,13 +236,13 @@ impl SpectrogramState {
             .unwrap_or(0);
 
         let mut buffer = self.buffer.borrow_mut();
-        
+
         if !needs_rebuild {
             needs_rebuild = buffer.requires_rebuild(update, use_synchro, desired_height);
         }
 
         buffer.clear_pending();
-        
+
         if needs_rebuild {
             buffer.rebuild_from_history(
                 &self.history,
@@ -262,7 +262,7 @@ impl SpectrogramState {
 
         // Update cached state (after dropping buffer borrow)
         drop(buffer);
-        
+
         self.history_length = update.history_length;
         self.fft_size = update.fft_size;
         self.hop_size = update.hop_size;
@@ -395,7 +395,7 @@ struct SpectrogramBuffer {
     values: Vec<f32>,
     write_index: u32,
     column_count: u32,
-    pending_base: Option<Arc<[f32]>>,
+    pending_base: Option<Arc<Vec<f32>>>,
     pending_updates: Arc<Vec<SpectrogramColumnUpdate>>,
     sample_rate: f32,
     fft_size: usize,
@@ -484,7 +484,7 @@ impl SpectrogramBuffer {
         }
     }
 
-    fn take_base_data(&mut self) -> Option<Arc<[f32]>> {
+    fn take_base_data(&mut self) -> Option<Arc<Vec<f32>>> {
         self.pending_base.take()
     }
 
@@ -507,7 +507,7 @@ impl SpectrogramBuffer {
     fn queue_full_refresh(&mut self) {
         self.clear_pending();
         if !self.values.is_empty() {
-            self.pending_base = Some(Arc::from(self.values.as_slice()));
+            self.pending_base = Some(Arc::new(self.values.clone()));
         }
     }
 
@@ -590,8 +590,9 @@ impl SpectrogramBuffer {
 
         self.sync_grid_frequencies(synchro_bins_hz);
 
-        self.values.clear();
-        self.values.resize(self.capacity as usize * self.height as usize, 0.0);
+        self.values = Vec::with_capacity(self.capacity as usize * self.height as usize);
+        self.values
+            .resize(self.capacity as usize * self.height as usize, 0.0);
         self.write_index = 0;
         self.column_count = 0;
         self.rebuild_row_positions();
@@ -673,33 +674,26 @@ impl SpectrogramBuffer {
         let floor_db = style.floor_db;
         let ceiling_db = style.ceiling_db;
         let bin_count = magnitudes_db.len();
+        let bin_count_minus_1 = bin_count.saturating_sub(1);
 
         let lower_bins = self.row_lower_bins.as_slice();
         let upper_bins = self.row_upper_bins.as_slice();
         let interp_weights = self.row_interp_weights.as_slice();
-
         let output_slice = &mut self.values[start..start + height];
 
-        let iter = lower_bins
-            .iter()
-            .zip(upper_bins)
-            .zip(interp_weights)
-            .zip(output_slice);
+        for row in 0..height {
+            let lower_idx = lower_bins[row].min(bin_count_minus_1);
+            let upper_idx = upper_bins[row].min(bin_count_minus_1);
+            let frac = interp_weights[row];
 
-        for (((lower, upper), frac), output) in iter {
-            let lower = (*lower).min(bin_count - 1);
-            let upper = (*upper).min(bin_count - 1);
+            let lower_val = magnitudes_db[lower_idx];
+            let upper_val = magnitudes_db[upper_idx];
+            let sample = frac.mul_add(upper_val - lower_val, lower_val);
 
-            let sample = if lower == upper {
-                magnitudes_db[lower]
-            } else {
-                let lower_val = magnitudes_db[lower];
-                let upper_val = magnitudes_db[upper];
-                lower_val + (upper_val - lower_val) * frac
-            };
+            let normalized =
+                ((sample.clamp(floor_db, ceiling_db) - floor_db) * inv_range).clamp(0.0, 1.0);
 
-            *output = ((sample.clamp(floor_db, ceiling_db) - floor_db) * inv_range)
-                .clamp(0.0, 1.0);
+            output_slice[row] = normalized;
         }
 
         if self.column_count < self.capacity {
@@ -730,7 +724,7 @@ impl SpectrogramBuffer {
             lower_bins.extend(0..height);
             upper_bins.extend(0..height);
             weights.resize(height, 0.0);
-            
+
             self.row_bin_positions = Arc::new(positions);
             self.row_lower_bins = Arc::new(lower_bins);
             self.row_upper_bins = Arc::new(upper_bins);
