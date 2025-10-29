@@ -113,13 +113,14 @@ impl LoopbackState {
         self.resolve_default_sink_node();
 
         if changed {
-            if let Some(node_id) = self.default_sink.node_id {
-                info!("[loopback] default audio sink is node #{node_id}");
-            } else if let Some(name) = self.default_sink.name.as_deref() {
-                info!("[loopback] default audio sink set to '{name}' (node unresolved)");
-            } else {
-                info!("[loopback] default audio sink cleared");
-            }
+            let message = match (self.default_sink.node_id, self.default_sink.name.as_deref()) {
+                (Some(node_id), _) => format!("default audio sink is node #{node_id}"),
+                (None, Some(name)) => {
+                    format!("default audio sink set to '{name}' (node unresolved)")
+                }
+                (None, None) => "default audio sink cleared".to_string(),
+            };
+            info!("[loopback] {message}");
         }
 
         self.refresh_links();
@@ -184,21 +185,17 @@ impl LoopbackState {
             DeviceCaptureTarget::Default => {
                 self.resolve_default_sink_node();
                 self.default_sink.node_id.or_else(|| {
-                    let name = self.default_sink.name.clone()?;
-                    let id = self
-                        .nodes
+                    let name = self.default_sink.name.as_ref()?;
+                    self.nodes
                         .iter()
-                        .find_map(|(&id, node)| node.matches_name(&name).then_some(id))?;
-                    self.default_sink.node_id = Some(id);
-                    Some(id)
+                        .find_map(|(&id, node)| node.matches_name(name).then_some(id))
+                        .inspect(|&id| self.default_sink.node_id = Some(id))
                 })?
             }
             DeviceCaptureTarget::Node(id) => self.nodes.contains_key(&id).then_some(id)?,
         };
-        if source_id == target_id {
-            return None;
-        }
-        self.build_route_plan(source_id, target_id)
+
+        (source_id != target_id).then(|| self.build_route_plan(source_id, target_id))?
     }
 
     fn build_route_plan(&mut self, source_id: u32, target_id: u32) -> Option<RoutePlan> {
@@ -285,21 +282,12 @@ impl LoopbackState {
     where
         F: Fn(&TrackedNode) -> Vec<GraphPort>,
     {
-        let node = match self.nodes.get(&node_id) {
-            Some(node) => node,
-            None => {
-                self.clear_links();
-                warn!(
-                    "[loopback] {label} node {} missing; cleared active links",
-                    node_id
-                );
-                return None;
-            }
-        };
+        let node = self.nodes.get(&node_id)?;
         let ports = selector(node);
+
         if ports.is_empty() {
             self.clear_links();
-            warn!("[loopback] no {port_role} ports on node {node_id}");
+            warn!("[loopback] no {port_role} ports on {label} node {node_id}");
             return None;
         }
 

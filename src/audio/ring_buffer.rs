@@ -62,21 +62,21 @@ impl<T> RingBuffer<T> {
             "RingBuffer capacity must remain greater than zero"
         );
 
-        if self.is_full() {
-            let idx = self.head;
-            let replaced = self.slots[idx].replace(value);
+        let idx = if self.is_full() {
+            let current = self.head;
             self.head = (self.head + 1) % capacity;
-            replaced
+            current
         } else {
             let idx = (self.head + self.len) % capacity;
             debug_assert!(
                 self.slots[idx].is_none(),
                 "Slot should be vacant when buffer is not full"
             );
-            self.slots[idx] = Some(value);
             self.len += 1;
-            None
-        }
+            idx
+        };
+
+        self.slots[idx].replace(value)
     }
 
     /// Removes and returns the oldest element in the buffer.

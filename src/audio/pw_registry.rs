@@ -157,17 +157,17 @@ pub struct TargetDescription {
 impl RegistrySnapshot {
     /// Produce a human-readable description of a default target, including the raw metadata value.
     pub fn describe_default_target(&self, target: Option<&DefaultTarget>) -> TargetDescription {
-        let raw = target
-            .and_then(|t| t.name.as_deref())
-            .unwrap_or("(none)")
-            .to_string();
+        let raw = target.and_then(|t| t.name.as_deref()).unwrap_or("(none)");
 
         let display = target
             .and_then(|t| self.resolve_default_target(t))
             .map(|node| node.display_name())
-            .unwrap_or_else(|| raw.clone());
+            .unwrap_or_else(|| raw.to_string());
 
-        TargetDescription { display, raw }
+        TargetDescription {
+            display,
+            raw: raw.to_string(),
+        }
     }
 
     /// Attempt to resolve a metadata default to a known node in the snapshot.
@@ -503,23 +503,21 @@ impl MetadataDefaults {
     }
 
     /// Ensure metadata targets point at live nodes when possible.
+    /// Ensure metadata targets point at live nodes when possible.
     fn reconcile_with_nodes(&mut self, nodes: &HashMap<u32, NodeInfo>) {
         for target in [&mut self.audio_sink, &mut self.audio_source]
             .into_iter()
             .flatten()
         {
-            if let Some(node_id) = target.node_id
-                && !nodes.contains_key(&node_id)
-            {
+            if target.node_id.is_some_and(|id| !nodes.contains_key(&id)) {
                 target.node_id = None;
             }
+
             if target.node_id.is_none()
                 && let Some(name) = &target.name
-                && let Some((id, _)) = nodes
-                    .iter()
-                    .find(|(_, node)| node.name.as_deref() == Some(name))
+                && let Some((&id, _)) = nodes.iter().find(|(_, n)| n.name.as_deref() == Some(name))
             {
-                target.node_id = Some(*id);
+                target.node_id = Some(id);
             }
         }
     }

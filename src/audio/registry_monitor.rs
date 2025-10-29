@@ -300,9 +300,7 @@ impl RoutingManager {
         }
 
         let now = Instant::now();
-        if let Some(retry_after) = self.router_retry_after
-            && now < retry_after
-        {
+        if self.router_retry_after.is_some_and(|t| now < t) {
             return None;
         }
 
@@ -353,14 +351,11 @@ impl RoutingManager {
             return Some(node);
         }
 
-        if let Some((id, _)) = self.cached_target
-            && let Some(node) = snapshot.nodes.iter().find(|n| n.id == id)
-        {
-            return Some(node);
-        }
-
-        if let Some((_, label)) = &self.cached_target
-            && let Some(node) = snapshot.nodes.iter().find(|n| n.matches_label(label))
+        if let Some((id, label)) = &self.cached_target
+            && let Some(node) = snapshot
+                .nodes
+                .iter()
+                .find(|n| n.id == *id || n.matches_label(label))
         {
             self.cached_target = Some((node.id, node.display_name()));
             return Some(node);
@@ -413,28 +408,26 @@ impl RoutingManager {
         hardware_sink: Option<&pw_registry::NodeInfo>,
     ) {
         for node in nodes {
-            let (target, desired, warn_missing) = match self.capture_mode {
+            let (target, desired) = match self.capture_mode {
                 CaptureMode::Applications => {
                     if self.is_node_enabled(node.id) {
-                        (Some(sink), RouteTarget::Virtual(sink.id), false)
-                    } else if let Some(hardware) = hardware_sink {
-                        (Some(hardware), RouteTarget::Hardware(hardware.id), false)
+                        (Some(sink), RouteTarget::Virtual(sink.id))
                     } else {
-                        (None, RouteTarget::Hardware(0), false)
+                        match hardware_sink {
+                            Some(hw) => (Some(hw), RouteTarget::Hardware(hw.id)),
+                            None => (None, RouteTarget::Hardware(0)),
+                        }
                     }
                 }
-                CaptureMode::Device => {
-                    if let Some(hardware) = hardware_sink {
-                        (Some(hardware), RouteTarget::Hardware(hardware.id), false)
-                    } else {
-                        (None, RouteTarget::Hardware(0), true)
-                    }
-                }
+                CaptureMode::Device => match hardware_sink {
+                    Some(hw) => (Some(hw), RouteTarget::Hardware(hw.id)),
+                    None => (None, RouteTarget::Hardware(0)),
+                },
             };
 
             if let Some(target) = target {
                 self.route_to_target(node, target, desired);
-            } else if self.routed_nodes.remove(&node.id).is_some() && warn_missing {
+            } else if self.routed_nodes.remove(&node.id).is_some() {
                 warn!(
                     "[router] unable to restore '{}' (id={}); no sink",
                     node.display_name(),

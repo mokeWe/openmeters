@@ -590,24 +590,23 @@ fn compute_frequency(
     bucket_duration: f64,
     previous: Option<f32>,
 ) -> f32 {
-    let crossing_count = match processor.crossing_counts.get(channel) {
-        Some(&count) if count >= 2 => count,
-        Some(&count) => return fallback_frequency(count, bucket_duration, previous),
-        None => return 0.0,
-    };
+    let crossing_count = processor.crossing_counts.get(channel).copied().unwrap_or(0);
 
-    let Some(Some(first)) = processor.first_crossing_times.get(channel) else {
+    if crossing_count < 2 {
+        return fallback_frequency(crossing_count, bucket_duration, previous);
+    }
+
+    let (Some(&Some(first)), Some(&Some(last))) = (
+        processor.first_crossing_times.get(channel),
+        processor.last_crossing_times.get(channel),
+    ) else {
         return fallback_frequency(crossing_count, bucket_duration, previous);
     };
-    let Some(Some(last)) = processor.last_crossing_times.get(channel) else {
-        return fallback_frequency(crossing_count, bucket_duration, previous);
-    };
 
-    let span = *last - *first;
+    let span = last - first;
     if span > f64::EPSILON {
         let cycles = (crossing_count - 1) as f64 / 2.0;
-        let freq = (cycles / span) as f32;
-        normalize_frequency(freq)
+        normalize_frequency((cycles / span) as f32)
     } else {
         fallback_frequency(crossing_count, bucket_duration, previous)
     }

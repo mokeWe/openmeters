@@ -349,14 +349,14 @@ impl ConfigPage {
         if node.is_virtual || node.app_name().is_some() {
             return false;
         }
-        let has_audio =
-            |s: Option<&String>| s.is_some_and(|t| t.to_ascii_lowercase().contains("audio"));
-        let has_monitor =
-            |s: Option<&String>| s.is_some_and(|t| t.to_ascii_lowercase().contains("monitor"));
 
-        has_audio(node.media_class.as_ref())
-            || has_monitor(node.name.as_ref())
-            || has_monitor(node.description.as_ref())
+        let contains = |opt: Option<&String>, pattern: &str| {
+            opt.is_some_and(|s| s.to_ascii_lowercase().contains(pattern))
+        };
+
+        contains(node.media_class.as_ref(), "audio")
+            || contains(node.name.as_ref(), "monitor")
+            || contains(node.description.as_ref(), "monitor")
     }
 
     fn render_visuals_section(

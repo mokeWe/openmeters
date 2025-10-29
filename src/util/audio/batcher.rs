@@ -40,21 +40,20 @@ impl SampleBatcher {
             return None;
         }
 
+        self.total_samples = 0;
+
         if self.chunks.len() == 1 {
-            self.total_samples = 0;
             return self.chunks.pop();
         }
 
-        let total_samples = self.total_samples;
-        let drained: Vec<_> = self.chunks.drain(..).collect();
+        let total_samples = self.chunks.iter().map(|c| c.len()).sum();
         let mut batch = self.reuse_buffer(total_samples);
 
-        for mut chunk in drained {
-            batch.append(&mut chunk);
+        for chunk in self.chunks.drain(..) {
+            batch.extend_from_slice(&chunk);
             Self::stash_recycle(&mut self.recycle, chunk);
         }
 
-        self.total_samples = 0;
         Some(batch)
     }
 

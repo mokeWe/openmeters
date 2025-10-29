@@ -332,11 +332,7 @@ impl UiApp {
     }
 
     fn close_settings_window(&mut self, id: window::Id) -> Task<Message> {
-        if self
-            .settings_window
-            .as_ref()
-            .is_some_and(|window| window.id() == id)
-        {
+        if self.settings_window.as_ref().is_some_and(|w| w.id() == id) {
             self.settings_window = None;
             window::close::<Message>(id)
         } else {
@@ -346,17 +342,14 @@ impl UiApp {
 
     fn on_window_closed(&mut self, id: window::Id) -> Task<Message> {
         if id == self.main_window_id {
-            exit()
-        } else if self
-            .settings_window
-            .as_ref()
-            .is_some_and(|window| window.id() == id)
-        {
-            self.settings_window = None;
-            Task::none()
-        } else {
-            Task::none()
+            return exit();
         }
+
+        if self.settings_window.as_ref().is_some_and(|w| w.id() == id) {
+            self.settings_window = None;
+        }
+
+        Task::none()
     }
 
     fn sync_settings_window_with_snapshot(
@@ -385,16 +378,14 @@ impl UiApp {
 
     fn title(&self, window: window::Id) -> String {
         if window == self.main_window_id {
-            "OpenMeters".to_string()
-        } else if let Some(settings_window) = self
-            .settings_window
-            .as_ref()
-            .filter(|window_state| window_state.id() == window)
-        {
-            format!("{} settings — OpenMeters", settings_window.title())
-        } else {
-            "OpenMeters".to_string()
+            return "OpenMeters".to_string();
         }
+
+        self.settings_window
+            .as_ref()
+            .filter(|w| w.id() == window)
+            .map(|w| format!("{} settings — OpenMeters", w.title()))
+            .unwrap_or_else(|| "OpenMeters".to_string())
     }
 
     fn theme(&self, _window: window::Id) -> iced::Theme {
