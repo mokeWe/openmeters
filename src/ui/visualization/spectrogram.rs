@@ -60,12 +60,14 @@ fn next_instance_id() -> u64 {
 pub struct SpectrogramProcessor {
     inner: CoreSpectrogramProcessor,
     channels: usize,
+    cached_sample_rate: f32,
 }
 
 impl fmt::Debug for SpectrogramProcessor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SpectrogramProcessor")
             .field("channels", &self.channels)
+            .field("cached_sample_rate", &self.cached_sample_rate)
             .finish_non_exhaustive()
     }
 }
@@ -80,9 +82,11 @@ impl SpectrogramProcessor {
         Self {
             inner: CoreSpectrogramProcessor::new(config),
             channels: DEFAULT_CHANNELS,
+            cached_sample_rate: sample_rate,
         }
     }
 
+    #[inline]
     pub fn ingest(
         &mut self,
         samples: &[f32],
@@ -98,18 +102,25 @@ impl SpectrogramProcessor {
         }
 
         let sample_rate = format.sample_rate.max(1.0);
-        let mut config = self.inner.config();
-        if (config.sample_rate - sample_rate).abs() > f32::EPSILON {
+        if (self.cached_sample_rate - sample_rate).abs() > f32::EPSILON {
+            self.cached_sample_rate = sample_rate;
+            let mut config = self.inner.config();
             config.sample_rate = sample_rate;
             self.inner.update_config(config);
         }
 
-        let block = AudioBlock::new(samples, self.channels, sample_rate, Instant::now());
+        let block = AudioBlock {
+            samples,
+            channels: self.channels,
+            sample_rate: self.cached_sample_rate,
+            timestamp: Instant::now(),
+        };
 
         self.inner.process_block(&block)
     }
 
     pub fn update_config(&mut self, config: SpectrogramConfig) {
+        self.cached_sample_rate = config.sample_rate;
         self.inner.update_config(config);
     }
 
@@ -176,6 +187,10 @@ impl SpectrogramState {
     }
 
     pub fn apply_update(&mut self, update: &SpectrogramUpdate) {
+        if update.new_columns.is_empty() && !update.reset {
+            return;
+        }
+
         let history_length_changed = self.history_length != update.history_length;
         let fft_size_changed = self.fft_size != update.fft_size;
         let hop_size_changed = self.hop_size != update.hop_size;
@@ -214,19 +229,20 @@ impl SpectrogramState {
             _ => None,
         };
 
+        let synchro_bins = self.synchro_bins_hz.as_deref();
+
         let desired_height = Self::history_height(&self.history, use_synchro)
             .map(|len| len as u32)
             .unwrap_or(0);
 
-        let buffer_requires_rebuild = {
-            let buffer = self.buffer.borrow();
-            buffer.requires_rebuild(update, use_synchro, desired_height)
-        };
-        needs_rebuild |= buffer_requires_rebuild;
-
         let mut buffer = self.buffer.borrow_mut();
+        
+        if !needs_rebuild {
+            needs_rebuild = buffer.requires_rebuild(update, use_synchro, desired_height);
+        }
+
         buffer.clear_pending();
-        let synchro_bins = self.synchro_bins_hz.as_deref();
+        
         if needs_rebuild {
             buffer.rebuild_from_history(
                 &self.history,
@@ -244,6 +260,9 @@ impl SpectrogramState {
             buffer.append_columns(&update.new_columns, &self.style, use_synchro, synchro_bins);
         }
 
+        // Update cached state (after dropping buffer borrow)
+        drop(buffer);
+        
         self.history_length = update.history_length;
         self.fft_size = update.fft_size;
         self.hop_size = update.hop_size;
@@ -369,7 +388,7 @@ impl Default for SpectrogramStyle {
 
 /// Circular texture backing for the spectrogram visualization coupled with
 /// bookkeeping for incremental GPU updates.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SpectrogramBuffer {
     capacity: u32,
     height: u32,
@@ -377,16 +396,16 @@ struct SpectrogramBuffer {
     write_index: u32,
     column_count: u32,
     pending_base: Option<Arc<[f32]>>,
-    pending_updates: Vec<SpectrogramColumnUpdate>,
+    pending_updates: Arc<Vec<SpectrogramColumnUpdate>>,
     sample_rate: f32,
     fft_size: usize,
     frequency_scale: FrequencyScale,
-    row_bin_positions: Vec<f32>,
-    row_lower_bins: Vec<usize>,
-    row_upper_bins: Vec<usize>,
-    row_interp_weights: Vec<f32>,
+    row_bin_positions: Arc<Vec<f32>>,
+    row_lower_bins: Arc<Vec<usize>>,
+    row_upper_bins: Arc<Vec<usize>>,
+    row_interp_weights: Arc<Vec<f32>>,
     using_synchro: bool,
-    grid_bin_frequencies: Vec<f32>,
+    grid_bin_frequencies: Arc<Vec<f32>>,
     update_buffer_pool: ColumnBufferPool,
 }
 
@@ -402,30 +421,6 @@ struct RebuildContext<'a> {
     synchro_bins_hz: Option<&'a [f32]>,
 }
 
-impl Clone for SpectrogramBuffer {
-    fn clone(&self) -> Self {
-        Self {
-            capacity: self.capacity,
-            height: self.height,
-            values: self.values.clone(),
-            write_index: self.write_index,
-            column_count: self.column_count,
-            pending_base: self.pending_base.clone(),
-            pending_updates: self.pending_updates.clone(),
-            sample_rate: self.sample_rate,
-            fft_size: self.fft_size,
-            frequency_scale: self.frequency_scale,
-            row_bin_positions: self.row_bin_positions.clone(),
-            row_lower_bins: self.row_lower_bins.clone(),
-            row_upper_bins: self.row_upper_bins.clone(),
-            row_interp_weights: self.row_interp_weights.clone(),
-            using_synchro: self.using_synchro,
-            grid_bin_frequencies: self.grid_bin_frequencies.clone(),
-            update_buffer_pool: self.update_buffer_pool.clone(),
-        }
-    }
-}
-
 impl SpectrogramBuffer {
     fn new() -> Self {
         Self {
@@ -435,16 +430,16 @@ impl SpectrogramBuffer {
             write_index: 0,
             column_count: 0,
             pending_base: None,
-            pending_updates: Vec::new(),
+            pending_updates: Arc::new(Vec::new()),
             sample_rate: DEFAULT_SAMPLE_RATE,
             fft_size: 0,
             frequency_scale: FrequencyScale::default(),
-            row_bin_positions: Vec::new(),
-            row_lower_bins: Vec::new(),
-            row_upper_bins: Vec::new(),
-            row_interp_weights: Vec::new(),
+            row_bin_positions: Arc::new(Vec::new()),
+            row_lower_bins: Arc::new(Vec::new()),
+            row_upper_bins: Arc::new(Vec::new()),
+            row_interp_weights: Arc::new(Vec::new()),
             using_synchro: false,
-            grid_bin_frequencies: Vec::new(),
+            grid_bin_frequencies: Arc::new(Vec::new()),
             update_buffer_pool: ColumnBufferPool::new(),
         }
     }
@@ -494,18 +489,25 @@ impl SpectrogramBuffer {
     }
 
     fn take_updates(&mut self) -> Vec<SpectrogramColumnUpdate> {
-        std::mem::take(&mut self.pending_updates)
+        if self.pending_updates.is_empty() {
+            Vec::new()
+        } else {
+            let updates = Arc::make_mut(&mut self.pending_updates);
+            std::mem::take(updates)
+        }
     }
 
     fn clear_pending(&mut self) {
         self.pending_base = None;
-        self.pending_updates.clear();
+        if !self.pending_updates.is_empty() {
+            self.pending_updates = Arc::new(Vec::new());
+        }
     }
 
     fn queue_full_refresh(&mut self) {
         self.clear_pending();
         if !self.values.is_empty() {
-            self.pending_base = Some(Arc::from(self.values.clone().into_boxed_slice()));
+            self.pending_base = Some(Arc::from(self.values.as_slice()));
         }
     }
 
@@ -573,23 +575,23 @@ impl SpectrogramBuffer {
             .unwrap_or(0);
 
         if !self.has_dimensions() {
-            self.values.clear();
+            self.values = Vec::new();
             self.write_index = 0;
             self.column_count = 0;
-            self.row_bin_positions.clear();
-            self.row_lower_bins.clear();
-            self.row_upper_bins.clear();
-            self.row_interp_weights.clear();
+            self.row_bin_positions = Arc::new(Vec::new());
+            self.row_lower_bins = Arc::new(Vec::new());
+            self.row_upper_bins = Arc::new(Vec::new());
+            self.row_interp_weights = Arc::new(Vec::new());
             self.using_synchro = false;
-            self.sync_grid_frequencies(None);
+            self.grid_bin_frequencies = Arc::new(Vec::new());
             self.clear_pending();
             return;
         }
 
         self.sync_grid_frequencies(synchro_bins_hz);
 
-        self.values
-            .resize(self.capacity as usize * self.height as usize, 0.0);
+        self.values.clear();
+        self.values.resize(self.capacity as usize * self.height as usize, 0.0);
         self.write_index = 0;
         self.column_count = 0;
         self.rebuild_row_positions();
@@ -639,7 +641,7 @@ impl SpectrogramBuffer {
             let mut buffer = self.update_buffer_pool.acquire(self.height as usize);
             buffer.copy_from_slice(&self.values[start..start + self.height as usize]);
             let values = Arc::new(ColumnBuffer::new(buffer, self.update_buffer_pool.clone()));
-            self.pending_updates.push(SpectrogramColumnUpdate {
+            Arc::make_mut(&mut self.pending_updates).push(SpectrogramColumnUpdate {
                 column_index: physical_index,
                 values,
             });
@@ -659,31 +661,45 @@ impl SpectrogramBuffer {
         let column = self.write_index;
         let start = (column as usize) * height;
 
-        if self.values.len() != (self.capacity as usize * height) {
-            self.values.resize(self.capacity as usize * height, 0.0);
-        }
-
         if self.needs_row_sampling_refresh() {
             self.rebuild_row_positions();
         }
 
+        if self.values.len() != (self.capacity as usize * height) {
+            self.values.resize(self.capacity as usize * height, 0.0);
+        }
+
         let inv_range = 1.0 / (style.ceiling_db - style.floor_db).max(f32::EPSILON);
+        let floor_db = style.floor_db;
+        let ceiling_db = style.ceiling_db;
         let bin_count = magnitudes_db.len();
 
-        for row in 0..height {
-            let lower = self.row_lower_bins[row].min(bin_count - 1);
-            let upper = self.row_upper_bins[row].min(bin_count - 1);
-            let frac = self.row_interp_weights[row];
+        let lower_bins = self.row_lower_bins.as_slice();
+        let upper_bins = self.row_upper_bins.as_slice();
+        let interp_weights = self.row_interp_weights.as_slice();
+
+        let output_slice = &mut self.values[start..start + height];
+
+        let iter = lower_bins
+            .iter()
+            .zip(upper_bins)
+            .zip(interp_weights)
+            .zip(output_slice);
+
+        for (((lower, upper), frac), output) in iter {
+            let lower = (*lower).min(bin_count - 1);
+            let upper = (*upper).min(bin_count - 1);
 
             let sample = if lower == upper {
                 magnitudes_db[lower]
             } else {
-                magnitudes_db[lower] + (magnitudes_db[upper] - magnitudes_db[lower]) * frac
+                let lower_val = magnitudes_db[lower];
+                let upper_val = magnitudes_db[upper];
+                lower_val + (upper_val - lower_val) * frac
             };
 
-            self.values[start + row] =
-                ((sample.clamp(style.floor_db, style.ceiling_db) - style.floor_db) * inv_range)
-                    .clamp(0.0, 1.0);
+            *output = ((sample.clamp(floor_db, ceiling_db) - floor_db) * inv_range)
+                .clamp(0.0, 1.0);
         }
 
         if self.column_count < self.capacity {
@@ -694,27 +710,40 @@ impl SpectrogramBuffer {
     }
 
     fn rebuild_row_positions(&mut self) {
-        self.row_bin_positions.clear();
-        self.row_lower_bins.clear();
-        self.row_upper_bins.clear();
-        self.row_interp_weights.clear();
-
         let height = self.height as usize;
         if height == 0 {
+            self.row_bin_positions = Arc::new(Vec::new());
+            self.row_lower_bins = Arc::new(Vec::new());
+            self.row_upper_bins = Arc::new(Vec::new());
+            self.row_interp_weights = Arc::new(Vec::new());
             return;
         }
 
+        let mut positions = Vec::with_capacity(height);
+        let mut lower_bins = Vec::with_capacity(height);
+        let mut upper_bins = Vec::with_capacity(height);
+        let mut weights = Vec::with_capacity(height);
+
         // Synchrosqueezed bins are already in display order, use identity mapping
         if self.using_synchro {
-            self.row_bin_positions.extend((0..height).map(|i| i as f32));
-            self.row_lower_bins.extend(0..height);
-            self.row_upper_bins.extend(0..height);
-            self.row_interp_weights.resize(height, 0.0);
+            positions.extend((0..height).map(|i| i as f32));
+            lower_bins.extend(0..height);
+            upper_bins.extend(0..height);
+            weights.resize(height, 0.0);
+            
+            self.row_bin_positions = Arc::new(positions);
+            self.row_lower_bins = Arc::new(lower_bins);
+            self.row_upper_bins = Arc::new(upper_bins);
+            self.row_interp_weights = Arc::new(weights);
             return;
         }
 
         let bin_count = self.fft_size / 2 + 1;
         if bin_count == 0 || self.sample_rate <= 0.0 {
+            self.row_bin_positions = Arc::new(Vec::new());
+            self.row_lower_bins = Arc::new(Vec::new());
+            self.row_upper_bins = Arc::new(Vec::new());
+            self.row_interp_weights = Arc::new(Vec::new());
             return;
         }
 
@@ -732,14 +761,18 @@ impl SpectrogramBuffer {
             let bin_position =
                 ((frequency * self.fft_size as f32) / self.sample_rate).clamp(0.0, max_bin);
 
-            self.row_bin_positions.push(bin_position);
+            positions.push(bin_position);
             let lower = bin_position.floor() as usize;
             let upper = (lower + 1).min(bin_count - 1);
-            self.row_lower_bins.push(lower);
-            self.row_upper_bins.push(upper);
-            self.row_interp_weights
-                .push((bin_position - lower as f32).clamp(0.0, 1.0));
+            lower_bins.push(lower);
+            upper_bins.push(upper);
+            weights.push((bin_position - lower as f32).clamp(0.0, 1.0));
         }
+
+        self.row_bin_positions = Arc::new(positions);
+        self.row_lower_bins = Arc::new(lower_bins);
+        self.row_upper_bins = Arc::new(upper_bins);
+        self.row_interp_weights = Arc::new(weights);
     }
 
     fn needs_row_sampling_refresh(&self) -> bool {
@@ -771,16 +804,13 @@ impl SpectrogramBuffer {
         match synchro_bins_hz {
             Some(freqs) if !freqs.is_empty() => {
                 let limit = self.height.min(freqs.len() as u32) as usize;
-                if self.grid_bin_frequencies.len() != limit {
-                    self.grid_bin_frequencies.clear();
-                    self.grid_bin_frequencies.extend_from_slice(&freqs[..limit]);
-                } else {
-                    self.grid_bin_frequencies[..limit].copy_from_slice(&freqs[..limit]);
-                }
+                let mut new_freqs = Vec::with_capacity(limit);
+                new_freqs.extend_from_slice(&freqs[..limit]);
+                self.grid_bin_frequencies = Arc::new(new_freqs);
             }
             _ => {
                 if !self.grid_bin_frequencies.is_empty() {
-                    self.grid_bin_frequencies.clear();
+                    self.grid_bin_frequencies = Arc::new(Vec::new());
                 }
             }
         }
