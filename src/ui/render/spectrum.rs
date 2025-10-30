@@ -210,7 +210,9 @@ fn push_highlight_columns(
 
     let denom = (1.0 - threshold).max(1.0e-6);
     for (segment, points) in positions.windows(2).zip(normalized_points.windows(2)) {
-        let amp_max = points[0][1].clamp(0.0, 1.0).max(points[1][1].clamp(0.0, 1.0));
+        let amp_max = points[0][1]
+            .clamp(0.0, 1.0)
+            .max(points[1][1].clamp(0.0, 1.0));
         if amp_max < threshold {
             continue;
         }
@@ -230,12 +232,36 @@ fn push_highlight_columns(
         let params = [0.0; 4];
 
         vertices.extend_from_slice(&[
-            Vertex { position: bl, color, params },
-            Vertex { position: tl, color, params },
-            Vertex { position: tr, color, params },
-            Vertex { position: bl, color, params },
-            Vertex { position: tr, color, params },
-            Vertex { position: br, color, params },
+            Vertex {
+                position: bl,
+                color,
+                params,
+            },
+            Vertex {
+                position: tl,
+                color,
+                params,
+            },
+            Vertex {
+                position: tr,
+                color,
+                params,
+            },
+            Vertex {
+                position: bl,
+                color,
+                params,
+            },
+            Vertex {
+                position: tr,
+                color,
+                params,
+            },
+            Vertex {
+                position: br,
+                color,
+                params,
+            },
         ]);
     }
 }

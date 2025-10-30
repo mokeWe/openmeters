@@ -1127,7 +1127,7 @@ impl SpectrogramProcessor {
 
         for k in 0..reassignment_bin_limit {
             let k_f32 = k as f32;
-            
+
             let base = spectrum[k];
             let cross = derivative_spectrum[k];
             let bin_norm_k = bin_norm[k];
@@ -1153,7 +1153,7 @@ impl SpectrogramProcessor {
             let lower = freq_position as usize;
             let frac = freq_position - lower as f32;
             let energy_power = power * energy_scale_k;
-            
+
             let lower_contrib = energy_power * (1.0 - frac);
             reassigned_power[lower] += lower_contrib;
 
@@ -1259,7 +1259,6 @@ impl SpectrogramProcessor {
         }
 
         let magnitude_slice = &self.magnitude_buffer[..bins];
-
 
         let start_0 = 0;
         let end_0 = clamped_radius.min(bins);
