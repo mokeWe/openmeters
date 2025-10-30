@@ -251,21 +251,6 @@ pub fn quad_vertices(
     ]
 }
 
-/// Helper to generate three vertices forming a triangle.
-#[inline]
-pub fn triangle_vertices(
-    a: [f32; 2],
-    b: [f32; 2],
-    c: [f32; 2],
-    color: [f32; 4],
-) -> [SimpleVertex; 3] {
-    [
-        SimpleVertex { position: a, color },
-        SimpleVertex { position: b, color },
-        SimpleVertex { position: c, color },
-    ]
-}
-
 /// Common pipeline management for simple vertex-only rendering.
 #[derive(Debug)]
 pub struct SimplePipeline<K> {

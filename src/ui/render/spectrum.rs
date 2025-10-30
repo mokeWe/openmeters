@@ -1,14 +1,48 @@
+use bytemuck::{Pod, Zeroable};
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{Primitive, Storage};
 use iced_wgpu::wgpu;
 use std::collections::HashMap;
+use std::mem;
 use std::sync::Arc;
 
-use crate::ui::render::common::{
-    ClipTransform, InstanceBuffer, SimplePipeline, SimpleVertex, triangle_vertices,
-};
+use crate::ui::render::common::{ClipTransform, InstanceBuffer};
 use crate::ui::render::geometry::compute_normals;
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Pod, Zeroable)]
+struct Vertex {
+    position: [f32; 2],
+    color: [f32; 4],
+    params: [f32; 4],
+}
+
+impl Vertex {
+    fn layout() -> wgpu::VertexBufferLayout<'static> {
+        wgpu::VertexBufferLayout {
+            array_stride: mem::size_of::<Vertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &[
+                wgpu::VertexAttribute {
+                    offset: 0,
+                    shader_location: 0,
+                    format: wgpu::VertexFormat::Float32x2,
+                },
+                wgpu::VertexAttribute {
+                    offset: 8,
+                    shader_location: 1,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
+            ],
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SpectrumParams {
@@ -38,7 +72,7 @@ impl SpectrumPrimitive {
         self.params.instance_key
     }
 
-    fn build_vertices(&self, viewport: &Viewport) -> Vec<SimpleVertex> {
+    fn build_vertices(&self, viewport: &Viewport) -> Vec<Vertex> {
         let bounds = self.params.bounds;
         let clip = ClipTransform::from_viewport(viewport);
 
@@ -144,7 +178,7 @@ impl Primitive for SpectrumPrimitive {
             clip_bounds.width.max(1),
             clip_bounds.height.max(1),
         );
-        pass.set_pipeline(&pipeline.inner.pipeline);
+        pass.set_pipeline(&pipeline.pipeline);
         pass.set_vertex_buffer(0, instance.vertex_buffer.slice(0..instance.used_bytes()));
         pass.draw(0..instance.vertex_count, 0..1);
     }
@@ -161,7 +195,7 @@ fn to_cartesian_positions(bounds: Rectangle, points: &[[f32; 2]]) -> Vec<(f32, f
 }
 
 fn push_highlight_columns(
-    vertices: &mut Vec<SimpleVertex>,
+    vertices: &mut Vec<Vertex>,
     clip: &ClipTransform,
     baseline: f32,
     positions: &[(f32, f32)],
@@ -176,42 +210,33 @@ fn push_highlight_columns(
 
     let denom = (1.0 - threshold).max(1.0e-6);
     for (segment, points) in positions.windows(2).zip(normalized_points.windows(2)) {
-        let amp_max = points[0][1]
-            .clamp(0.0, 1.0)
-            .max(points[1][1].clamp(0.0, 1.0));
+        let amp_max = points[0][1].clamp(0.0, 1.0).max(points[1][1].clamp(0.0, 1.0));
         if amp_max < threshold {
             continue;
         }
 
         let intensity = ((amp_max - threshold) / denom).clamp(0.0, 1.0);
-
-        // Interpolate color from palette based on intensity
-        let column_color = interpolate_palette_color(spectrum_palette, intensity);
-
-        if column_color[3] <= 0.0 {
+        let color = interpolate_palette_color(spectrum_palette, intensity);
+        if color[3] <= 0.0 {
             continue;
         }
 
         let (x0, y0) = segment[0];
         let (x1, y1) = segment[1];
+        let tl = clip.to_clip(x0, y0);
+        let tr = clip.to_clip(x1, y1);
+        let bl = clip.to_clip(x0, baseline);
+        let br = clip.to_clip(x1, baseline);
+        let params = [0.0; 4];
 
-        let top_left = clip.to_clip(x0, y0);
-        let top_right = clip.to_clip(x1, y1);
-        let bottom_left = clip.to_clip(x0, baseline);
-        let bottom_right = clip.to_clip(x1, baseline);
-
-        vertices.extend_from_slice(&triangle_vertices(
-            bottom_left,
-            top_left,
-            top_right,
-            column_color,
-        ));
-        vertices.extend_from_slice(&triangle_vertices(
-            bottom_left,
-            top_right,
-            bottom_right,
-            column_color,
-        ));
+        vertices.extend_from_slice(&[
+            Vertex { position: bl, color, params },
+            Vertex { position: tl, color, params },
+            Vertex { position: tr, color, params },
+            Vertex { position: bl, color, params },
+            Vertex { position: tr, color, params },
+            Vertex { position: br, color, params },
+        ]);
     }
 }
 
@@ -248,7 +273,7 @@ fn interpolate_palette_color(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
 }
 
 fn push_polyline(
-    vertices: &mut Vec<SimpleVertex>,
+    vertices: &mut Vec<Vertex>,
     positions: &[(f32, f32)],
     width: f32,
     color: [f32; 4],
@@ -260,26 +285,36 @@ fn push_polyline(
 
     let normals = compute_normals(positions);
     let half = width.max(0.1) * 0.5;
-    let mut prev_pair: Option<([f32; 2], [f32; 2])> = None;
-    for ((x, y), normal) in positions.iter().zip(normals.iter()) {
-        let offset_x = normal.0 * half;
-        let offset_y = normal.1 * half;
+    let feather = 0.5;
+    let outer = half + feather;
+
+    let mut prev = None;
+    for ((x, y), (nx, ny)) in positions.iter().zip(normals.iter()) {
         let current = (
-            clip.to_clip(x - offset_x, y - offset_y),
-            clip.to_clip(x + offset_x, y + offset_y),
+            Vertex {
+                position: clip.to_clip(x - nx * outer, y - ny * outer),
+                color,
+                params: [-outer, half, feather, 0.0],
+            },
+            Vertex {
+                position: clip.to_clip(x + nx * outer, y + ny * outer),
+                color,
+                params: [outer, half, feather, 0.0],
+            },
         );
-        if let Some((left0, right0)) = prev_pair {
-            let (left1, right1) = current;
-            vertices.extend_from_slice(&triangle_vertices(left0, right0, right1, color));
-            vertices.extend_from_slice(&triangle_vertices(left0, right1, left1, color));
+
+        if let Some((l0, r0)) = prev {
+            let (l1, r1) = &current;
+            vertices.extend_from_slice(&[l0, r0, *r1, l0, *r1, *l1]);
         }
-        prev_pair = Some(current);
+        prev = Some(current);
     }
 }
 
 #[derive(Debug)]
 struct Pipeline {
-    inner: SimplePipeline<usize>,
+    pipeline: wgpu::RenderPipeline,
+    instances: HashMap<usize, InstanceBuffer<Vertex>>,
 }
 
 impl Pipeline {
@@ -301,7 +336,7 @@ impl Pipeline {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[SimpleVertex::layout()],
+                buffers: &[Vertex::layout()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -331,10 +366,8 @@ impl Pipeline {
         });
 
         Self {
-            inner: SimplePipeline {
-                pipeline,
-                instances: HashMap::new(),
-            },
+            pipeline,
+            instances: HashMap::new(),
         }
     }
 
@@ -343,13 +376,22 @@ impl Pipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         key: usize,
-        vertices: &[SimpleVertex],
+        vertices: &[Vertex],
     ) {
-        self.inner
-            .prepare_instance(device, queue, "Spectrum vertex buffer", key, vertices);
+        let required_size = mem::size_of_val(vertices) as wgpu::BufferAddress;
+        let buffer = self.instances.entry(key).or_insert_with(|| {
+            InstanceBuffer::new(device, "Spectrum vertex buffer", required_size.max(1))
+        });
+
+        if vertices.is_empty() {
+            buffer.vertex_count = 0;
+        } else {
+            buffer.ensure_capacity(device, "Spectrum vertex buffer", required_size);
+            buffer.write(queue, vertices);
+        }
     }
 
-    fn instance(&self, key: usize) -> Option<&InstanceBuffer<SimpleVertex>> {
-        self.inner.instance(key)
+    fn instance(&self, key: usize) -> Option<&InstanceBuffer<Vertex>> {
+        self.instances.get(&key)
     }
 }
