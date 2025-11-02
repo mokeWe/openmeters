@@ -10,7 +10,6 @@ pub use batcher::SampleBatcher;
 /// Default sample rate (Hz) used throughout the audio pipeline.
 pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
 
-/// Return the number of bytes per sample for the given PipeWire audio format.
 pub fn bytes_per_sample(format: spa::param::audio::AudioFormat) -> Option<usize> {
     use spa::param::audio::AudioFormat as Fmt;
 
@@ -30,7 +29,6 @@ pub fn bytes_per_sample(format: spa::param::audio::AudioFormat) -> Option<usize>
     }
 }
 
-/// Convert audio samples in any supported format into normalised `f32` samples.
 pub fn convert_samples_to_f32(
     bytes: &[u8],
     format: spa::param::audio::AudioFormat,

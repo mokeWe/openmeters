@@ -34,19 +34,12 @@ fn power_to_db(power: f32) -> f32 {
 #[derive(Debug, Clone, Copy)]
 pub struct SpectrogramConfig {
     pub sample_rate: f32,
-    /// FFT size (must be a power of two for radix-2 implementations).
     pub fft_size: usize,
-    /// Hop size between successive frames.
     pub hop_size: usize,
-    /// Window selection controlling spectral leakage characteristics.
     pub window: WindowKind,
-    /// Frequency scaling mode for display.
     pub frequency_scale: FrequencyScale,
-    /// Maximum retained history columns.
     pub history_length: usize,
-    /// Enable time-frequency reassignment for sharper spectral localization.
     pub use_reassignment: bool,
-    /// Linear power floor in dBFS below which bins are skipped during reassignment.
     pub reassignment_power_floor_db: f32,
     /// Limit reassignment to the lowest N frequency bins (0 to disable limiting).
     pub reassignment_low_bin_limit: usize,

@@ -8,11 +8,6 @@ pub struct RingBuffer<T> {
 }
 
 impl<T> RingBuffer<T> {
-    /// Creates a ring buffer with the given capacity.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `capacity` is zero.
     pub fn with_capacity(capacity: usize) -> Self {
         assert!(
             capacity > 0,
@@ -28,33 +23,26 @@ impl<T> RingBuffer<T> {
         }
     }
 
-    /// Returns the maximum number of elements that fit inside the buffer.
     #[inline]
     pub fn capacity(&self) -> usize {
         self.slots.len()
     }
 
-    /// Returns the number of elements currently stored in the buffer.
     #[inline]
     pub fn len(&self) -> usize {
         self.len
     }
 
-    /// Returns `true` if the buffer contains no elements.
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
 
-    /// Returns `true` if the buffer has reached its capacity.
     #[inline]
     pub fn is_full(&self) -> bool {
         self.len == self.capacity()
     }
 
-    /// Appends an element to the buffer, overwriting the oldest element when full.
-    ///
-    /// Returns the overwritten value when the buffer was full, otherwise `None`.
     pub fn push(&mut self, value: T) -> Option<T> {
         let capacity = self.capacity();
         debug_assert!(
@@ -79,7 +67,6 @@ impl<T> RingBuffer<T> {
         self.slots[idx].replace(value)
     }
 
-    /// Removes and returns the oldest element in the buffer.
     pub fn pop(&mut self) -> Option<T> {
         if self.is_empty() {
             return None;
@@ -92,7 +79,6 @@ impl<T> RingBuffer<T> {
         value
     }
 
-    /// Returns a reference to the oldest element without removing it.
     pub fn peek(&self) -> Option<&T> {
         if self.is_empty() {
             None
@@ -101,7 +87,6 @@ impl<T> RingBuffer<T> {
         }
     }
 
-    /// Removes all elements from the buffer, leaving the allocated capacity intact.
     pub fn clear(&mut self) {
         if self.is_empty() {
             return;
@@ -114,7 +99,6 @@ impl<T> RingBuffer<T> {
         self.len = 0;
     }
 
-    /// Appends a batch of elements to the buffer, returning the number of overwritten entries.
     pub fn push_iter<I>(&mut self, iter: I) -> usize
     where
         I: IntoIterator<Item = T>,
@@ -128,7 +112,6 @@ impl<T> RingBuffer<T> {
         overwritten
     }
 
-    /// Returns an iterator over the elements in the buffer in insertion order.
     pub fn iter(&self) -> RingBufferIter<'_, T> {
         RingBufferIter {
             buffer: self,
@@ -149,7 +132,7 @@ impl<T: fmt::Debug> fmt::Debug for RingBuffer<T> {
     }
 }
 
-/// Immutable iterator over the contents of a [`RingBuffer`].
+/// Immutable iterator over the contents of a `RingBuffer`.
 pub struct RingBufferIter<'a, T> {
     buffer: &'a RingBuffer<T>,
     offset: usize,

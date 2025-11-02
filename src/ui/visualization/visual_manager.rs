@@ -1,10 +1,4 @@
-//! central owner of visual modules and their state.
-//!
-//! the visual manager handles the following:
-//! - instantiation of visual modules
-//! - applying settings to mods
-//! - exporting settings to `../settings.rs`
-//! - ingesting audio samples and distributing them to enabled modules
+//! Central owner of visual modules and their state.
 
 use crate::audio::meter_tap::{self, MeterFormat};
 use crate::dsp::ProcessorUpdate;
@@ -28,7 +22,7 @@ use std::cell::{Ref, RefCell, RefMut};
 use std::collections::HashMap;
 use std::rc::Rc;
 
-/// identifiers for visual kinds
+/// Identifiers for visual kinds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct VisualKind(&'static str);
 
@@ -115,7 +109,6 @@ pub struct VisualSlotSnapshot {
     pub content: VisualContent,
 }
 
-/// what we need to render a visual
 #[derive(Debug, Clone)]
 pub enum VisualContent {
     LoudnessMeter { state: LoudnessMeterState },
@@ -535,7 +528,6 @@ impl VisualModule for SpectrumVisual {
     }
 }
 
-/// owner of visual mods and their state
 pub struct VisualManager {
     entries: Vec<VisualEntry>,
     id_index: HashMap<VisualId, usize>,

@@ -7,13 +7,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
-/// Capacity of the channel forwarding audio frames to the UI.
 const CHANNEL_CAPACITY: usize = 64;
-/// Maximum time we block while waiting for new audio before checking for shutdown.
 const POLL_BACKOFF: Duration = Duration::from_millis(50);
-/// Desired number of PCM samples per chunk forwarded to the UI.
 const TARGET_BATCH_SAMPLES: usize = 2_048;
-/// Maximum amount of time we allow audio to accumulate before forcing a partial flush.
 const MAX_BATCH_LATENCY: Duration = Duration::from_millis(25);
 
 static AUDIO_STREAM: OnceLock<Arc<AsyncReceiver<Vec<f32>>>> = OnceLock::new();
@@ -49,11 +45,6 @@ pub fn current_format() -> MeterFormat {
     *format_state().read()
 }
 
-/// Obtain a shared receiver that yields captured audio frames suitable for UI visualisations.
-///
-/// The first caller spawns a lightweight worker thread that drains the virtual sink capture
-/// buffer and forwards frames through the returned async channel. Subsequent callers reuse the
-/// existing stream.
 pub fn audio_sample_stream() -> Arc<AsyncReceiver<Vec<f32>>> {
     AUDIO_STREAM
         .get_or_init(|| {

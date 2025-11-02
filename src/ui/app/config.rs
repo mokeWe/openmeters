@@ -1,5 +1,4 @@
-//! page for configuring apps and visuals.
-//! to be ingested into main app as a tab.
+//! Configuration page for application and visual settings.
 
 use crate::audio::VIRTUAL_SINK_NAME;
 use crate::audio::pw_registry::RegistrySnapshot;

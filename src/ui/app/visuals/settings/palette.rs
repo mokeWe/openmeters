@@ -1,4 +1,4 @@
-//! A color palette editor for visual module settings
+//! Color palette editor.
 
 use crate::ui::theme;
 use iced::alignment::{Horizontal, Vertical};

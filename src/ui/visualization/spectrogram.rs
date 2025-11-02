@@ -35,18 +35,12 @@ const DEFAULT_DB_CEILING: f32 = 0.0;
 const PALETTE_STOPS: usize = SPECTROGRAM_PALETTE_SIZE;
 const MIN_INCREMENTAL_UPDATES: u32 = 16;
 
-/// Tooltip styling
 const TOOLTIP_TEXT_SIZE: f32 = 14.0;
 const TOOLTIP_PADDING: f32 = 8.0;
 const TOOLTIP_OFFSET: f32 = 12.0;
 const TOOLTIP_SHADOW_OFFSET: f32 = 1.0;
 const TOOLTIP_SHADOW_OPACITY: f32 = 0.3;
 
-/// Maximum number of spectral rows we can store in a single GPU texture.
-/// Mirrors `wgpu::Limits::downlevel_defaults().max_texture_dimension_2d` which
-/// is 8192 on all supported backends. Staying within this guard prevents
-/// `Device::create_texture` validation failures when large FFT/zero-padding
-/// combinations are selected.
 const MAX_TEXTURE_BINS: usize = 8_192;
 
 static NEXT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
@@ -55,8 +49,6 @@ fn next_instance_id() -> u64 {
     NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-/// Bridges the DSP spectrogram processor into the UI layer by
-/// constructing audio blocks and forwarding configuration changes.
 pub struct SpectrogramProcessor {
     inner: CoreSpectrogramProcessor,
     channels: usize,
@@ -364,7 +356,6 @@ impl SpectrogramState {
     }
 }
 
-/// Visual appearance controls that can be overridden by user preferences.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SpectrogramStyle {
     pub background: Color,
@@ -386,8 +377,6 @@ impl Default for SpectrogramStyle {
     }
 }
 
-/// Circular texture backing for the spectrogram visualization coupled with
-/// bookkeeping for incremental GPU updates.
 #[derive(Debug, Clone)]
 struct SpectrogramBuffer {
     capacity: u32,
@@ -409,8 +398,6 @@ struct SpectrogramBuffer {
     update_buffer_pool: ColumnBufferPool,
 }
 
-/// Bundles configuration needed when rebuilding the buffer from scratch so we
-/// can pass a single struct instead of a long parameter list.
 struct RebuildContext<'a> {
     style: &'a SpectrogramStyle,
     history_length: usize,
@@ -811,7 +798,6 @@ impl SpectrogramBuffer {
     }
 }
 
-/// Calculate frequency from normalized Y position (0=top/high freq, 1=bottom/low freq).
 fn calculate_frequency(
     normalized_y: f32,
     sample_rate: f32,

@@ -1,9 +1,4 @@
-//! this is responsible for loading and saving UI settings to disk
-//!
-//! responsible for:
-//! - loading and saving settings
-//! - providing access to settings for other parts of the UI
-//! - converting between internal config structs and serializable settings structs
+//! Settings persistence and management.
 
 use crate::dsp::oscilloscope::OscilloscopeConfig;
 use crate::dsp::spectrogram::{FrequencyScale, SpectrogramConfig, WindowKind};

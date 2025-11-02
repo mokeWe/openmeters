@@ -1,4 +1,4 @@
-//! PipeWire loopback management for OpenMeters.
+//! PipeWire loopback management.
 
 mod state;
 
@@ -42,7 +42,7 @@ enum LoopbackCommand {
 static LOOPBACK_THREAD: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
 static LOOPBACK_COMMAND: OnceLock<mpsc::Sender<LoopbackCommand>> = OnceLock::new();
 
-/// Start the loopback controller in a background thread if it is not already running.
+/// Start the loopback controller in a background thread if not already running.
 pub fn run() {
     if LOOPBACK_THREAD.get().is_some() {
         return;

@@ -1,4 +1,4 @@
-//! Loudness-related DSP utilities for combined LUFS and peak metering.
+//! Loudness DSP utilities for LUFS and peak metering.
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;

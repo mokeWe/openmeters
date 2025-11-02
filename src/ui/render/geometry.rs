@@ -1,4 +1,4 @@
-//! geometry utilities for rendering.
+//! Geometry utilities for rendering.
 
 pub fn compute_normals(positions: &[(f32, f32)]) -> Vec<(f32, f32)> {
     match positions.len() {

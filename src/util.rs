@@ -1,5 +1,3 @@
-//! Utility functions and types for OpenMeters.
-
 pub mod audio;
 pub mod log;
 pub mod pipewire;

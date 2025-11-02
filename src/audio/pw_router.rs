@@ -1,4 +1,4 @@
-//! PipeWire routing helper for directing applications to specific sinks.
+//! PipeWire routing helper.
 
 use super::pw_registry::NodeInfo;
 use crate::util::{dict_to_map, pipewire::metadata::format_target_metadata};
@@ -34,11 +34,6 @@ pub struct Router {
 }
 
 impl Router {
-    /// Establish a dedicated PipeWire connection capable of issuing routing commands.
-    ///
-    /// A dedicated main loop is created so routing operations do not interfere with
-    /// the application's primary PipeWire context. The router binds a metadata
-    /// object once during initialisation and reuses it for all subsequent updates.
     pub fn new() -> Result<Self> {
         pw::init();
 

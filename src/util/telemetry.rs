@@ -4,7 +4,6 @@ use tracing_subscriber::{EnvFilter, fmt};
 
 static TELEMETRY_INIT: OnceLock<()> = OnceLock::new();
 
-/// Initialise global tracing subscribers with sensible defaults.
 pub fn init() {
     TELEMETRY_INIT.get_or_init(|| {
         let env_filter = EnvFilter::try_from_default_env()

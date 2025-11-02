@@ -15,8 +15,6 @@ pub const CONTROL_SPACING: f32 = 8.0;
 pub const LABEL_SIZE: u16 = 12;
 pub const VALUE_SIZE: u16 = 11;
 const VALUE_GAP: f32 = 6.0;
-
-#[derive(Debug, Clone, Copy)]
 pub struct SliderRange {
     pub min: f32,
     pub max: f32,
@@ -42,7 +40,6 @@ impl SliderRange {
 
 // State Update Helpers
 
-/// Updates a value if the new value differs, returning whether a change occurred.
 #[inline]
 pub fn set_if_changed<T>(target: &mut T, value: T) -> bool
 where
@@ -56,7 +53,6 @@ where
     }
 }
 
-/// Updates an f32 value if different (beyond epsilon), returning whether a change occurred.
 #[inline]
 pub fn set_f32(target: &mut f32, value: f32) -> bool {
     if (*target).to_bits() != value.to_bits() {
@@ -67,13 +63,11 @@ pub fn set_f32(target: &mut f32, value: f32) -> bool {
     }
 }
 
-/// Snaps a value to the given slider range and step.
 #[inline]
 pub fn update_f32_range(target: &mut f32, value: f32, range: SliderRange) -> bool {
     set_f32(target, range.snap(value))
 }
 
-/// Updates a usize value from f32 with snapping, returning whether a change occurred.
 #[inline]
 pub fn update_usize_from_f32(target: &mut usize, value: f32, range: SliderRange) -> bool {
     debug_assert!(

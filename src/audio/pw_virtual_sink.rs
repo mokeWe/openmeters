@@ -1,4 +1,4 @@
-//! PipeWire virtual sink integration for OpenMeters.
+//! PipeWire virtual sink integration.
 
 use super::ring_buffer::RingBuffer;
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
@@ -14,14 +14,9 @@ use std::thread;
 use std::time::Duration;
 use tracing::{error, info, warn};
 
-/// Default sample rate advertised to PipeWire peers.
 const VIRTUAL_SINK_SAMPLE_RATE: u32 = DEFAULT_SAMPLE_RATE as u32;
-/// Default channel count advertised to PipeWire peers.
 const VIRTUAL_SINK_CHANNELS: u32 = 2;
-/// Number of audio frames we keep in memory for downstream consumers.
 const CAPTURE_BUFFER_CAPACITY: usize = 256;
-/// Target PipeWire quantum in frames to maintain a stable UI refresh cadence when OpenMeters is
-/// the sole graph client.
 const DESIRED_LATENCY_FRAMES: u32 = 256;
 
 static SINK_THREAD: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
@@ -35,10 +30,6 @@ pub struct CapturedAudio {
     pub sample_rate: u32,
 }
 
-/// Shared audio capture buffer guarded by a mutex and wired to a condition variable so
-/// consumers can efficiently await new audio frames.
-/// fixes an issue where significant amounts of audio data would be dropped when the consumer
-/// thread was not keeping up with the real-time PipeWire callback.
 pub struct CaptureBuffer {
     inner: Mutex<RingBuffer<CapturedAudio>>,
     available: Condvar,
@@ -54,8 +45,6 @@ impl CaptureBuffer {
         }
     }
 
-    /// Attempt to enqueue a frame without blocking the caller. Frames are silently dropped when
-    /// the buffer is currently locked (e.g. if the consumer thread holds the mutex).
     pub fn try_push(&self, frame: CapturedAudio) {
         match self.inner.try_lock() {
             Ok(mut guard) => {
@@ -65,15 +54,11 @@ impl CaptureBuffer {
                 self.available.notify_one();
             }
             Err(_) => {
-                // The consumer temporarily holds the lock; drop the frame to avoid stalling the
-                // real-time PipeWire callback.
                 self.dropped_frames.fetch_add(1, Ordering::Relaxed);
             }
         }
     }
 
-    /// Wait for the next frame to become available, backing off after `timeout` elapses so the
-    /// caller can perform periodic housekeeping (e.g. shutdown checks).
     pub fn pop_wait_timeout(&self, timeout: Duration) -> Result<Option<CapturedAudio>, ()> {
         let mut guard = match self.inner.lock() {
             Ok(guard) => guard,
@@ -109,7 +94,6 @@ impl CaptureBuffer {
             if wait_result.timed_out() {
                 return Ok(None);
             }
-            // Spurious wake-up: loop and wait again using the same timeout window.
         }
     }
 
@@ -123,8 +107,7 @@ impl CaptureBuffer {
     }
 }
 
-/// Spawn the Virtual sink in a background thread.
-/// Persists for the lifetime of the application.
+/// Spawn the virtual sink in a background thread.
 pub fn run() {
     ensure_capture_buffer();
 
@@ -162,7 +145,6 @@ struct VirtualSinkState {
 }
 
 impl VirtualSinkState {
-    /// Construct a new state using the requested channel count and sample rate.
     fn new(channels: u32, sample_rate: u32) -> Self {
         let default_format = spa::param::audio::AudioFormat::F32LE;
         let sample_bytes = bytes_per_sample(default_format).unwrap_or(std::mem::size_of::<f32>());
@@ -175,7 +157,6 @@ impl VirtualSinkState {
         }
     }
 
-    /// Update the cached values based on the negotiated PipeWire audio info.
     fn update_from_info(&mut self, info: &spa::param::audio::AudioInfoRaw) {
         self.channels = info.channels().max(1);
         self.sample_rate = info.rate();
@@ -276,7 +257,6 @@ fn run_virtual_sink() -> Result<(), Box<dyn Error + Send + Sync>> {
                 *chunk_mut.size_mut() = used as u32;
                 *chunk_mut.stride_mut() = state.frame_bytes as i32;
             }
-            // Buffer is returned to PipeWire when it drops; keep scope tight so this happens promptly.
             drop(buffer);
         })
         .register()?;

@@ -4,9 +4,7 @@
 #[derive(Debug, Clone, Copy)]
 pub struct StereometerConfig {
     pub sample_rate: f32,
-    /// Window length in seconds for correlation analysis.
     pub correlation_window: f32,
-    /// Decay factor applied to previous XY traces (0.0-1.0).
     pub persistence: f32,
 }
 
@@ -23,9 +21,7 @@ impl Default for StereometerConfig {
 /// Snapshot containing the latest stereometer data.
 #[derive(Debug, Clone)]
 pub struct StereometerSnapshot {
-    /// XY points representing the L/R vectorscope trace.
     pub xy_points: Vec<(f32, f32)>,
-    /// Correlation coefficient computed over the recent window.
     pub correlation: Correlation,
 }
 

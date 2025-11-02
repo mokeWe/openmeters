@@ -1,4 +1,4 @@
-//! PipeWire registry observer service for OpenMeters.
+//! PipeWire registry observer service.
 
 use crate::util::dict_to_map;
 use crate::util::pipewire::{
@@ -24,11 +24,6 @@ use tracing::{error, info, warn};
 const REGISTRY_THREAD_NAME: &str = "openmeters-pw-registry";
 
 static RUNTIME: OnceLock<RegistryRuntime> = OnceLock::new();
-/// Ensure the PipeWire registry observer is running and return a handle to it.
-///
-/// The first caller spins up the background registry thread that keeps an
-/// in-memory mirror of PipeWire nodes, devices, and metadata. Subsequent calls
-/// simply clone the runtime state so new consumers can subscribe to snapshots.
 pub fn spawn_registry() -> Result<AudioRegistryHandle> {
     if let Some(runtime) = RUNTIME.get() {
         return Ok(AudioRegistryHandle {

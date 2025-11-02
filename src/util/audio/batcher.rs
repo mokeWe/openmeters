@@ -1,7 +1,5 @@
 const MAX_RECYCLED_BUFFERS: usize = 4;
 
-/// Batches small PCM chunks into larger buffers to reduce channel overhead
-/// while reusing allocated memory.
 #[derive(Default)]
 pub struct SampleBatcher {
     target_samples: usize,

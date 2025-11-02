@@ -1,4 +1,4 @@
-//! Spectrum analyser DSP scaffolding.
+//! Spectrum analyser DSP.
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::dsp::spectrogram::{FrequencyScale, WindowKind};
@@ -38,7 +38,6 @@ pub struct SpectrumSnapshot {
 pub struct SpectrumConfig {
     pub sample_rate: f32,
     pub fft_size: usize,
-    /// Hop size between successive FFT evaluations.
     pub hop_size: usize,
     pub window: WindowKind,
     pub averaging: AveragingMode,
@@ -70,7 +69,6 @@ impl Default for SpectrumConfig {
 }
 
 impl SpectrumConfig {
-    /// Ensures the configuration respects runtime invariants and sane defaults.
     pub fn normalize(&mut self) {
         if !self.sample_rate.is_finite() || self.sample_rate <= 0.0 {
             self.sample_rate = DEFAULT_SAMPLE_RATE;
@@ -87,7 +85,6 @@ impl SpectrumConfig {
         self.averaging = self.averaging.normalized();
     }
 
-    /// Returns a normalized copy of this configuration.
     pub fn normalized(mut self) -> Self {
         self.normalize();
         self
