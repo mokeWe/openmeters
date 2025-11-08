@@ -51,6 +51,10 @@ pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 2] = [
     Color::from_rgb(0.529, 0.549, 0.584), // right channel - same
 ];
 
+pub const DEFAULT_STEREOMETER_PALETTE: [Color; 1] = [
+    Color::from_rgb(0.529, 0.549, 0.584), // XY trace - primary accent
+];
+
 pub fn theme() -> Theme {
     Theme::custom_with_fn(
         "OpenMeters Monochrome".to_string(),

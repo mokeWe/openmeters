@@ -1,12 +1,12 @@
-//! UI wrapper around the oscilloscope DSP processor and renderer.
+//! UI wrapper around the stereometer DSP processor and renderer.
 
 use crate::audio::meter_tap::MeterFormat;
-use crate::dsp::oscilloscope::{
-    OscilloscopeConfig, OscilloscopeProcessor as CoreOscilloscopeProcessor, OscilloscopeSnapshot,
+use crate::dsp::stereometer::{
+    StereometerConfig, StereometerProcessor as CoreStereometerProcessor, StereometerSnapshot,
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
-use crate::ui::render::oscilloscope::{OscilloscopeParams, OscilloscopePrimitive};
-use crate::ui::settings::OscilloscopeSettings;
+use crate::ui::render::stereometer::{StereometerParams, StereometerPrimitive};
+use crate::ui::settings::StereometerSettings;
 use crate::ui::theme;
 use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
@@ -24,21 +24,21 @@ fn next_instance_id() -> u64 {
 }
 
 #[derive(Debug, Clone)]
-pub struct OscilloscopeProcessor {
-    inner: CoreOscilloscopeProcessor,
+pub struct StereometerProcessor {
+    inner: CoreStereometerProcessor,
 }
 
-impl OscilloscopeProcessor {
+impl StereometerProcessor {
     pub fn new(sample_rate: f32) -> Self {
         Self {
-            inner: CoreOscilloscopeProcessor::new(OscilloscopeConfig {
+            inner: CoreStereometerProcessor::new(StereometerConfig {
                 sample_rate,
                 ..Default::default()
             }),
         }
     }
 
-    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> OscilloscopeSnapshot {
+    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> StereometerSnapshot {
         if samples.is_empty() {
             return self.inner.snapshot().clone();
         }
@@ -58,80 +58,78 @@ impl OscilloscopeProcessor {
         }
     }
 
-    pub fn update_config(&mut self, config: OscilloscopeConfig) {
+    pub fn update_config(&mut self, config: StereometerConfig) {
         self.inner.update_config(config);
     }
 
-    pub fn config(&self) -> OscilloscopeConfig {
+    pub fn config(&self) -> StereometerConfig {
         self.inner.config()
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct OscilloscopeState {
-    snapshot: OscilloscopeSnapshot,
-    style: OscilloscopeStyle,
-    display_samples: Vec<f32>,
+pub struct StereometerState {
+    snapshot: StereometerSnapshot,
+    style: StereometerStyle,
+    display_points: Vec<(f32, f32)>,
     fade_alpha: f32,
     persistence: f32,
     instance_id: u64,
 }
 
-impl OscilloscopeState {
+impl StereometerState {
     pub fn new() -> Self {
         Self {
-            snapshot: OscilloscopeSnapshot::default(),
-            style: OscilloscopeStyle::default(),
-            display_samples: Vec::new(),
+            snapshot: StereometerSnapshot::default(),
+            style: StereometerStyle::default(),
+            display_points: Vec::new(),
             fade_alpha: 1.0,
-            persistence: 0.1,
+            persistence: 0.85,
             instance_id: next_instance_id(),
         }
     }
 
-    pub fn update_view_settings(&mut self, settings: &OscilloscopeSettings) {
-        self.persistence = settings.persistence.clamp(0.0, 1.0);
+    pub fn update_view_settings(&mut self, settings: &StereometerSettings) {
+        self.persistence = settings.persistence.clamp(0.0, 0.9);
         self.recompute_fade_alpha();
     }
 
     pub fn set_palette(&mut self, palette: &[Color]) {
-        self.style.channel_colors.clear();
-        self.style.channel_colors.extend_from_slice(palette);
+        self.style.trace_color = palette.first().copied().unwrap_or(theme::accent_primary());
     }
 
     pub fn palette(&self) -> &[Color] {
-        &self.style.channel_colors
+        std::slice::from_ref(&self.style.trace_color)
     }
 
-    pub fn apply_snapshot(&mut self, snapshot: &OscilloscopeSnapshot) {
-        if snapshot.samples.is_empty() {
+    pub fn apply_snapshot(&mut self, snapshot: &StereometerSnapshot) {
+        if snapshot.xy_points.is_empty() {
             self.snapshot = snapshot.clone();
-            self.display_samples.clear();
+            self.display_points.clear();
             self.fade_alpha = 1.0_f32;
             return;
         }
 
-        let total_samples = snapshot.samples.len();
-        if self.display_samples.len() != total_samples {
-            self.display_samples.resize(total_samples, 0.0_f32);
+        let total_points = snapshot.xy_points.len();
+        if self.display_points.len() != total_points {
+            self.display_points.resize(total_points, (0.0, 0.0));
         }
 
-        let persistence = self.effective_persistence();
+        let persistence = self.persistence.clamp(0.0, 0.9);
         if persistence <= f32::EPSILON {
-            self.display_samples.copy_from_slice(&snapshot.samples);
+            self.display_points.copy_from_slice(&snapshot.xy_points);
         } else {
             let fresh = 1.0_f32 - persistence;
-            for (current, incoming) in self.display_samples.iter_mut().zip(snapshot.samples.iter())
+            for (current, incoming) in self.display_points.iter_mut().zip(snapshot.xy_points.iter())
             {
-                *current = (*current * persistence) + (*incoming * fresh);
+                current.0 = (current.0 * persistence) + (incoming.0 * fresh);
+                current.1 = (current.1 * persistence) + (incoming.1 * fresh);
             }
         }
 
         self.snapshot = snapshot.clone();
-        self.snapshot.samples.clear();
-        self.snapshot
-            .samples
-            .extend_from_slice(&self.display_samples);
+        self.snapshot.xy_points.clear();
+        self.snapshot.xy_points.extend_from_slice(&self.display_points);
         self.recompute_fade_alpha();
     }
 
@@ -139,43 +137,27 @@ impl OscilloscopeState {
         self.persistence
     }
 
-    fn effective_persistence(&self) -> f32 {
-        self.persistence.clamp(0.0, 0.98)
-    }
-
     fn recompute_fade_alpha(&mut self) {
-        if self.snapshot.samples.is_empty() {
+        if self.snapshot.xy_points.is_empty() {
             self.fade_alpha = 1.0_f32;
             return;
         }
 
-        let persistence = self.effective_persistence();
+        let persistence = self.persistence.clamp(0.0, 0.9);
         let fade = (1.0_f32 - persistence).max(0.0_f32);
         self.fade_alpha = fade.sqrt().clamp(0.05_f32, 1.0_f32);
     }
 
-    fn visual_params(&self, bounds: Rectangle) -> OscilloscopeParams {
-        let channels = self.snapshot.channels.max(1);
-        let colors = self
-            .style
-            .channel_colors
-            .iter()
-            .cycle()
-            .take(channels)
-            .map(|c| theme::color_to_rgba(*c))
-            .collect();
+    fn visual_params(&self, bounds: Rectangle) -> StereometerParams {
+        let color = theme::color_to_rgba(self.style.trace_color);
 
-        OscilloscopeParams {
+        StereometerParams {
             instance_id: self.instance_id,
             bounds,
-            channels,
-            samples_per_channel: self.snapshot.samples_per_channel,
-            samples: self.snapshot.samples.clone(),
-            colors,
+            xy_points: self.snapshot.xy_points.clone(),
+            color,
             line_alpha: self.style.line_alpha,
             fade_alpha: self.fade_alpha,
-            vertical_padding: self.style.vertical_padding,
-            channel_gap: self.style.channel_gap,
             amplitude_scale: self.style.amplitude_scale,
             stroke_width: self.style.stroke_width,
         }
@@ -183,24 +165,20 @@ impl OscilloscopeState {
 }
 
 #[derive(Debug, Clone)]
-pub struct OscilloscopeStyle {
+pub struct StereometerStyle {
     pub background: Color,
-    pub channel_colors: Vec<Color>,
+    pub trace_color: Color,
     pub line_alpha: f32,
-    pub vertical_padding: f32,
-    pub channel_gap: f32,
     pub amplitude_scale: f32,
     pub stroke_width: f32,
 }
 
-impl Default for OscilloscopeStyle {
+impl Default for StereometerStyle {
     fn default() -> Self {
         Self {
             background: theme::base_color(),
-            channel_colors: theme::DEFAULT_OSCILLOSCOPE_PALETTE.to_vec(),
+            trace_color: theme::DEFAULT_STEREOMETER_PALETTE[0],
             line_alpha: 0.92,
-            vertical_padding: 8.0,
-            channel_gap: 12.0,
             amplitude_scale: 0.9,
             stroke_width: 1.0,
         }
@@ -208,17 +186,17 @@ impl Default for OscilloscopeStyle {
 }
 
 #[derive(Debug)]
-pub struct Oscilloscope<'a> {
-    state: &'a OscilloscopeState,
+pub struct Stereometer<'a> {
+    state: &'a StereometerState,
 }
 
-impl<'a> Oscilloscope<'a> {
-    pub fn new(state: &'a OscilloscopeState) -> Self {
+impl<'a> Stereometer<'a> {
+    pub fn new(state: &'a StereometerState) -> Self {
         Self { state }
     }
 }
 
-impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Oscilloscope<'a> {
+impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Stereometer<'a> {
     fn tag(&self) -> tree::Tag {
         tree::Tag::stateless()
     }
@@ -279,7 +257,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Oscilloscope<
             );
         }
 
-        renderer.draw_primitive(bounds, OscilloscopePrimitive::new(params));
+        renderer.draw_primitive(bounds, StereometerPrimitive::new(params));
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -289,9 +267,9 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Oscilloscope<
     fn diff(&self, _tree: &mut Tree) {}
 }
 
-pub fn widget<'a, Message>(state: &'a OscilloscopeState) -> Element<'a, Message>
+pub fn widget<'a, Message>(state: &'a StereometerState) -> Element<'a, Message>
 where
     Message: 'a,
 {
-    Element::new(Oscilloscope::new(state))
+    Element::new(Stereometer::new(state))
 }

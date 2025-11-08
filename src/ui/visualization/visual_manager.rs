@@ -6,13 +6,14 @@ use crate::dsp::waveform::{MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY};
 use crate::ui::render::spectrogram::SPECTROGRAM_PALETTE_SIZE;
 use crate::ui::settings::{
     LoudnessSettings, ModuleSettings, OscilloscopeSettings, PaletteSettings, SpectrogramSettings,
-    SpectrumSettings, VisualSettings, WaveformSettings,
+    SpectrumSettings, StereometerSettings, VisualSettings, WaveformSettings,
 };
 use crate::ui::theme;
 use crate::ui::visualization::loudness::{LoudnessMeterProcessor, LoudnessMeterState};
 use crate::ui::visualization::oscilloscope::{OscilloscopeProcessor, OscilloscopeState};
 use crate::ui::visualization::spectrogram::{SpectrogramProcessor, SpectrogramState};
 use crate::ui::visualization::spectrum::{SpectrumProcessor, SpectrumState};
+use crate::ui::visualization::stereometer::{StereometerProcessor, StereometerState};
 use crate::ui::visualization::waveform::{WaveformProcessor as WaveformUiProcessor, WaveformState};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use serde::de::{self, Deserializer};
@@ -31,6 +32,7 @@ impl VisualKind {
     pub const OSCILLOSCOPE: Self = Self("oscilloscope");
     pub const SPECTROGRAM: Self = Self("spectrogram");
     pub const SPECTRUM: Self = Self("spectrum");
+    pub const STEREOMETER: Self = Self("stereometer");
     pub const WAVEFORM: Self = Self("waveform");
 }
 
@@ -54,6 +56,7 @@ impl<'de> Deserialize<'de> for VisualKind {
             "oscilloscope" => Ok(Self::OSCILLOSCOPE),
             "spectrogram" => Ok(Self::SPECTROGRAM),
             "spectrum" => Ok(Self::SPECTRUM),
+            "stereometer" => Ok(Self::STEREOMETER),
             "waveform" => Ok(Self::WAVEFORM),
             _ => Err(de::Error::unknown_variant(
                 &token,
@@ -62,6 +65,7 @@ impl<'de> Deserialize<'de> for VisualKind {
                     "oscilloscope",
                     "spectrogram",
                     "spectrum",
+                    "stereometer",
                     "waveform",
                 ],
             )),
@@ -115,6 +119,7 @@ pub enum VisualContent {
     Oscilloscope { state: OscilloscopeState },
     Spectrogram { state: Box<SpectrogramState> },
     Spectrum { state: SpectrumState },
+    Stereometer { state: StereometerState },
     Waveform { state: Box<WaveformState> },
 }
 
@@ -230,10 +235,25 @@ const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
         default_enabled: false,
         build: build_module::<SpectrumVisual>,
     },
+    VisualDescriptor {
+        kind: VisualKind::STEREOMETER,
+        metadata: VisualMetadata {
+            display_name: "Stereometer",
+            preferred_width: 220.0,
+            preferred_height: 220.0,
+            fill_horizontal: true,
+            fill_vertical: true,
+            min_width: 160.0,
+            max_width: f32::INFINITY,
+        },
+        default_enabled: false,
+        build: build_module::<StereometerVisual>,
+    },
 ];
 
 const WAVEFORM_PALETTE_SIZE: usize = theme::DEFAULT_WAVEFORM_PALETTE.len();
 const OSCILLOSCOPE_PALETTE_SIZE: usize = theme::DEFAULT_OSCILLOSCOPE_PALETTE.len();
+const STEREOMETER_PALETTE_SIZE: usize = theme::DEFAULT_STEREOMETER_PALETTE.len();
 
 fn build_module<M>() -> Box<dyn VisualModule>
 where
@@ -332,12 +352,9 @@ impl VisualModule for OscilloscopeVisual {
 
     fn export_settings(&self) -> Option<ModuleSettings> {
         let mut settings = ModuleSettings::default();
-        let (persistence, mode) = self.state.view_settings();
-        let mut snapshot = OscilloscopeSettings::from_config_with_view(
-            &self.processor.config(),
-            persistence,
-            mode,
-        );
+        let persistence = self.state.view_settings();
+        let mut snapshot = OscilloscopeSettings::from_config(&self.processor.config());
+        snapshot.persistence = persistence;
         snapshot.palette = PaletteSettings::maybe_from_colors(
             self.state.palette(),
             &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
@@ -524,6 +541,67 @@ impl VisualModule for SpectrumVisual {
         spectrum_settings.palette =
             PaletteSettings::maybe_from_colors(&palette, &theme::DEFAULT_SPECTRUM_PALETTE);
         settings.set_spectrum(spectrum_settings);
+        Some(settings)
+    }
+}
+
+struct StereometerVisual {
+    processor: StereometerProcessor,
+    state: StereometerState,
+}
+
+impl Default for StereometerVisual {
+    fn default() -> Self {
+        Self {
+            processor: StereometerProcessor::new(DEFAULT_SAMPLE_RATE),
+            state: StereometerState::new(),
+        }
+    }
+}
+
+impl VisualModule for StereometerVisual {
+    fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
+        let snapshot = self.processor.ingest(samples, format);
+        self.state.apply_snapshot(&snapshot);
+    }
+
+    fn content(&self) -> VisualContent {
+        VisualContent::Stereometer {
+            state: self.state.clone(),
+        }
+    }
+
+    fn apply_settings(&mut self, settings: &ModuleSettings) {
+        if let Some(stored) = settings.stereometer() {
+            let mut config = self.processor.config();
+            stored.apply_to(&mut config);
+            self.processor.update_config(config);
+            self.state.update_view_settings(stored);
+
+            if let Some(palette) = stored
+                .palette
+                .as_ref()
+                .and_then(|p| p.to_array::<STEREOMETER_PALETTE_SIZE>())
+            {
+                self.state.set_palette(&palette);
+            } else {
+                self.state.set_palette(&theme::DEFAULT_STEREOMETER_PALETTE);
+            }
+        }
+    }
+
+    fn export_settings(&self) -> Option<ModuleSettings> {
+        let mut settings = ModuleSettings::default();
+        let persistence = self.state.view_settings();
+        let mut snapshot = StereometerSettings::from_config_with_view(
+            &self.processor.config(),
+            persistence,
+        );
+        snapshot.palette = PaletteSettings::maybe_from_colors(
+            self.state.palette(),
+            &theme::DEFAULT_STEREOMETER_PALETTE,
+        );
+        settings.set_stereometer(snapshot);
         Some(settings)
     }
 }

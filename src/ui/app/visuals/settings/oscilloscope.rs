@@ -3,9 +3,8 @@ use super::widgets::{SliderRange, labeled_slider, set_f32};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::ui::settings::{ModuleSettings, OscilloscopeSettings, SettingsHandle};
 use crate::ui::theme;
-use crate::ui::visualization::oscilloscope::DisplayMode;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
-use iced::widget::{column, pick_list, row, slider, text, toggler};
+use iced::widget::{column, row, slider, text, toggler};
 use iced::{Element, Length};
 
 #[derive(Debug)]
@@ -21,7 +20,6 @@ pub enum Message {
     TriggerLevel(f32),
     Persistence(f32),
     TriggerMode(bool),
-    DisplayMode(DisplayMode),
     Palette(PaletteEvent),
 }
 
@@ -61,15 +59,6 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
         };
 
         column![
-            column![
-                text("Display mode"),
-                pick_list(
-                    DisplayMode::ALL.to_vec(),
-                    Some(self.settings.display_mode),
-                    |mode| { SettingsMessage::Oscilloscope(Message::DisplayMode(mode)) }
-                )
-            ]
-            .spacing(8),
             labeled_slider(
                 "Segment duration",
                 self.settings.segment_duration,
@@ -139,14 +128,6 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             Message::TriggerMode(rising) => {
                 if self.settings.trigger_rising != *rising {
                     self.settings.trigger_rising = *rising;
-                    true
-                } else {
-                    false
-                }
-            }
-            Message::DisplayMode(mode) => {
-                if self.settings.display_mode != *mode {
-                    self.settings.display_mode = *mode;
                     true
                 } else {
                     false

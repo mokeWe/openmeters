@@ -3,10 +3,10 @@
 use crate::dsp::oscilloscope::OscilloscopeConfig;
 use crate::dsp::spectrogram::{FrequencyScale, SpectrogramConfig, WindowKind};
 use crate::dsp::spectrum::SpectrumConfig;
+use crate::dsp::stereometer::StereometerConfig;
 use crate::dsp::waveform::{DownsampleStrategy, WaveformConfig};
 use crate::ui::theme;
 use crate::ui::visualization::loudness::MeterMode;
-use crate::ui::visualization::oscilloscope::DisplayMode;
 use crate::ui::visualization::visual_manager::VisualKind;
 use iced::Color;
 use serde::de::{self, Deserializer};
@@ -74,6 +74,10 @@ impl ModuleSettings {
         self.config = Some(config.into());
     }
 
+    pub fn set_stereometer(&mut self, config: StereometerSettings) {
+        self.config = Some(config.into());
+    }
+
     pub fn spectrogram(&self) -> Option<&SpectrogramSettings> {
         self.config.as_ref().and_then(StoredConfig::as_spectrogram)
     }
@@ -92,6 +96,10 @@ impl ModuleSettings {
 
     pub fn loudness(&self) -> Option<&LoudnessSettings> {
         self.config.as_ref().and_then(StoredConfig::as_loudness)
+    }
+
+    pub fn stereometer(&self) -> Option<&StereometerSettings> {
+        self.config.as_ref().and_then(StoredConfig::as_stereometer)
     }
 
     pub fn with_spectrogram_settings(settings: &SpectrogramSettings) -> Self {
@@ -129,6 +137,13 @@ impl ModuleSettings {
         }
     }
 
+    pub fn with_stereometer_settings(settings: &StereometerSettings) -> Self {
+        Self {
+            config: Some(settings.clone().into()),
+            ..Default::default()
+        }
+    }
+
     pub fn retain_only(&mut self, kind: VisualKind) {
         let is_configurable = matches!(
             kind,
@@ -137,6 +152,7 @@ impl ModuleSettings {
                 | VisualKind::OSCILLOSCOPE
                 | VisualKind::WAVEFORM
                 | VisualKind::LOUDNESS
+                | VisualKind::STEREOMETER
         );
 
         if !is_configurable || self.config.as_ref().is_some_and(|cfg| cfg.kind() != kind) {
@@ -153,6 +169,7 @@ enum StoredConfig {
     Oscilloscope(OscilloscopeSettings),
     Waveform(WaveformSettings),
     Loudness(LoudnessSettings),
+    Stereometer(StereometerSettings),
 }
 
 impl StoredConfig {
@@ -163,6 +180,7 @@ impl StoredConfig {
             StoredConfig::Oscilloscope(_) => VisualKind::OSCILLOSCOPE,
             StoredConfig::Waveform(_) => VisualKind::WAVEFORM,
             StoredConfig::Loudness(_) => VisualKind::LOUDNESS,
+            StoredConfig::Stereometer(_) => VisualKind::STEREOMETER,
         }
     }
 
@@ -204,6 +222,13 @@ impl StoredConfig {
             _ => None,
         }
     }
+
+    fn as_stereometer(&self) -> Option<&StereometerSettings> {
+        match self {
+            StoredConfig::Stereometer(cfg) => Some(cfg),
+            _ => None,
+        }
+    }
 }
 
 impl From<SpectrogramSettings> for StoredConfig {
@@ -233,6 +258,12 @@ impl From<WaveformSettings> for StoredConfig {
 impl From<LoudnessSettings> for StoredConfig {
     fn from(settings: LoudnessSettings) -> Self {
         StoredConfig::Loudness(settings)
+    }
+}
+
+impl From<StereometerSettings> for StoredConfig {
+    fn from(settings: StereometerSettings) -> Self {
+        StoredConfig::Stereometer(settings)
     }
 }
 
@@ -357,8 +388,6 @@ pub struct OscilloscopeSettings {
     pub target_sample_count: usize,
     pub persistence: f32,
     #[serde(default)]
-    pub display_mode: DisplayMode,
-    #[serde(default)]
     pub palette: Option<PaletteSettings>,
 }
 
@@ -370,21 +399,12 @@ impl Default for OscilloscopeSettings {
 
 impl OscilloscopeSettings {
     pub fn from_config(config: &OscilloscopeConfig) -> Self {
-        Self::from_config_with_view(config, 0.85, DisplayMode::default())
-    }
-
-    pub fn from_config_with_view(
-        config: &OscilloscopeConfig,
-        persistence: f32,
-        display_mode: DisplayMode,
-    ) -> Self {
         Self {
             segment_duration: config.segment_duration,
             trigger_level: config.trigger_level,
             trigger_rising: config.trigger_rising,
             target_sample_count: config.target_sample_count,
-            persistence,
-            display_mode,
+            persistence: 0.85,
             palette: None,
         }
     }
@@ -499,6 +519,42 @@ impl LoudnessSettings {
 impl Default for LoudnessSettings {
     fn default() -> Self {
         Self::new(MeterMode::TruePeak, MeterMode::LufsShortTerm)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StereometerSettings {
+    pub segment_duration: f32,
+    pub target_sample_count: usize,
+    pub persistence: f32,
+    #[serde(default)]
+    pub palette: Option<PaletteSettings>,
+}
+
+impl Default for StereometerSettings {
+    fn default() -> Self {
+        Self::from_config(&StereometerConfig::default())
+    }
+}
+
+impl StereometerSettings {
+    pub fn from_config(config: &StereometerConfig) -> Self {
+        Self::from_config_with_view(config, 0.85)
+    }
+
+    pub fn from_config_with_view(config: &StereometerConfig, persistence: f32) -> Self {
+        Self {
+            segment_duration: config.segment_duration,
+            target_sample_count: config.target_sample_count,
+            persistence,
+            palette: None,
+        }
+    }
+
+    pub fn apply_to(&self, config: &mut StereometerConfig) {
+        config.segment_duration = self.segment_duration;
+        config.target_sample_count = self.target_sample_count;
     }
 }
 
@@ -659,6 +715,11 @@ impl SettingsManager {
     pub fn set_loudness_settings(&mut self, kind: VisualKind, settings: LoudnessSettings) {
         let entry = self.data.visuals.modules.entry(kind).or_default();
         entry.set_loudness(settings);
+    }
+
+    pub fn set_stereometer_settings(&mut self, kind: VisualKind, settings: &StereometerSettings) {
+        let entry = self.data.visuals.modules.entry(kind).or_default();
+        entry.set_stereometer(settings.clone());
     }
 
     pub fn set_visual_order(&mut self, order: &[VisualKind]) {

@@ -12,28 +12,24 @@ use crate::ui::render::common::{
 use crate::ui::render::geometry::compute_normals;
 
 #[derive(Debug, Clone)]
-pub struct OscilloscopeParams {
+pub struct StereometerParams {
     pub instance_id: u64,
     pub bounds: Rectangle,
-    pub channels: usize,
-    pub samples_per_channel: usize,
-    pub samples: Vec<f32>,
-    pub colors: Vec<[f32; 4]>,
+    pub xy_points: Vec<(f32, f32)>,
+    pub color: [f32; 4],
     pub line_alpha: f32,
     pub fade_alpha: f32,
-    pub vertical_padding: f32,
-    pub channel_gap: f32,
     pub amplitude_scale: f32,
     pub stroke_width: f32,
 }
 
 #[derive(Debug)]
-pub struct OscilloscopePrimitive {
-    params: OscilloscopeParams,
+pub struct StereometerPrimitive {
+    params: StereometerParams,
 }
 
-impl OscilloscopePrimitive {
-    pub fn new(params: OscilloscopeParams) -> Self {
+impl StereometerPrimitive {
+    pub fn new(params: StereometerParams) -> Self {
         Self { params }
     }
 
@@ -42,86 +38,44 @@ impl OscilloscopePrimitive {
     }
 
     fn build_vertices(&self, viewport: &Viewport) -> Vec<Vertex> {
-        let samples_per_channel = self.params.samples_per_channel;
-        let channels = self.params.channels.max(1);
-
-        if samples_per_channel < 2 || self.params.samples.len() < channels * samples_per_channel {
+        if self.params.xy_points.len() < 2 {
             return Vec::new();
         }
 
-        self.build_lr_vertices(viewport, samples_per_channel, channels)
-    }
-
-    fn build_lr_vertices(
-        &self,
-        viewport: &Viewport,
-        samples_per_channel: usize,
-        channels: usize,
-    ) -> Vec<Vertex> {
         let bounds = self.params.bounds;
         let clip = ClipTransform::from_viewport(viewport);
 
-        let vertical_padding = self.params.vertical_padding.max(0.0);
-        let channel_gap = self.params.channel_gap.max(0.0);
-        let usable_height = (bounds.height
-            - vertical_padding * 2.0
-            - channel_gap * (channels.saturating_sub(1) as f32))
-            .max(1.0);
-        let channel_height = usable_height / channels as f32;
-        let amplitude_scale = channel_height * 0.5 * self.params.amplitude_scale.max(0.01);
-        let step = bounds.width.max(1.0) / (samples_per_channel.saturating_sub(1) as f32).max(1.0);
+        let center_x = bounds.x + bounds.width * 0.5;
+        let center_y = bounds.y + bounds.height * 0.5;
+        let scale = 0.9 * self.params.amplitude_scale.max(0.01);
+        let scale_x = bounds.width * 0.5 * scale;
+        let scale_y = bounds.height * 0.5 * scale;
 
+        let color = [
+            self.params.color[0],
+            self.params.color[1],
+            self.params.color[2],
+            self.params.line_alpha,
+        ];
+
+        let positions: Vec<_> = self
+            .params
+            .xy_points
+            .iter()
+            .map(|(x, y)| {
+                (
+                    center_x + x.clamp(-1.0, 1.0) * scale_x,
+                    center_y - y.clamp(-1.0, 1.0) * scale_y,
+                )
+            })
+            .collect();
+
+        let normals = compute_normals(&positions);
         let half = self.params.stroke_width.max(0.1) * 0.5;
         let feather = 1.0f32;
         let outer = half + feather;
 
-        let mut vertices = Vec::with_capacity(samples_per_channel * 2 * channels);
-        let mut previous_last: Option<Vertex> = None;
-
-        for (channel, channel_samples) in self
-            .params
-            .samples
-            .chunks_exact(samples_per_channel)
-            .take(channels)
-            .enumerate()
-        {
-            let color = self
-                .params
-                .colors
-                .get(channel)
-                .copied()
-                .unwrap_or([0.6, 0.8, 0.9, 1.0]);
-            let color = [color[0], color[1], color[2], self.params.line_alpha];
-            let center = bounds.y
-                + vertical_padding
-                + channel as f32 * (channel_height + channel_gap)
-                + channel_height * 0.5;
-
-            let positions: Vec<_> = channel_samples
-                .iter()
-                .enumerate()
-                .map(|(i, s)| {
-                    (
-                        bounds.x + i as f32 * step,
-                        center - s.clamp(-1.0, 1.0) * amplitude_scale,
-                    )
-                })
-                .collect();
-
-            let normals = compute_normals(&positions);
-            let channel_vertices =
-                build_line_strip(&positions, &normals, color, outer, half, feather, &clip);
-
-            if let (Some(last), Some(first)) = (previous_last, channel_vertices.first().cloned()) {
-                vertices.push(last);
-                vertices.push(first);
-            }
-
-            previous_last = channel_vertices.last().cloned();
-            vertices.extend(channel_vertices);
-        }
-
-        vertices
+        build_line_strip(&positions, &normals, color, outer, half, feather, &clip)
     }
 }
 
@@ -152,7 +106,7 @@ fn build_line_strip(
     vertices
 }
 
-impl Primitive for OscilloscopePrimitive {
+impl Primitive for StereometerPrimitive {
     fn prepare(
         &self,
         device: &wgpu::Device,
@@ -194,7 +148,7 @@ impl Primitive for OscilloscopePrimitive {
         }
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Oscilloscope pass"),
+            label: Some("Stereometer pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 resolve_target: None,
@@ -260,7 +214,7 @@ impl Vertex {
     }
 }
 
-const VERTEX_LABEL: &str = "Oscilloscope vertex buffer";
+const VERTEX_LABEL: &str = "Stereometer vertex buffer";
 
 #[derive(Debug)]
 struct Pipeline {
@@ -279,18 +233,18 @@ impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = create_shader_module(
             device,
-            "Oscilloscope shader",
-            include_str!("shaders/oscilloscope.wgsl"),
+            "Stereometer shader",
+            include_str!("shaders/stereometer.wgsl"),
         );
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Oscilloscope pipeline layout"),
+            label: Some("Stereometer pipeline layout"),
             bind_group_layouts: &[],
             push_constant_ranges: &[],
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Oscilloscope pipeline"),
+            label: Some("Stereometer pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,

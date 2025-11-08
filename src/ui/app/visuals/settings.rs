@@ -6,6 +6,7 @@ mod oscilloscope;
 mod palette;
 mod spectrogram;
 mod spectrum;
+mod stereometer;
 mod waveform;
 mod widgets;
 
@@ -20,6 +21,7 @@ pub enum SettingsMessage {
     Oscilloscope(oscilloscope::Message),
     Spectrogram(spectrogram::Message),
     Spectrum(spectrum::Message),
+    Stereometer(stereometer::Message),
     Waveform(waveform::Message),
 }
 
@@ -39,6 +41,7 @@ const LOUDNESS_SETTINGS_SIZE: Size = Size::new(360.0, 180.0);
 const OSCILLOSCOPE_SETTINGS_SIZE: Size = Size::new(420.0, 720.0);
 const SPECTROGRAM_SETTINGS_SIZE: Size = Size::new(560.0, 880.0);
 const SPECTRUM_SETTINGS_SIZE: Size = Size::new(420.0, 720.0);
+const STEREOMETER_SETTINGS_SIZE: Size = Size::new(400.0, 500.0);
 const WAVEFORM_SETTINGS_SIZE: Size = Size::new(500.0, 400.0);
 
 #[derive(Debug)]
@@ -112,6 +115,7 @@ pub fn create_panel(
         VisualKind::OSCILLOSCOPE => Box::new(oscilloscope::create(visual_id, visual_manager)),
         VisualKind::SPECTROGRAM => Box::new(spectrogram::create(visual_id, visual_manager)),
         VisualKind::SPECTRUM => Box::new(spectrum::create(visual_id, visual_manager)),
+        VisualKind::STEREOMETER => Box::new(stereometer::create(visual_id, visual_manager)),
         VisualKind::WAVEFORM => Box::new(waveform::create(visual_id, visual_manager)),
         _ => return ActiveSettings::unsupported(title, visual_id, kind),
     };
@@ -125,6 +129,7 @@ fn settings_size_for(kind: VisualKind) -> Size {
         VisualKind::OSCILLOSCOPE => OSCILLOSCOPE_SETTINGS_SIZE,
         VisualKind::SPECTROGRAM => SPECTROGRAM_SETTINGS_SIZE,
         VisualKind::SPECTRUM => SPECTRUM_SETTINGS_SIZE,
+        VisualKind::STEREOMETER => STEREOMETER_SETTINGS_SIZE,
         VisualKind::WAVEFORM => WAVEFORM_SETTINGS_SIZE,
         _ => DEFAULT_UNSUPPORTED_SIZE,
     }
