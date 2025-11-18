@@ -494,6 +494,10 @@ pub struct SpectrumSettings {
     pub config: SpectrumConfig,
     #[serde(default)]
     pub palette: Option<PaletteSettings>,
+    #[serde(default)]
+    pub smoothing_radius: usize,
+    #[serde(default)]
+    pub smoothing_passes: usize,
 }
 
 impl Default for SpectrumSettings {
@@ -507,6 +511,8 @@ impl SpectrumSettings {
         Self {
             config: config.normalized(),
             palette: None,
+            smoothing_radius: 0,
+            smoothing_passes: 0,
         }
     }
 

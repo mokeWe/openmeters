@@ -530,6 +530,8 @@ impl VisualModule for SpectrumVisual {
             let style = self.state.style_mut();
             style.frequency_scale = updated.frequency_scale;
             style.reverse_frequency = updated.reverse_frequency;
+            style.smoothing_radius = stored.smoothing_radius;
+            style.smoothing_passes = stored.smoothing_passes;
             self.state.update_show_grid(updated.show_grid);
             self.state.update_show_peak_label(updated.show_peak_label);
         }
@@ -541,6 +543,9 @@ impl VisualModule for SpectrumVisual {
         let palette = self.state.palette();
         spectrum_settings.palette =
             PaletteSettings::maybe_from_colors(&palette, &theme::DEFAULT_SPECTRUM_PALETTE);
+        let style = self.state.style();
+        spectrum_settings.smoothing_radius = style.smoothing_radius;
+        spectrum_settings.smoothing_passes = style.smoothing_passes;
         settings.set_spectrum(spectrum_settings);
         Some(settings)
     }

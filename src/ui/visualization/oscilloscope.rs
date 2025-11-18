@@ -167,7 +167,8 @@ impl OscilloscopeState {
         };
 
         if self.display_samples.len() != projection.samples.len() {
-            self.display_samples.resize(projection.samples.len(), 0.0_f32);
+            self.display_samples
+                .resize(projection.samples.len(), 0.0_f32);
         }
 
         if blend {
@@ -176,8 +177,10 @@ impl OscilloscopeState {
                 self.display_samples.copy_from_slice(&projection.samples);
             } else {
                 let fresh = 1.0_f32 - persistence;
-                for (current, incoming) in
-                    self.display_samples.iter_mut().zip(projection.samples.iter())
+                for (current, incoming) in self
+                    .display_samples
+                    .iter_mut()
+                    .zip(projection.samples.iter())
                 {
                     *current = (*current * persistence) + (*incoming * fresh);
                 }
@@ -195,10 +198,7 @@ impl OscilloscopeState {
         self.recompute_fade_alpha();
     }
 
-    fn project_samples(
-        &self,
-        source: &OscilloscopeSnapshot,
-    ) -> Option<Projection> {
+    fn project_samples(&self, source: &OscilloscopeSnapshot) -> Option<Projection> {
         let channels = source.channels.max(1);
         let samples_per_channel = source.samples_per_channel;
         if samples_per_channel == 0 || source.samples.len() < samples_per_channel {

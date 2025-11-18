@@ -169,8 +169,8 @@ impl Default for SpectrumStyle {
             line_thickness: 1.0,
             unweighted_line_color: theme::with_alpha(theme::text_secondary(), 0.3),
             unweighted_line_thickness: 1.6,
-            smoothing_radius: 2,
-            smoothing_passes: 2,
+            smoothing_radius: 0,
+            smoothing_passes: 0,
             highlight_threshold: 0.45,
             spectrum_palette: theme::DEFAULT_SPECTRUM_PALETTE,
             frequency_scale: FrequencyScale::Logarithmic,
@@ -283,6 +283,10 @@ impl SpectrumState {
             peak_label: None,
             grid_lines: Arc::new(Vec::new()),
         }
+    }
+
+    pub fn style(&self) -> &SpectrumStyle {
+        &self.style
     }
 
     pub fn style_mut(&mut self) -> &mut SpectrumStyle {

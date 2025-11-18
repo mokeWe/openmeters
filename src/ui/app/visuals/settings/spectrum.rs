@@ -61,6 +61,8 @@ pub struct SpectrumSettingsPane {
     averaging_factor: f32,
     peak_hold_decay: f32,
     palette: PaletteEditor,
+    smoothing_radius: usize,
+    smoothing_passes: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +76,8 @@ pub enum Message {
     ShowGrid(bool),
     ShowPeakLabel(bool),
     Palette(PaletteEvent),
+    SmoothingRadius(f32),
+    SmoothingPasses(f32),
 }
 
 pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> SpectrumSettingsPane {
@@ -88,10 +92,17 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Spec
         .unwrap_or_default();
     let (averaging_mode, averaging_factor, peak_hold_decay) = split_averaging(config.averaging);
 
-    let palette = stored_settings
+    let (palette, smoothing_radius, smoothing_passes) = stored_settings
         .as_ref()
-        .and_then(|settings| settings.palette_array::<5>())
-        .unwrap_or(theme::DEFAULT_SPECTRUM_PALETTE);
+        .map(|s| {
+            (
+                s.palette_array::<5>()
+                    .unwrap_or(theme::DEFAULT_SPECTRUM_PALETTE),
+                s.smoothing_radius,
+                s.smoothing_passes,
+            )
+        })
+        .unwrap_or((theme::DEFAULT_SPECTRUM_PALETTE, 0, 0));
 
     let mut pane = SpectrumSettingsPane {
         visual_id,
@@ -100,6 +111,8 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Spec
         averaging_factor,
         peak_hold_decay,
         palette: PaletteEditor::new(&palette, &theme::DEFAULT_SPECTRUM_PALETTE),
+        smoothing_radius,
+        smoothing_passes,
     };
     pane.sync_averaging_config();
     pane
@@ -190,6 +203,22 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
             }
             SpectrumAveragingMode::None => {}
         }
+
+        content = content.push(labeled_slider(
+            "Smoothing radius",
+            self.smoothing_radius as f32,
+            format!("{} bins", self.smoothing_radius),
+            SliderRange::new(0.0, 20.0, 1.0),
+            |value| SettingsMessage::Spectrum(Message::SmoothingRadius(value)),
+        ));
+
+        content = content.push(labeled_slider(
+            "Smoothing passes",
+            self.smoothing_passes as f32,
+            format!("{}", self.smoothing_passes),
+            SliderRange::new(0.0, 5.0, 1.0),
+            |value| SettingsMessage::Spectrum(Message::SmoothingPasses(value)),
+        ));
 
         content = content.push(
             column![
@@ -284,23 +313,42 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 }
             }
             Message::Palette(event) => self.palette.update(*event),
+            Message::SmoothingRadius(value) => {
+                let new_value = value.round() as usize;
+                if self.smoothing_radius == new_value {
+                    false
+                } else {
+                    self.smoothing_radius = new_value;
+                    true
+                }
+            }
+            Message::SmoothingPasses(value) => {
+                let new_value = value.round() as usize;
+                if self.smoothing_passes == new_value {
+                    false
+                } else {
+                    self.smoothing_passes = new_value;
+                    true
+                }
+            }
         };
 
         if changed {
-            apply_spectrum_config(&self.config, &self.palette, visual_manager, settings);
+            apply_spectrum_config(self, visual_manager, settings);
         }
     }
 }
 
 fn apply_spectrum_config(
-    config: &SpectrumConfig,
-    palette: &PaletteEditor,
+    pane: &SpectrumSettingsPane,
     visual_manager: &VisualManagerHandle,
     settings: &SettingsHandle,
 ) {
-    let mut stored = SpectrumSettings::from_config(config);
+    let mut stored = SpectrumSettings::from_config(&pane.config);
     stored.palette =
-        PaletteSettings::maybe_from_colors(palette.colors(), &theme::DEFAULT_SPECTRUM_PALETTE);
+        PaletteSettings::maybe_from_colors(pane.palette.colors(), &theme::DEFAULT_SPECTRUM_PALETTE);
+    stored.smoothing_radius = pane.smoothing_radius;
+    stored.smoothing_passes = pane.smoothing_passes;
 
     let module_settings = ModuleSettings::with_spectrum_settings(&stored);
 
