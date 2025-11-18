@@ -1,7 +1,9 @@
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{SliderRange, labeled_slider, set_f32};
+use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
 use super::{ModuleSettingsPane, SettingsMessage};
-use crate::ui::settings::{ModuleSettings, OscilloscopeSettings, SettingsHandle};
+use crate::ui::settings::{
+    ModuleSettings, OscilloscopeChannelMode, OscilloscopeSettings, SettingsHandle,
+};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::widget::{column, row, slider, text, toggler};
@@ -20,8 +22,16 @@ pub enum Message {
     TriggerLevel(f32),
     Persistence(f32),
     TriggerMode(bool),
+    ChannelMode(OscilloscopeChannelMode),
     Palette(PaletteEvent),
 }
+
+const CHANNEL_OPTIONS: [OscilloscopeChannelMode; 4] = [
+    OscilloscopeChannelMode::Both,
+    OscilloscopeChannelMode::Left,
+    OscilloscopeChannelMode::Right,
+    OscilloscopeChannelMode::Mono,
+];
 
 pub fn create(
     visual_id: VisualId,
@@ -36,7 +46,7 @@ pub fn create(
     let palette = settings
         .palette
         .as_ref()
-        .and_then(|p| p.to_array::<2>())
+        .and_then(|p| p.to_array::<1>())
         .unwrap_or(theme::DEFAULT_OSCILLOSCOPE_PALETTE);
 
     OscilloscopeSettingsPane {
@@ -73,6 +83,12 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
                 SliderRange::new(0.0, 1.0, 0.01),
                 |value| SettingsMessage::Oscilloscope(Message::Persistence(value)),
             ),
+            labeled_pick_list(
+                "Channels",
+                &CHANNEL_OPTIONS,
+                Some(self.settings.channel_mode),
+                |mode| SettingsMessage::Oscilloscope(Message::ChannelMode(mode)),
+            ),
             column![
                 text("Trigger"),
                 row![
@@ -94,7 +110,7 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             ]
             .spacing(8),
             column![
-                text("Colors").size(14),
+                text("Color").size(14),
                 self.palette
                     .view()
                     .map(|e| SettingsMessage::Oscilloscope(Message::Palette(e)))
@@ -133,6 +149,7 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
                     false
                 }
             }
+            Message::ChannelMode(mode) => set_if_changed(&mut self.settings.channel_mode, *mode),
             Message::Palette(event) => self.palette.update(*event),
         };
 

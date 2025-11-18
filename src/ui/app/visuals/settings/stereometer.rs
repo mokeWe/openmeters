@@ -1,11 +1,11 @@
 use super::palette::{PaletteEditor, PaletteEvent};
 use super::widgets::{SliderRange, labeled_slider, set_f32};
 use super::{ModuleSettingsPane, SettingsMessage};
-use crate::ui::settings::{ModuleSettings, StereometerSettings, SettingsHandle};
+use crate::ui::settings::{ModuleSettings, SettingsHandle, StereometerSettings};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
-use iced::widget::{column, text};
 use iced::Element;
+use iced::widget::{column, text};
 
 #[derive(Debug)]
 pub struct StereometerSettingsPane {

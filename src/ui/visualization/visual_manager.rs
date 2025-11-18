@@ -355,6 +355,7 @@ impl VisualModule for OscilloscopeVisual {
         let persistence = self.state.view_settings();
         let mut snapshot = OscilloscopeSettings::from_config(&self.processor.config());
         snapshot.persistence = persistence;
+        snapshot.channel_mode = self.state.channel_mode();
         snapshot.palette = PaletteSettings::maybe_from_colors(
             self.state.palette(),
             &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
@@ -593,10 +594,8 @@ impl VisualModule for StereometerVisual {
     fn export_settings(&self) -> Option<ModuleSettings> {
         let mut settings = ModuleSettings::default();
         let persistence = self.state.view_settings();
-        let mut snapshot = StereometerSettings::from_config_with_view(
-            &self.processor.config(),
-            persistence,
-        );
+        let mut snapshot =
+            StereometerSettings::from_config_with_view(&self.processor.config(), persistence);
         snapshot.palette = PaletteSettings::maybe_from_colors(
             self.state.palette(),
             &theme::DEFAULT_STEREOMETER_PALETTE,

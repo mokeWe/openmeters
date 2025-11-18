@@ -7,7 +7,9 @@ use crate::ui::visualization::visual_manager::{
     VisualContent, VisualId, VisualKind, VisualManagerHandle, VisualMetadata, VisualSlotSnapshot,
     VisualSnapshot,
 };
-use crate::ui::visualization::{loudness, oscilloscope, spectrogram, spectrum, stereometer, waveform};
+use crate::ui::visualization::{
+    loudness, oscilloscope, spectrogram, spectrum, stereometer, waveform,
+};
 mod settings;
 
 pub use settings::{ActiveSettings, SettingsMessage, create_panel as create_settings_panel};

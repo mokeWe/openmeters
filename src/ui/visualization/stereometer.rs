@@ -120,7 +120,10 @@ impl StereometerState {
             self.display_points.copy_from_slice(&snapshot.xy_points);
         } else {
             let fresh = 1.0_f32 - persistence;
-            for (current, incoming) in self.display_points.iter_mut().zip(snapshot.xy_points.iter())
+            for (current, incoming) in self
+                .display_points
+                .iter_mut()
+                .zip(snapshot.xy_points.iter())
             {
                 current.0 = (current.0 * persistence) + (incoming.0 * fresh);
                 current.1 = (current.1 * persistence) + (incoming.1 * fresh);
@@ -129,7 +132,9 @@ impl StereometerState {
 
         self.snapshot = snapshot.clone();
         self.snapshot.xy_points.clear();
-        self.snapshot.xy_points.extend_from_slice(&self.display_points);
+        self.snapshot
+            .xy_points
+            .extend_from_slice(&self.display_points);
         self.recompute_fade_alpha();
     }
 

@@ -379,6 +379,28 @@ impl<'de> Deserialize<'de> for ModuleSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum OscilloscopeChannelMode {
+    #[default]
+    Both,
+    Left,
+    Right,
+    Mono,
+}
+
+impl std::fmt::Display for OscilloscopeChannelMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::Both => "Left + Right",
+            Self::Left => "Left only",
+            Self::Right => "Right only",
+            Self::Mono => "Mono blend",
+        };
+        f.write_str(label)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OscilloscopeSettings {
@@ -387,6 +409,8 @@ pub struct OscilloscopeSettings {
     pub trigger_rising: bool,
     pub target_sample_count: usize,
     pub persistence: f32,
+    #[serde(default)]
+    pub channel_mode: OscilloscopeChannelMode,
     #[serde(default)]
     pub palette: Option<PaletteSettings>,
 }
@@ -405,6 +429,7 @@ impl OscilloscopeSettings {
             trigger_rising: config.trigger_rising,
             target_sample_count: config.target_sample_count,
             persistence: 0.85,
+            channel_mode: OscilloscopeChannelMode::Both,
             palette: None,
         }
     }

@@ -46,9 +46,8 @@ pub const DEFAULT_WAVEFORM_PALETTE: [Color; 5] = [
     Color::from_rgb(0.400, 0.000, 0.800), // deep purple
 ];
 
-pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 2] = [
-    Color::from_rgb(0.529, 0.549, 0.584), // left channel - primary accent
-    Color::from_rgb(0.529, 0.549, 0.584), // right channel - same
+pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 1] = [
+    Color::from_rgb(0.529, 0.549, 0.584), // trace color - primary accent
 ];
 
 pub const DEFAULT_STEREOMETER_PALETTE: [Color; 1] = [

@@ -96,18 +96,13 @@ impl Default for SpectrogramConfig {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum FrequencyScale {
     Linear,
+    #[default]
     Logarithmic,
     Mel,
-}
-
-impl Default for FrequencyScale {
-    fn default() -> Self {
-        Self::Logarithmic
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
