@@ -10,7 +10,7 @@ use crate::ui::visualization::visual_manager::{
 use crate::ui::visualization::{
     loudness, oscilloscope, spectrogram, spectrum, stereometer, waveform,
 };
-mod settings;
+pub mod settings;
 
 pub use settings::{ActiveSettings, SettingsMessage, create_panel as create_settings_panel};
 
@@ -207,12 +207,14 @@ impl VisualsPage {
         Task::none()
     }
 
-    pub fn view(&self) -> Element<'_, VisualsMessage> {
+    pub fn view(&self, controls_visible: bool) -> Element<'_, VisualsMessage> {
+        let spacing = if controls_visible { 16.0 } else { 0.0 };
+
         let body: Element<'_, VisualsMessage> = if let Some(panes) = &self.panes {
             let grid = pane_grid::PaneGrid::new(panes, |_, pane_state| pane_state.view())
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .spacing(16.0)
+                .spacing(spacing)
                 .on_drag(VisualsMessage::PaneDragged)
                 .on_context_request(VisualsMessage::PaneContextRequested);
 
@@ -229,7 +231,7 @@ impl VisualsPage {
                 .into()
         };
 
-        container(column![body].spacing(16).width(Length::Fill))
+        container(column![body].spacing(spacing).width(Length::Fill))
             .width(Length::Fill)
             .height(Length::Fill)
             .into()

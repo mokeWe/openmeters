@@ -7,11 +7,12 @@ use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::spectrum::{SpectrumParams, SpectrumPrimitive};
 use crate::ui::theme;
 use crate::util::audio::musical::MusicalNote;
-use iced::advanced::Renderer as _;
+use iced::advanced::graphics::text::Paragraph as RenderParagraph;
 use iced::advanced::renderer::{self, Quad};
-use iced::advanced::text::Renderer as _;
+use iced::advanced::text::{self, Paragraph as _, Renderer as _};
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Widget, layout, mouse};
+use iced::advanced::Renderer as _;
 use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::sync::Arc;
@@ -133,15 +134,12 @@ impl SpectrumProcessor {
 
 #[derive(Debug, Clone, Copy)]
 pub struct SpectrumStyle {
-    pub background: Color,
-    pub line_color: Color,
     pub min_db: f32,
     pub max_db: f32,
     pub min_frequency: f32,
     pub max_frequency: f32,
     pub resolution: usize,
     pub line_thickness: f32,
-    pub unweighted_line_color: Color,
     pub unweighted_line_thickness: f32,
     pub smoothing_radius: usize,
     pub smoothing_passes: usize,
@@ -155,19 +153,13 @@ pub struct SpectrumStyle {
 
 impl Default for SpectrumStyle {
     fn default() -> Self {
-        let background = Color::from_rgba(0.0, 0.0, 0.0, 0.0);
-        let line_color = theme::mix_colors(theme::accent_primary(), theme::text_color(), 0.35);
-
         Self {
-            background,
-            line_color,
             min_db: -80.0,
             max_db: 0.0,
             min_frequency: MIN_FREQUENCY_HZ,
             max_frequency: MAX_FREQUENCY_HZ,
             resolution: DEFAULT_RESOLUTION,
             line_thickness: 1.0,
-            unweighted_line_color: theme::with_alpha(theme::text_secondary(), 0.3),
             unweighted_line_thickness: 1.6,
             smoothing_radius: 0,
             smoothing_passes: 0,
@@ -308,20 +300,21 @@ impl SpectrumState {
     }
 
     pub fn set_palette(&mut self, palette: &[Color]) {
-        if palette.len() == self.style.spectrum_palette.len()
-            && self
-                .style
-                .spectrum_palette
-                .iter()
-                .zip(palette)
-                .all(|(a, b)| theme::colors_equal(*a, *b))
+        if palette.len() != self.style.spectrum_palette.len() {
+            return;
+        }
+
+        if self
+            .style
+            .spectrum_palette
+            .iter()
+            .zip(palette)
+            .all(|(a, b)| theme::colors_equal(*a, *b))
         {
             return;
         }
 
-        if palette.len() == self.style.spectrum_palette.len() {
-            self.style.spectrum_palette.copy_from_slice(palette);
-        }
+        self.style.spectrum_palette.copy_from_slice(palette);
     }
 
     pub fn palette(&self) -> [Color; 5] {
@@ -384,10 +377,18 @@ impl SpectrumState {
         }
     }
 
-    pub fn visual(&self, bounds: Rectangle) -> Option<SpectrumVisual> {
+    pub fn visual(&self, bounds: Rectangle, theme: &iced::Theme) -> Option<SpectrumVisual> {
         if !self.points.is_ready() {
             return None;
         }
+
+        let palette = theme.extended_palette();
+        let line_color = theme::mix_colors(
+            palette.primary.base.color,
+            palette.background.base.text,
+            0.35,
+        );
+        let secondary_line_color = theme::with_alpha(palette.secondary.weak.text, 0.3);
 
         Some(SpectrumVisual {
             primitive: SpectrumParams {
@@ -395,9 +396,9 @@ impl SpectrumState {
                 normalized_points: Arc::clone(&self.points.weighted),
                 secondary_points: Arc::clone(&self.points.unweighted),
                 instance_key: self.points.instance_key,
-                line_color: theme::color_to_rgba(self.style.line_color),
+                line_color: theme::color_to_rgba(line_color),
                 line_width: self.style.line_thickness,
-                secondary_line_color: theme::color_to_rgba(self.style.unweighted_line_color),
+                secondary_line_color: theme::color_to_rgba(secondary_line_color),
                 secondary_line_width: self.style.unweighted_line_thickness,
                 highlight_threshold: self.style.highlight_threshold,
                 spectrum_palette: self
@@ -407,7 +408,7 @@ impl SpectrumState {
                     .map(|&c| theme::color_to_rgba(c))
                     .collect(),
             },
-            background: self.style.background,
+            background: palette.background.base.color,
             label: self
                 .style
                 .show_peak_label
@@ -456,7 +457,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> 
         &self,
         _tree: &Tree,
         renderer: &mut iced::Renderer,
-        _theme: &iced::Theme,
+        theme: &iced::Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -464,14 +465,14 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> 
     ) {
         let bounds = layout.bounds();
 
-        let Some(visual) = self.state.visual(bounds) else {
+        let Some(visual) = self.state.visual(bounds, theme) else {
             renderer.fill_quad(
                 Quad {
                     bounds,
                     border: Default::default(),
                     shadow: Default::default(),
                 },
-                Background::Color(self.state.style.background),
+                Background::Color(theme.extended_palette().background.base.color),
             );
             return;
         };
@@ -488,7 +489,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> 
         let grid_lines = visual.grid_lines.clone();
         if !grid_lines.is_empty() {
             renderer.with_layer(bounds, |renderer| {
-                draw_grid_lines(renderer, bounds, grid_lines.as_ref());
+                draw_grid_lines(renderer, theme, bounds, grid_lines.as_ref());
             });
         }
 
@@ -496,7 +497,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> 
 
         if let Some(label) = visual.label.as_ref() {
             renderer.with_layer(bounds, |renderer| {
-                draw_peak_label(renderer, bounds, label);
+                draw_peak_label(renderer, theme, bounds, label);
             });
         }
     }
@@ -821,16 +822,19 @@ fn build_grid_lines(style: &SpectrumStyle, scale: &ScaleContext) -> Arc<Vec<Grid
     Arc::new(lines)
 }
 
-fn draw_grid_lines(renderer: &mut iced::Renderer, bounds: Rectangle, lines: &[GridLine]) {
-    use iced::advanced::graphics::text::Paragraph as RenderParagraph;
-    use iced::advanced::text::{self, Paragraph as _};
-
+fn draw_grid_lines(
+    renderer: &mut iced::Renderer,
+    theme: &iced::Theme,
+    bounds: Rectangle,
+    lines: &[GridLine],
+) {
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
         return;
     }
 
-    let line_color = theme::with_alpha(theme::text_color(), GRID_LINE_ALPHA);
-    let label_color = theme::with_alpha(theme::text_color(), GRID_LABEL_ALPHA);
+    let palette = theme.extended_palette();
+    let line_color = theme::with_alpha(palette.background.base.text, GRID_LINE_ALPHA);
+    let label_color = theme::with_alpha(palette.background.base.text, GRID_LABEL_ALPHA);
 
     let mut candidates = Vec::with_capacity(lines.len());
     for line in lines {
@@ -991,10 +995,12 @@ fn format_frequency_label(freq: f32) -> String {
     }
 }
 
-fn draw_peak_label(renderer: &mut iced::Renderer, bounds: Rectangle, label: &PeakLabel) {
-    use iced::advanced::graphics::text::Paragraph as RenderParagraph;
-    use iced::advanced::text::{self, Paragraph as _};
-
+fn draw_peak_label(
+    renderer: &mut iced::Renderer,
+    theme: &iced::Theme,
+    bounds: Rectangle,
+    label: &PeakLabel,
+) {
     if label.opacity <= PEAK_LABEL_MIN_OPACITY
         || bounds.width <= LABEL_PADDING * 2.0
         || bounds.height <= LABEL_PADDING * 2.0
@@ -1042,13 +1048,18 @@ fn draw_peak_label(renderer: &mut iced::Renderer, bounds: Rectangle, label: &Pea
     let mut border = theme::sharp_border();
     border.color = theme::with_alpha(border.color, label.opacity);
 
+    let palette = theme.extended_palette();
+
     renderer.fill_quad(
         Quad {
             bounds: background_bounds,
             border,
             shadow: Default::default(),
         },
-        Background::Color(theme::with_alpha(theme::elevated_color(), label.opacity)),
+        Background::Color(theme::with_alpha(
+            palette.background.strong.color,
+            label.opacity,
+        )),
     );
 
     renderer.fill_text(
@@ -1064,7 +1075,7 @@ fn draw_peak_label(renderer: &mut iced::Renderer, bounds: Rectangle, label: &Pea
             wrapping: text::Wrapping::None,
         },
         text_origin,
-        theme::with_alpha(theme::text_color(), label.opacity),
+        theme::with_alpha(palette.background.base.text, label.opacity),
         Rectangle::new(text_origin, text_size),
     );
 }

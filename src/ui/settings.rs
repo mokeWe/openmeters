@@ -28,6 +28,8 @@ const SETTINGS_FILE_NAME: &str = "settings.json";
 pub struct UiSettings {
     #[serde(default)]
     pub visuals: VisualSettings,
+    #[serde(default)]
+    pub background_color: Option<ColorSetting>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -755,6 +757,10 @@ impl SettingsManager {
 
     pub fn set_visual_order(&mut self, order: &[VisualKind]) {
         self.data.visuals.order = order.to_vec();
+    }
+
+    pub fn set_background_color(&mut self, color: Option<Color>) {
+        self.data.background_color = color.map(ColorSetting::from);
     }
 
     pub fn save(&self) -> io::Result<()> {

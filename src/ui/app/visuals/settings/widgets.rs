@@ -7,8 +7,6 @@ use iced::alignment::Vertical;
 use iced::widget::text::Style as TextStyle;
 use iced::widget::{column, pick_list, row, slider, text};
 
-use crate::ui::theme;
-
 use super::SettingsMessage;
 
 pub const CONTROL_SPACING: f32 = 8.0;
@@ -94,9 +92,11 @@ pub fn labeled_slider<'a>(
     column![
         row![
             text(label).size(LABEL_SIZE),
-            text(formatted).size(VALUE_SIZE).style(|_| TextStyle {
-                color: Some(theme::text_secondary()),
-            }),
+            text(formatted)
+                .size(VALUE_SIZE)
+                .style(|theme: &iced::Theme| TextStyle {
+                    color: Some(theme.extended_palette().secondary.weak.text),
+                }),
         ]
         .spacing(VALUE_GAP),
         slider::Slider::new(min..=max, value, on_change).step(step),

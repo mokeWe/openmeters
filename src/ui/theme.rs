@@ -6,13 +6,12 @@ use iced::widget::button;
 use iced::{Background, Color, Theme};
 
 // Core palette stops
-const BG_BASE: Color = Color::from_rgb(0.059, 0.063, 0.071);
-const BG_SURFACE: Color = Color::from_rgb(0.090, 0.094, 0.106);
-const BG_ELEVATED: Color = Color::from_rgb(0.122, 0.129, 0.145);
-const BG_HOVER: Color = Color::from_rgb(0.157, 0.165, 0.184);
+pub const BG_BASE: Color = Color::from_rgb(0.059, 0.063, 0.071);
 
 const TEXT_PRIMARY: Color = Color::from_rgb(0.902, 0.910, 0.925);
+const TEXT_DARK: Color = Color::from_rgb(0.10, 0.10, 0.10);
 const TEXT_SECONDARY: Color = Color::from_rgb(0.655, 0.671, 0.698);
+const TEXT_SECONDARY_DARK: Color = Color::from_rgb(0.40, 0.40, 0.40);
 
 const BORDER_SUBTLE: Color = Color::from_rgb(0.196, 0.204, 0.224);
 const BORDER_FOCUS: Color = Color::from_rgb(0.416, 0.424, 0.443);
@@ -54,18 +53,44 @@ pub const DEFAULT_STEREOMETER_PALETTE: [Color; 1] = [
     Color::from_rgb(0.529, 0.549, 0.584), // XY trace - primary accent
 ];
 
-pub fn theme() -> Theme {
+pub fn luminance(color: Color) -> f32 {
+    0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b
+}
+
+fn lighten(color: Color, amount: f32) -> Color {
+    Color {
+        r: (color.r + amount).min(1.0),
+        g: (color.g + amount).min(1.0),
+        b: (color.b + amount).min(1.0),
+        a: color.a,
+    }
+}
+
+fn darken(color: Color, amount: f32) -> Color {
+    Color {
+        r: (color.r - amount).max(0.0),
+        g: (color.g - amount).max(0.0),
+        b: (color.b - amount).max(0.0),
+        a: color.a,
+    }
+}
+
+pub fn theme(custom_bg: Option<Color>) -> Theme {
     Theme::custom_with_fn(
         "OpenMeters Monochrome".to_string(),
-        palette(),
+        palette(custom_bg),
         extended_palette,
     )
 }
 
-fn palette() -> palette::Palette {
+fn palette(custom_bg: Option<Color>) -> palette::Palette {
+    let background = custom_bg.unwrap_or(BG_BASE);
+    let is_light = luminance(background) > 0.5;
+    let text = if is_light { TEXT_DARK } else { TEXT_PRIMARY };
+
     palette::Palette {
-        background: BG_BASE,
-        text: TEXT_PRIMARY,
+        background,
+        text,
         primary: ACCENT_PRIMARY,
         success: ACCENT_SUCCESS,
         danger: ACCENT_DANGER,
@@ -73,11 +98,29 @@ fn palette() -> palette::Palette {
 }
 
 fn extended_palette(base: palette::Palette) -> Extended {
+    let is_light = luminance(base.background) > 0.5;
+    let text_secondary = if is_light {
+        TEXT_SECONDARY_DARK
+    } else {
+        TEXT_SECONDARY
+    };
+
+    // Adjust surface colors based on background luminance
+    // If light, darken. If dark, lighten.
+    let (surface, elevated) = if is_light {
+        (darken(base.background, 0.05), darken(base.background, 0.10))
+    } else {
+        (
+            lighten(base.background, 0.05),
+            lighten(base.background, 0.10),
+        )
+    };
+
     Extended {
         background: palette::Background {
             base: Pair::new(base.background, base.text),
-            weak: Pair::new(BG_SURFACE, base.text),
-            strong: Pair::new(BG_ELEVATED, base.text),
+            weak: Pair::new(surface, base.text),
+            strong: Pair::new(elevated, base.text),
         },
         primary: palette::Primary {
             base: Pair::new(base.primary, TEXT_PRIMARY),
@@ -88,7 +131,7 @@ fn extended_palette(base: palette::Palette) -> Extended {
                     base.primary.b * 0.7,
                     1.0,
                 ),
-                TEXT_SECONDARY,
+                text_secondary,
             ),
             strong: Pair::new(
                 Color::new(
@@ -101,9 +144,9 @@ fn extended_palette(base: palette::Palette) -> Extended {
             ),
         },
         secondary: palette::Secondary {
-            base: Pair::new(BG_SURFACE, base.text),
-            weak: Pair::new(BG_BASE, TEXT_SECONDARY),
-            strong: Pair::new(BG_ELEVATED, base.text),
+            base: Pair::new(surface, base.text),
+            weak: Pair::new(base.background, text_secondary),
+            strong: Pair::new(elevated, base.text),
         },
         success: palette::Success {
             base: Pair::new(base.success, TEXT_PRIMARY),
@@ -114,7 +157,7 @@ fn extended_palette(base: palette::Palette) -> Extended {
                     base.success.b * 0.7,
                     1.0,
                 ),
-                TEXT_SECONDARY,
+                text_secondary,
             ),
             strong: Pair::new(
                 Color::new(
@@ -135,7 +178,7 @@ fn extended_palette(base: palette::Palette) -> Extended {
                     base.danger.b * 0.7,
                     1.0,
                 ),
-                TEXT_SECONDARY,
+                text_secondary,
             ),
             strong: Pair::new(
                 Color::new(
@@ -147,7 +190,7 @@ fn extended_palette(base: palette::Palette) -> Extended {
                 TEXT_PRIMARY,
             ),
         },
-        is_dark: true,
+        is_dark: !is_light,
     }
 }
 
@@ -170,17 +213,26 @@ pub fn focus_border() -> Border {
     }
 }
 
-pub fn button_style(base: Color, status: button::Status) -> button::Style {
+pub fn button_style(theme: &Theme, base: Color, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
     let mut style = button::Style {
         background: Some(Background::Color(base)),
-        text_color: text_color(),
+        text_color: palette.background.base.text,
         border: sharp_border(),
         ..Default::default()
     };
 
     match status {
         button::Status::Hovered => {
-            style.background = Some(Background::Color(hover_color()));
+            // We need a hover color that contrasts with the base.
+            // If base is light, darken. If dark, lighten.
+            let is_light = luminance(base) > 0.5;
+            let hover = if is_light {
+                darken(base, 0.05)
+            } else {
+                lighten(base, 0.05)
+            };
+            style.background = Some(Background::Color(hover));
         }
         button::Status::Pressed => {
             style.border = focus_border();
@@ -191,40 +243,13 @@ pub fn button_style(base: Color, status: button::Status) -> button::Style {
     style
 }
 
-pub fn surface_button_style(status: button::Status) -> button::Style {
-    button_style(surface_color(), status)
-}
-
-pub fn surface_color() -> Color {
-    BG_SURFACE
-}
-
-pub fn base_color() -> Color {
-    BG_BASE
-}
-
-pub fn elevated_color() -> Color {
-    BG_ELEVATED
-}
-
-pub fn hover_color() -> Color {
-    BG_HOVER
-}
-
-pub fn text_color() -> Color {
-    TEXT_PRIMARY
-}
-
-pub fn text_secondary() -> Color {
-    TEXT_SECONDARY
+pub fn surface_button_style(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    button_style(theme, palette.background.weak.color, status)
 }
 
 pub fn accent_primary() -> Color {
     ACCENT_PRIMARY
-}
-
-pub fn accent_success() -> Color {
-    ACCENT_SUCCESS
 }
 
 pub fn mix_colors(a: Color, b: Color, factor: f32) -> Color {

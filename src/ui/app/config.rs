@@ -2,6 +2,7 @@
 
 use crate::audio::VIRTUAL_SINK_NAME;
 use crate::audio::pw_registry::RegistrySnapshot;
+use crate::ui::app::visuals::settings::palette::{PaletteEditor, PaletteEvent};
 use crate::ui::application_row::ApplicationRow;
 use crate::ui::channel_subscription::channel_subscription;
 use crate::ui::hardware_sink::HardwareSinkCache;
@@ -11,7 +12,9 @@ use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;
 use iced::alignment;
 use iced::widget::text::Style as TextStyle;
-use iced::widget::{Column, Row, Space, button, container, pick_list, radio, scrollable, text};
+use iced::widget::{
+    Column, Row, Rule, Space, button, container, pick_list, radio, rule, scrollable, text,
+};
 use iced::{Element, Length, Subscription, Task};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -59,6 +62,7 @@ pub enum ConfigMessage {
     VisualToggled { kind: VisualKind, enabled: bool },
     CaptureModeChanged(CaptureMode),
     CaptureDeviceChanged(DeviceSelection),
+    BgPalette(PaletteEvent),
 }
 
 #[derive(Debug)]
@@ -75,6 +79,7 @@ pub struct ConfigPage {
     capture_mode: CaptureMode,
     device_choices: Vec<DeviceOption>,
     selected_device: DeviceSelection,
+    bg_palette: PaletteEditor,
 }
 
 impl ConfigPage {
@@ -84,6 +89,15 @@ impl ConfigPage {
         visual_manager: VisualManagerHandle,
         settings: SettingsHandle,
     ) -> Self {
+        let current_bg = settings
+            .borrow()
+            .settings()
+            .background_color
+            .map(|c| c.to_color())
+            .unwrap_or(theme::BG_BASE);
+        let defaults = [theme::BG_BASE];
+        let bg_palette = PaletteEditor::new(&[current_bg], &defaults);
+
         let ret = Self {
             routing_sender,
             registry_updates,
@@ -97,6 +111,7 @@ impl ConfigPage {
             capture_mode: CaptureMode::Applications,
             device_choices: Vec::new(),
             selected_device: DeviceSelection::Default,
+            bg_palette,
         };
         ret.dispatch_capture_state();
         ret
@@ -157,6 +172,12 @@ impl ConfigPage {
                     self.dispatch_capture_state();
                 }
             }
+            ConfigMessage::BgPalette(event) => {
+                if self.bg_palette.update(event) {
+                    let color = self.bg_palette.colors().first().copied();
+                    self.settings.update(|s| s.set_background_color(color));
+                }
+            }
         }
 
         Task::none()
@@ -164,27 +185,47 @@ impl ConfigPage {
 
     pub fn view(&self) -> Element<'_, ConfigMessage> {
         let visuals_snapshot = self.visual_manager.snapshot();
-        let status_label = self.capture_status_label();
 
+        let capture_section = self.render_capture_section();
+        let visuals_section = self.render_visuals_section(&visuals_snapshot);
+        let bg_section = self.render_bg_section();
+
+        let content = Column::new()
+            .spacing(20)
+            .push(capture_section)
+            .push(self.divider())
+            .push(visuals_section)
+            .push(self.divider())
+            .push(bg_section);
+
+        container(scrollable(content))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .padding(16)
+            .into()
+    }
+
+    fn render_capture_section(&self) -> Column<'_, ConfigMessage> {
+        let status_label = self.capture_status_label();
         let capture_controls = self.render_capture_mode_controls();
         let primary_section: Element<'_, ConfigMessage> = match self.capture_mode {
             CaptureMode::Applications => self.render_applications_section().into(),
             CaptureMode::Device => self.render_device_section().into(),
         };
 
-        let visuals_section = self.render_visuals_section(&visuals_snapshot);
-
         let content = Column::new()
-            .spacing(16)
-            .push(text(status_label).size(14))
+            .spacing(12)
+            .push(
+                text(status_label)
+                    .size(12)
+                    .style(|theme: &iced::Theme| TextStyle {
+                        color: Some(theme.extended_palette().secondary.weak.text),
+                    }),
+            )
             .push(capture_controls)
-            .push(primary_section)
-            .push(visuals_section);
+            .push(primary_section);
 
-        container(content)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        self.section("Audio Capture", content)
     }
 
     fn render_applications_section(&self) -> Column<'_, ConfigMessage> {
@@ -299,17 +340,13 @@ impl ConfigPage {
             picker = picker.placeholder("No devices available");
         }
 
-        Column::new()
-            .spacing(8)
-            .push(text("Device capture").size(14))
-            .push(picker)
-            .push(
-                text("Direct device capture. Application routing disabled.")
-                    .size(12)
-                    .style(|_| TextStyle {
-                        color: Some(theme::text_secondary()),
-                    }),
-            )
+        Column::new().spacing(8).push(picker).push(
+            text("Direct device capture. Application routing disabled.")
+                .size(12)
+                .style(|theme: &iced::Theme| TextStyle {
+                    color: Some(theme.extended_palette().secondary.weak.text),
+                }),
+        )
     }
 
     fn selected_device_label(&self) -> String {
@@ -358,36 +395,60 @@ impl ConfigPage {
             || contains(node.description.as_ref(), "monitor")
     }
 
+    fn render_bg_section(&self) -> Column<'_, ConfigMessage> {
+        let content = self.bg_palette.view().map(ConfigMessage::BgPalette);
+        self.section("Global", content)
+    }
+
     fn render_visuals_section(
         &self,
         snapshot: &crate::ui::visualization::visual_manager::VisualSnapshot,
     ) -> Column<'_, ConfigMessage> {
         let total = snapshot.slots.len();
         let enabled = snapshot.slots.iter().filter(|slot| slot.enabled).count();
-        let header = text(format!("Visual modules - {enabled}/{total} enabled")).size(14);
+        let title = format!("Visual Modules ({enabled}/{total})");
 
-        let section = Column::new().spacing(8).push(header);
+        let content: Element<'_, ConfigMessage> = if snapshot.slots.is_empty() {
+            text("No visual modules available.").into()
+        } else {
+            render_toggle_grid(&snapshot.slots, |slot| {
+                (
+                    format!(
+                        "{} ({})",
+                        slot.metadata.display_name,
+                        if slot.enabled { "enabled" } else { "disabled" }
+                    ),
+                    slot.enabled,
+                    ConfigMessage::VisualToggled {
+                        kind: slot.kind,
+                        enabled: !slot.enabled,
+                    },
+                )
+            })
+            .into()
+        };
 
-        if snapshot.slots.is_empty() {
-            return section.push(text("No visual modules available."));
-        }
+        self.section(&title, content)
+    }
 
-        let grid = render_toggle_grid(&snapshot.slots, |slot| {
-            (
-                format!(
-                    "{} ({})",
-                    slot.metadata.display_name,
-                    if slot.enabled { "enabled" } else { "disabled" }
-                ),
-                slot.enabled,
-                ConfigMessage::VisualToggled {
-                    kind: slot.kind,
-                    enabled: !slot.enabled,
-                },
-            )
-        });
+    fn section<'a>(
+        &self,
+        title: impl Into<String>,
+        content: impl Into<Element<'a, ConfigMessage>>,
+    ) -> Column<'a, ConfigMessage> {
+        Column::new()
+            .spacing(12)
+            .push(text(title.into()).size(14))
+            .push(content)
+    }
 
-        section.push(grid)
+    fn divider<'a>(&self) -> Rule<'a> {
+        Rule::horizontal(1).style(|theme: &iced::Theme| rule::Style {
+            color: theme::with_alpha(theme.extended_palette().secondary.weak.text, 0.2),
+            width: 1,
+            radius: 0.0.into(),
+            fill_mode: rule::FillMode::Percent(100.0),
+        })
     }
 
     fn apply_snapshot(&mut self, snapshot: RegistrySnapshot) {
@@ -460,32 +521,18 @@ fn toggle_button<'a>(
     button(text(label).width(Length::Fill))
         .padding(12)
         .width(Length::FillPortion(1))
-        .style(move |_theme, status| {
+        .style(move |theme: &iced::Theme, status| {
+            let palette = theme.extended_palette();
             let base_background = if enabled {
-                theme::surface_color()
+                palette.background.weak.color
             } else {
-                theme::elevated_color()
-            };
-            let text_color = if enabled {
-                theme::text_color()
-            } else {
-                theme::text_secondary()
-            };
-            let mut style = iced::widget::button::Style {
-                background: Some(iced::Background::Color(base_background)),
-                text_color,
-                border: theme::sharp_border(),
-                ..Default::default()
+                palette.background.strong.color
             };
 
-            match status {
-                iced::widget::button::Status::Hovered => {
-                    style.background = Some(iced::Background::Color(theme::hover_color()));
-                }
-                iced::widget::button::Status::Pressed => {
-                    style.border = theme::focus_border();
-                }
-                _ => {}
+            let mut style = theme::button_style(theme, base_background, status);
+
+            if !enabled {
+                style.text_color = palette.secondary.weak.text;
             }
 
             style
@@ -494,8 +541,8 @@ fn toggle_button<'a>(
 }
 
 fn header_button_style(
-    _theme: &iced::Theme,
+    theme: &iced::Theme,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
-    theme::surface_button_style(status)
+    theme::surface_button_style(theme, status)
 }

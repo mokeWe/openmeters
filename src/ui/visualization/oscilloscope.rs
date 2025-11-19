@@ -296,7 +296,6 @@ struct Projection {
 
 #[derive(Debug, Clone)]
 pub struct OscilloscopeStyle {
-    pub background: Color,
     pub channel_colors: Vec<Color>,
     pub line_alpha: f32,
     pub vertical_padding: f32,
@@ -308,7 +307,6 @@ pub struct OscilloscopeStyle {
 impl Default for OscilloscopeStyle {
     fn default() -> Self {
         Self {
-            background: theme::base_color(),
             channel_colors: theme::DEFAULT_OSCILLOSCOPE_PALETTE.to_vec(),
             line_alpha: 0.92,
             vertical_padding: 8.0,
@@ -357,7 +355,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Oscilloscope<
         &self,
         _tree: &Tree,
         renderer: &mut iced::Renderer,
-        _theme: &iced::Theme,
+        theme: &iced::Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -365,7 +363,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Oscilloscope<
     ) {
         let bounds = layout.bounds();
         let params = self.state.visual_params(bounds);
-        let background = self.state.style.background;
+        let background = theme.extended_palette().background.base.color;
 
         if params.fade_alpha >= 0.999 {
             let mut clear_color = background;

@@ -191,8 +191,10 @@ impl PaletteEditor {
 
         container(col)
             .padding(12)
-            .style(|_| container::Style {
-                background: Some(Background::Color(theme::surface_color())),
+            .style(|theme: &iced::Theme| container::Style {
+                background: Some(Background::Color(
+                    theme.extended_palette().background.weak.color,
+                )),
                 border: theme::sharp_border(),
                 ..Default::default()
             })
@@ -245,8 +247,8 @@ fn set_a(mut c: Color, v: f32) -> Color {
 }
 
 fn button_style(
-    _theme: &iced::Theme,
+    theme: &iced::Theme,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
-    theme::surface_button_style(status)
+    theme::surface_button_style(theme, status)
 }

@@ -118,20 +118,35 @@ const LIVE_VALUE_LABEL_WIDTH: f32 = clamp_width(
 const LIVE_VALUE_LABEL_RESERVE: f32 =
     LIVE_VALUE_LABEL_GAP + LIVE_VALUE_LABEL_MARGIN + LIVE_VALUE_LABEL_WIDTH;
 
-fn guide_line_color() -> Color {
+fn guide_line_color(theme: &Theme) -> Color {
+    let palette = theme.extended_palette();
     theme::with_alpha(
-        theme::mix_colors(theme::text_secondary(), theme::surface_color(), 0.35),
+        theme::mix_colors(
+            palette.secondary.weak.text,
+            palette.background.weak.color,
+            0.35,
+        ),
         0.88,
     )
 }
 
-fn guide_label_color() -> Color {
-    theme::mix_colors(theme::text_color(), theme::surface_color(), 0.2)
+fn guide_label_color(theme: &Theme) -> Color {
+    let palette = theme.extended_palette();
+    theme::mix_colors(
+        palette.background.base.text,
+        palette.background.weak.color,
+        0.2,
+    )
 }
 
-fn live_label_background() -> Color {
+fn live_label_background(theme: &Theme) -> Color {
+    let palette = theme.extended_palette();
     theme::with_alpha(
-        theme::mix_colors(theme::surface_color(), theme::accent_primary(), 0.25),
+        theme::mix_colors(
+            palette.background.weak.color,
+            palette.primary.base.color,
+            0.25,
+        ),
         0.92,
     )
 }
@@ -190,7 +205,6 @@ pub struct LoudnessMeterState {
     rms_slow_db: [f32; CHANNELS],
     true_peak_db: [f32; CHANNELS],
     range: (f32, f32),
-    style: VisualStyle,
     left_mode: MeterMode,
     right_mode: MeterMode,
 }
@@ -204,7 +218,6 @@ impl LoudnessMeterState {
             rms_slow_db: [DEFAULT_RANGE.0; CHANNELS],
             true_peak_db: [DEFAULT_RANGE.0; CHANNELS],
             range: DEFAULT_RANGE,
-            style: VisualStyle::default(),
             left_mode: MeterMode::TruePeak,
             right_mode: MeterMode::LufsShortTerm,
         }
@@ -239,10 +252,6 @@ impl LoudnessMeterState {
         self.range
     }
 
-    pub fn style(&self) -> &VisualStyle {
-        &self.style
-    }
-
     pub fn set_modes(&mut self, left: MeterMode, right: MeterMode) {
         self.left_mode = left;
         self.right_mode = right;
@@ -275,11 +284,23 @@ impl LoudnessMeterState {
         }
     }
 
-    pub fn visual_params(&self, range: (f32, f32)) -> VisualParams {
+    pub fn visual_params(&self, range: (f32, f32), theme: &Theme) -> VisualParams {
         let (min, max) = range;
-        let style = *self.style();
-        let guide_color = theme::color_to_rgba(guide_line_color());
-        let bg_color = theme::color_to_rgba(style.background);
+        let palette = theme.extended_palette();
+        let elevated = palette.background.strong.color;
+        let text = palette.background.base.text;
+        let accent = palette.primary.base.color;
+        let success = palette.success.base.color;
+
+        // Approximate hover as elevated for now
+        let hover = elevated;
+
+        let short_term_fill = theme::mix_colors(accent, success, 0.35);
+        let raw_peak_left_fill = theme::mix_colors(elevated, text, 0.18);
+        let raw_peak_right_fill = theme::mix_colors(hover, text, 0.12);
+
+        let guide_color = theme::color_to_rgba(guide_line_color(theme));
+        let bg_color = theme::color_to_rgba(palette.background.weak.color);
 
         let left_values: Vec<f32> = (0..CHANNELS)
             .map(|ch| self.get_value_for_mode(self.left_mode, ch))
@@ -288,7 +309,7 @@ impl LoudnessMeterState {
 
         let left_fills: Vec<_> = left_values
             .iter()
-            .zip([style.raw_peak_left_fill, style.raw_peak_right_fill])
+            .zip([raw_peak_left_fill, raw_peak_right_fill])
             .map(|(&value, color)| FillVisual {
                 value_loudness: value,
                 color: theme::color_to_rgba(color),
@@ -304,7 +325,7 @@ impl LoudnessMeterState {
                 background_color: bg_color,
                 fills: vec![FillVisual {
                     value_loudness: right_value,
-                    color: theme::color_to_rgba(style.short_term_fill),
+                    color: theme::color_to_rgba(short_term_fill),
                 }],
             },
         ];
@@ -346,33 +367,6 @@ impl LoudnessMeterState {
             guide_padding: GUIDE_LINE_PADDING,
             value_scale_bias: VALUE_SCALE_MIX,
             vertical_padding: METER_VERTICAL_PADDING,
-        }
-    }
-}
-
-/// Palette for the loudness meter.
-#[derive(Debug, Clone, Copy)]
-pub struct VisualStyle {
-    pub background: Color,
-    pub raw_peak_left_fill: Color,
-    pub raw_peak_right_fill: Color,
-    pub short_term_fill: Color,
-}
-
-impl Default for VisualStyle {
-    fn default() -> Self {
-        let surface = theme::surface_color();
-        let elevated = theme::elevated_color();
-        let hover = theme::hover_color();
-        let text = theme::text_color();
-        let accent = theme::accent_primary();
-        let success = theme::accent_success();
-
-        Self {
-            background: surface,
-            raw_peak_left_fill: theme::mix_colors(elevated, text, 0.18),
-            raw_peak_right_fill: theme::mix_colors(hover, text, 0.12),
-            short_term_fill: theme::mix_colors(accent, success, 0.35),
         }
     }
 }
@@ -467,7 +461,7 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
         &self,
         tree: &Tree,
         renderer: &mut iced::Renderer,
-        _theme: &Theme,
+        theme: &Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -475,10 +469,10 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
     ) {
         let bounds = layout.bounds();
         let (min, max) = self.active_range();
-        let params = self.state.visual_params((min, max));
+        let params = self.state.visual_params((min, max), theme);
         renderer.draw_primitive(bounds, LoudnessMeterPrimitive::new(params.clone()));
-        draw_guide_labels(tree, renderer, bounds, &params);
-        draw_live_value_label(tree, renderer, bounds, &params);
+        draw_guide_labels(tree, renderer, bounds, &params, theme);
+        draw_live_value_label(tree, renderer, bounds, &params, theme);
     }
 
     fn children(&self) -> Vec<Tree> {
@@ -607,6 +601,7 @@ fn draw_guide_labels(
     renderer: &mut iced::Renderer,
     bounds: Rectangle,
     params: &VisualParams,
+    theme: &Theme,
 ) {
     let cache = tree.state.downcast_ref::<GuideLabelCache>();
     let mut entries = cache.entries.borrow_mut();
@@ -621,7 +616,7 @@ fn draw_guide_labels(
         return;
     };
 
-    let label_color = guide_label_color();
+    let label_color = guide_label_color(theme);
     let mut active_labels = Vec::with_capacity(params.guides.len());
 
     for guide in &params.guides {
@@ -654,6 +649,7 @@ fn draw_live_value_label(
     renderer: &mut iced::Renderer,
     bounds: Rectangle,
     params: &VisualParams,
+    theme: &Theme,
 ) {
     let cache = tree.state.downcast_ref::<GuideLabelCache>();
     let mut live_entry = cache.live_value.borrow_mut();
@@ -704,10 +700,15 @@ fn draw_live_value_label(
             border: Border::default(),
             shadow: Default::default(),
         },
-        Background::Color(live_label_background()),
+        Background::Color(live_label_background(theme)),
     );
 
-    renderer.fill_paragraph(&entry.paragraph, position, theme::text_color(), clip_bounds);
+    renderer.fill_paragraph(
+        &entry.paragraph,
+        position,
+        theme.extended_palette().background.base.text,
+        clip_bounds,
+    );
 }
 
 struct GuideRenderContext {
@@ -862,7 +863,8 @@ mod tests {
         assert_eq!(state.true_peak_db[0], -1.0);
         assert_eq!(state.true_peak_db[1], -3.0);
 
-        let params = state.visual_params(state.range());
+        let theme = theme::theme(None);
+        let params = state.visual_params(state.range(), &theme);
         assert_eq!(params.channels.len(), 2);
         assert_eq!(params.channels[0].fills.len(), 2);
         assert_eq!(params.channels[1].fills.len(), 1);

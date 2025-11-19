@@ -171,7 +171,6 @@ impl StereometerState {
 
 #[derive(Debug, Clone)]
 pub struct StereometerStyle {
-    pub background: Color,
     pub trace_color: Color,
     pub line_alpha: f32,
     pub amplitude_scale: f32,
@@ -181,7 +180,6 @@ pub struct StereometerStyle {
 impl Default for StereometerStyle {
     fn default() -> Self {
         Self {
-            background: theme::base_color(),
             trace_color: theme::DEFAULT_STEREOMETER_PALETTE[0],
             line_alpha: 0.92,
             amplitude_scale: 0.9,
@@ -228,7 +226,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Stereometer<'
         &self,
         _tree: &Tree,
         renderer: &mut iced::Renderer,
-        _theme: &iced::Theme,
+        theme: &iced::Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -236,7 +234,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Stereometer<'
     ) {
         let bounds = layout.bounds();
         let params = self.state.visual_params(bounds);
-        let background = self.state.style.background;
+        let background = theme.extended_palette().background.base.color;
 
         if params.fade_alpha >= 0.999 {
             let mut clear_color = background;

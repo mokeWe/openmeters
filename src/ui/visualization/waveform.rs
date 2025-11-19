@@ -303,7 +303,6 @@ fn channel_frequency_hint(snapshot: &WaveformSnapshot, channel: usize) -> f32 {
 
 #[derive(Debug, Clone)]
 pub struct WaveformStyle {
-    pub background: Color,
     pub fill_alpha: f32,
     pub line_alpha: f32,
     pub vertical_padding: f32,
@@ -385,12 +384,10 @@ impl WaveformStyle {
 
 impl Default for WaveformStyle {
     fn default() -> Self {
-        let background = theme::with_alpha(theme::base_color(), 0.0);
         let palette = theme::DEFAULT_WAVEFORM_PALETTE.to_vec();
         let gradient = Self::build_gradient(&palette);
 
         Self {
-            background,
             fill_alpha: DEFAULT_FILL_ALPHA,
             line_alpha: DEFAULT_LINE_ALPHA,
             vertical_padding: DEFAULT_VERTICAL_PADDING,
@@ -447,7 +444,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Waveform<'a> 
         &self,
         _tree: &Tree,
         renderer: &mut iced::Renderer,
-        _theme: &iced::Theme,
+        theme: &iced::Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -460,7 +457,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Waveform<'a> 
                 border: Default::default(),
                 shadow: Default::default(),
             },
-            Background::Color(self.state.style.background),
+            Background::Color(theme.extended_palette().background.base.color),
         );
 
         if let Some(params) = self.state.visual(bounds) {

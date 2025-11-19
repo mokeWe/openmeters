@@ -1052,7 +1052,13 @@ impl<'a> Spectrogram<'a> {
     }
 
     /// Draw the frequency tooltip near the cursor.
-    fn draw_tooltip(&self, renderer: &mut iced::Renderer, bounds: Rectangle, cursor_pos: Point) {
+    fn draw_tooltip(
+        &self,
+        renderer: &mut iced::Renderer,
+        theme: &iced::Theme,
+        bounds: Rectangle,
+        cursor_pos: Point,
+    ) {
         use iced::advanced::graphics::text::Paragraph as RenderParagraph;
         use iced::advanced::text::{self, Paragraph as _};
 
@@ -1095,6 +1101,8 @@ impl<'a> Spectrogram<'a> {
 
         let tooltip_bounds = Rectangle::new(Point::new(tooltip_x, tooltip_y), tooltip_size);
 
+        let palette = theme.extended_palette();
+
         // Shadow
         renderer.fill_quad(
             Quad {
@@ -1109,7 +1117,7 @@ impl<'a> Spectrogram<'a> {
                 shadow: Default::default(),
             },
             Background::Color(theme::with_alpha(
-                theme::base_color(),
+                palette.background.base.color,
                 TOOLTIP_SHADOW_OPACITY,
             )),
         );
@@ -1121,7 +1129,7 @@ impl<'a> Spectrogram<'a> {
                 border: theme::sharp_border(),
                 shadow: Default::default(),
             },
-            Background::Color(theme::elevated_color()),
+            Background::Color(palette.background.strong.color),
         );
 
         // Text
@@ -1142,7 +1150,7 @@ impl<'a> Spectrogram<'a> {
                 wrapping: text::Wrapping::None,
             },
             text_origin,
-            theme::text_color(),
+            palette.background.base.text,
             Rectangle::new(text_origin, text_size),
         );
     }
@@ -1202,7 +1210,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
         &self,
         tree: &Tree,
         renderer: &mut iced::Renderer,
-        _theme: &iced::Theme,
+        theme: &iced::Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -1228,7 +1236,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
             && bounds.contains(cursor_pos)
         {
             renderer.with_layer(bounds, |renderer| {
-                self.draw_tooltip(renderer, bounds, cursor_pos);
+                self.draw_tooltip(renderer, theme, bounds, cursor_pos);
             });
         }
     }

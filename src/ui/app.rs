@@ -382,11 +382,20 @@ impl UiApp {
     }
 
     fn theme(&self, _window: window::Id) -> iced::Theme {
-        theme::theme()
+        let bg = self
+            .settings_handle
+            .borrow()
+            .settings()
+            .background_color
+            .map(|c| c.to_color());
+        theme::theme(bg)
     }
 
     fn main_window_view(&self) -> Element<'_, Message> {
-        let visuals = self.visuals_page.view().map(Message::Visuals);
+        let visuals = self
+            .visuals_page
+            .view(self.ui_visible)
+            .map(Message::Visuals);
         let show_overlay = self
             .overlay_until
             .map(|deadline| Instant::now() < deadline)
@@ -556,7 +565,8 @@ fn tab_button(
     current: Page,
 ) -> iced::widget::Button<'static, Message> {
     let active = current == target;
-    let mut btn = button(text(label)).style(move |_theme, status| tab_button_style(active, status));
+    let mut btn =
+        button(text(label)).style(move |theme, status| tab_button_style(theme, active, status));
 
     if !active {
         btn = btn.on_press(Message::PageSelected(target));
@@ -566,29 +576,32 @@ fn tab_button(
 }
 
 fn tab_button_style(
+    theme: &iced::Theme,
     active: bool,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
+    let palette = theme.extended_palette();
     let base_background = if active {
-        theme::elevated_color()
+        palette.background.strong.color
     } else {
-        theme::surface_color()
+        palette.background.weak.color
     };
-    theme::button_style(base_background, status)
+    theme::button_style(theme, base_background, status)
 }
 
 fn settings_button_style(
-    _theme: &iced::Theme,
+    theme: &iced::Theme,
     status: iced::widget::button::Status,
 ) -> iced::widget::button::Style {
-    theme::surface_button_style(status)
+    theme::surface_button_style(theme, status)
 }
 
-fn settings_panel_style(_theme: &iced::Theme) -> iced::widget::container::Style {
+fn settings_panel_style(theme: &iced::Theme) -> iced::widget::container::Style {
+    let palette = theme.extended_palette();
     let border = theme::sharp_border();
     iced::widget::container::Style {
-        background: Some(Background::Color(theme::surface_color())),
-        text_color: Some(theme::text_color()),
+        background: Some(Background::Color(palette.background.weak.color)),
+        text_color: Some(palette.background.base.text),
         border,
         ..Default::default()
     }

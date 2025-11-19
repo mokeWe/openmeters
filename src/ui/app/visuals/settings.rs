@@ -3,7 +3,7 @@
 
 mod loudness;
 mod oscilloscope;
-mod palette;
+pub mod palette;
 mod spectrogram;
 mod spectrum;
 mod stereometer;

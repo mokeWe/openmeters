@@ -390,11 +390,9 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
     }
 
     fn view(&self) -> Element<'_, SettingsMessage> {
-        let divider_color = theme::with_alpha(theme::text_secondary(), 0.35);
         let make_divider = || {
-            let color = divider_color;
-            Rule::horizontal(RULE_HEIGHT).style(move |_| rule::Style {
-                color,
+            Rule::horizontal(RULE_HEIGHT).style(move |theme: &iced::Theme| rule::Style {
+                color: theme::with_alpha(theme.extended_palette().secondary.weak.text, 0.35),
                 width: RULE_THICKNESS,
                 radius: 0.0.into(),
                 fill_mode: rule::FillMode::Percent(RULE_FILL_PERCENT),
