@@ -15,7 +15,7 @@ pub mod settings;
 pub use settings::{ActiveSettings, SettingsMessage, create_panel as create_settings_panel};
 
 use iced::alignment::{Horizontal, Vertical};
-use iced::widget::{column, container, text};
+use iced::widget::{column, container, mouse_area, text};
 use iced::{Element, Length, Subscription, Task};
 use std::collections::HashMap;
 
@@ -28,6 +28,7 @@ pub enum VisualsMessage {
         visual_id: VisualId,
         kind: VisualKind,
     },
+    WindowDragRequested,
 }
 
 #[derive(Debug, Clone)]
@@ -202,6 +203,7 @@ impl VisualsPage {
                 }
             }
             VisualsMessage::SettingsRequested { .. } => {}
+            VisualsMessage::WindowDragRequested => {}
         }
 
         Task::none()
@@ -211,17 +213,24 @@ impl VisualsPage {
         let spacing = if controls_visible { 16.0 } else { 0.0 };
 
         let body: Element<'_, VisualsMessage> = if let Some(panes) = &self.panes {
-            let grid = pane_grid::PaneGrid::new(panes, |_, pane_state| pane_state.view())
+            let mut grid = pane_grid::PaneGrid::new(panes, |_, pane_state| pane_state.view())
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .spacing(spacing)
-                .on_drag(VisualsMessage::PaneDragged)
                 .on_context_request(VisualsMessage::PaneContextRequested);
 
-            container(grid)
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .into()
+            if controls_visible {
+                grid = grid.on_drag(VisualsMessage::PaneDragged);
+                container(grid)
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .into()
+            } else {
+                mouse_area(container(grid).width(Length::Fill).height(Length::Fill))
+                    .on_press(VisualsMessage::WindowDragRequested)
+                    .interaction(iced::mouse::Interaction::Grab)
+                    .into()
+            }
         } else {
             container(text("enable one or more visual modules to get started"))
                 .width(Length::Fill)

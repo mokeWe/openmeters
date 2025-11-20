@@ -30,6 +30,8 @@ pub struct UiSettings {
     pub visuals: VisualSettings,
     #[serde(default)]
     pub background_color: Option<ColorSetting>,
+    #[serde(default)]
+    pub decorations: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -761,6 +763,10 @@ impl SettingsManager {
 
     pub fn set_background_color(&mut self, color: Option<Color>) {
         self.data.background_color = color.map(ColorSetting::from);
+    }
+
+    pub fn set_decorations(&mut self, enabled: bool) {
+        self.data.decorations = enabled;
     }
 
     pub fn save(&self) -> io::Result<()> {

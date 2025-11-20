@@ -18,7 +18,6 @@ pub struct StereometerParams {
     pub xy_points: Vec<(f32, f32)>,
     pub color: [f32; 4],
     pub line_alpha: f32,
-    pub fade_alpha: f32,
     pub amplitude_scale: f32,
     pub stroke_width: f32,
 }

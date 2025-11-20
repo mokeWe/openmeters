@@ -2,7 +2,7 @@
 
 use iced::border::Border;
 use iced::theme::palette::{self, Extended, Pair};
-use iced::widget::button;
+use iced::widget::{button, container};
 use iced::{Background, Color, Theme};
 
 // Core palette stops
@@ -224,8 +224,6 @@ pub fn button_style(theme: &Theme, base: Color, status: button::Status) -> butto
 
     match status {
         button::Status::Hovered => {
-            // We need a hover color that contrasts with the base.
-            // If base is light, darken. If dark, lighten.
             let is_light = luminance(base) > 0.5;
             let hover = if is_light {
                 darken(base, 0.05)
@@ -246,6 +244,27 @@ pub fn button_style(theme: &Theme, base: Color, status: button::Status) -> butto
 pub fn surface_button_style(theme: &Theme, status: button::Status) -> button::Style {
     let palette = theme.extended_palette();
     button_style(theme, palette.background.weak.color, status)
+}
+
+pub fn tab_button_style(theme: &Theme, active: bool, status: button::Status) -> button::Style {
+    let palette = theme.extended_palette();
+    let mut base = if active {
+        palette.background.strong.color
+    } else {
+        palette.background.weak.color
+    };
+    base.a = 1.0;
+    button_style(theme, base, status)
+}
+
+pub fn opaque_container(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    let mut bg = palette.background.base.color;
+    bg.a = 1.0;
+    container::Style {
+        background: Some(Background::Color(bg)),
+        ..Default::default()
+    }
 }
 
 pub fn accent_primary() -> Color {

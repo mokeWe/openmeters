@@ -21,7 +21,6 @@ Checked features are implemented, unchecked features are planned. If you have id
     - [x] Slow
   - [x] True Peak
 - [x] **oscilloscope**
-  - [x] XY/vectorscope mode
 - [x] **spectrogram**
   - [x] Reassignment for better low-frequency resolution
   - [x] Note & frequency tooltips
@@ -31,7 +30,10 @@ Checked features are implemented, unchecked features are planned. If you have id
   - [x] dynamic frequency tooltips
   - [x] mel, log, and linear scales
   - [x] Color maps
-- [ ] **stereometer**
+- [x] **stereometer**
+  - [ ] Correlation meter
+  - [x] Vectorscope
+  - [ ] Dot cloud
 - [x] **waveform**
   - [x] Color maps
 
@@ -68,9 +70,13 @@ Checked features are implemented, unchecked features are planned. If you have id
 
 ## usage
 
-Upon launch you'll see a configuration page. Here you can select which applications or devices to monitor, as well as the modules you want to display. By default, we monitor applications. The `loudness` and `waveform` modules are enabled by default as well.
+Upon launch you'll see a configuration page. Here you can select which applications or devices to monitor, the modules you want to display, and some global settings (window decorations, global background color, etc.). By default, we monitor applications. The `loudness` and `waveform` modules are enabled by default as well.
+  
+### keybinds
 
-Switch to the "visuals" tab to view the selected modules. Show/hide the top bar by pressing `ctrl+shift+h`. Rearrange modules by dragging and dropping them. Right click on a module to access its settings. Pause capture by pressing `p`, when paused you can still access settings, rearrange modules, and check frequency tooltips in the spectrogram.
+- `ctrl+shift+h`: Show/hide top bar
+- `p`: Pause/resume audio capture
+- `q` twice: Quit application
 
 ### configuration
 

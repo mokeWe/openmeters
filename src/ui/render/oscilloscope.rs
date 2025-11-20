@@ -20,7 +20,6 @@ pub struct OscilloscopeParams {
     pub samples: Vec<f32>,
     pub colors: Vec<[f32; 4]>,
     pub line_alpha: f32,
-    pub fade_alpha: f32,
     pub vertical_padding: f32,
     pub channel_gap: f32,
     pub amplitude_scale: f32,

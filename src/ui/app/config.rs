@@ -63,6 +63,7 @@ pub enum ConfigMessage {
     CaptureModeChanged(CaptureMode),
     CaptureDeviceChanged(DeviceSelection),
     BgPalette(PaletteEvent),
+    DecorationsToggled(bool),
 }
 
 #[derive(Debug)]
@@ -177,6 +178,9 @@ impl ConfigPage {
                     let color = self.bg_palette.colors().first().copied();
                     self.settings.update(|s| s.set_background_color(color));
                 }
+            }
+            ConfigMessage::DecorationsToggled(enabled) => {
+                self.settings.update(|s| s.set_decorations(enabled));
             }
         }
 
@@ -397,7 +401,19 @@ impl ConfigPage {
 
     fn render_bg_section(&self) -> Column<'_, ConfigMessage> {
         let content = self.bg_palette.view().map(ConfigMessage::BgPalette);
-        self.section("Global", content)
+        let decorations_enabled = self.settings.borrow().settings().decorations;
+
+        let decorations_toggle =
+            iced::widget::checkbox("Enable Window Decorations", decorations_enabled)
+                .on_toggle(ConfigMessage::DecorationsToggled);
+
+        self.section(
+            "Global",
+            Column::new()
+                .spacing(12)
+                .push(content)
+                .push(decorations_toggle),
+        )
     }
 
     fn render_visuals_section(

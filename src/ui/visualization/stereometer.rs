@@ -8,11 +8,10 @@ use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::stereometer::{StereometerParams, StereometerPrimitive};
 use crate::ui::settings::StereometerSettings;
 use crate::ui::theme;
-use iced::advanced::Renderer as _;
-use iced::advanced::renderer::{self, Quad};
+use iced::advanced::renderer;
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Widget, layout, mouse};
-use iced::{Background, Color, Element, Length, Rectangle, Size};
+use iced::{Color, Element, Length, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -72,7 +71,6 @@ pub struct StereometerState {
     snapshot: StereometerSnapshot,
     style: StereometerStyle,
     display_points: Vec<(f32, f32)>,
-    fade_alpha: f32,
     persistence: f32,
     instance_id: u64,
 }
@@ -83,7 +81,6 @@ impl StereometerState {
             snapshot: StereometerSnapshot::default(),
             style: StereometerStyle::default(),
             display_points: Vec::new(),
-            fade_alpha: 1.0,
             persistence: 0.85,
             instance_id: next_instance_id(),
         }
@@ -91,7 +88,6 @@ impl StereometerState {
 
     pub fn update_view_settings(&mut self, settings: &StereometerSettings) {
         self.persistence = settings.persistence.clamp(0.0, 0.9);
-        self.recompute_fade_alpha();
     }
 
     pub fn set_palette(&mut self, palette: &[Color]) {
@@ -106,7 +102,6 @@ impl StereometerState {
         if snapshot.xy_points.is_empty() {
             self.snapshot = snapshot.clone();
             self.display_points.clear();
-            self.fade_alpha = 1.0_f32;
             return;
         }
 
@@ -135,22 +130,10 @@ impl StereometerState {
         self.snapshot
             .xy_points
             .extend_from_slice(&self.display_points);
-        self.recompute_fade_alpha();
     }
 
     pub fn view_settings(&self) -> f32 {
         self.persistence
-    }
-
-    fn recompute_fade_alpha(&mut self) {
-        if self.snapshot.xy_points.is_empty() {
-            self.fade_alpha = 1.0_f32;
-            return;
-        }
-
-        let persistence = self.persistence.clamp(0.0, 0.9);
-        let fade = (1.0_f32 - persistence).max(0.0_f32);
-        self.fade_alpha = fade.sqrt().clamp(0.05_f32, 1.0_f32);
     }
 
     fn visual_params(&self, bounds: Rectangle) -> StereometerParams {
@@ -162,7 +145,6 @@ impl StereometerState {
             xy_points: self.snapshot.xy_points.clone(),
             color,
             line_alpha: self.style.line_alpha,
-            fade_alpha: self.fade_alpha,
             amplitude_scale: self.style.amplitude_scale,
             stroke_width: self.style.stroke_width,
         }
@@ -226,7 +208,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Stereometer<'
         &self,
         _tree: &Tree,
         renderer: &mut iced::Renderer,
-        theme: &iced::Theme,
+        _theme: &iced::Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -234,31 +216,6 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Stereometer<'
     ) {
         let bounds = layout.bounds();
         let params = self.state.visual_params(bounds);
-        let background = theme.extended_palette().background.base.color;
-
-        if params.fade_alpha >= 0.999 {
-            let mut clear_color = background;
-            clear_color.a = 1.0;
-            renderer.fill_quad(
-                Quad {
-                    bounds,
-                    border: Default::default(),
-                    shadow: Default::default(),
-                },
-                Background::Color(clear_color),
-            );
-        } else if params.fade_alpha > f32::EPSILON {
-            let mut fade_color = background;
-            fade_color.a = params.fade_alpha.clamp(0.0, 1.0);
-            renderer.fill_quad(
-                Quad {
-                    bounds,
-                    border: Default::default(),
-                    shadow: Default::default(),
-                },
-                Background::Color(fade_color),
-            );
-        }
 
         renderer.draw_primitive(bounds, StereometerPrimitive::new(params));
     }

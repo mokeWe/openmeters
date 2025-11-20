@@ -8,11 +8,10 @@ use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::oscilloscope::{OscilloscopeParams, OscilloscopePrimitive};
 use crate::ui::settings::{OscilloscopeChannelMode, OscilloscopeSettings};
 use crate::ui::theme;
-use iced::advanced::Renderer as _;
-use iced::advanced::renderer::{self, Quad};
+use iced::advanced::renderer;
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Widget, layout, mouse};
-use iced::{Background, Color, Element, Length, Rectangle, Size};
+use iced::{Color, Element, Length, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
@@ -73,7 +72,6 @@ pub struct OscilloscopeState {
     latest_snapshot: OscilloscopeSnapshot,
     style: OscilloscopeStyle,
     display_samples: Vec<f32>,
-    fade_alpha: f32,
     persistence: f32,
     channel_mode: OscilloscopeChannelMode,
     instance_id: u64,
@@ -86,7 +84,6 @@ impl OscilloscopeState {
             latest_snapshot: OscilloscopeSnapshot::default(),
             style: OscilloscopeStyle::default(),
             display_samples: Vec::new(),
-            fade_alpha: 1.0,
             persistence: 0.1,
             channel_mode: OscilloscopeChannelMode::Both,
             instance_id: next_instance_id(),
@@ -98,8 +95,6 @@ impl OscilloscopeState {
         if self.channel_mode != settings.channel_mode {
             self.channel_mode = settings.channel_mode;
             self.reproject_latest(false);
-        } else {
-            self.recompute_fade_alpha();
         }
     }
 
@@ -116,7 +111,6 @@ impl OscilloscopeState {
         if snapshot.samples.is_empty() {
             self.snapshot = snapshot.clone();
             self.display_samples.clear();
-            self.fade_alpha = 1.0_f32;
             return;
         }
 
@@ -136,23 +130,11 @@ impl OscilloscopeState {
         self.persistence.clamp(0.0, 0.98)
     }
 
-    fn recompute_fade_alpha(&mut self) {
-        if self.snapshot.samples.is_empty() {
-            self.fade_alpha = 1.0_f32;
-            return;
-        }
-
-        let persistence = self.effective_persistence();
-        let fade = (1.0_f32 - persistence).max(0.0_f32);
-        self.fade_alpha = fade.sqrt().clamp(0.05_f32, 1.0_f32);
-    }
-
     fn reproject_latest(&mut self, blend: bool) {
         let latest = self.latest_snapshot.clone();
         if latest.samples.is_empty() {
             self.snapshot = latest;
             self.display_samples.clear();
-            self.fade_alpha = 1.0_f32;
             return;
         }
         self.project_snapshot(latest, blend);
@@ -162,7 +144,6 @@ impl OscilloscopeState {
         let Some(projection) = self.project_samples(&source) else {
             self.snapshot = OscilloscopeSnapshot::default();
             self.display_samples.clear();
-            self.fade_alpha = 1.0_f32;
             return;
         };
 
@@ -195,7 +176,6 @@ impl OscilloscopeState {
         self.snapshot
             .samples
             .extend_from_slice(&self.display_samples);
-        self.recompute_fade_alpha();
     }
 
     fn project_samples(&self, source: &OscilloscopeSnapshot) -> Option<Projection> {
@@ -278,7 +258,6 @@ impl OscilloscopeState {
             samples: self.snapshot.samples.clone(),
             colors,
             line_alpha: self.style.line_alpha,
-            fade_alpha: self.fade_alpha,
             vertical_padding: self.style.vertical_padding,
             channel_gap: self.style.channel_gap,
             amplitude_scale: self.style.amplitude_scale,
@@ -355,7 +334,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Oscilloscope<
         &self,
         _tree: &Tree,
         renderer: &mut iced::Renderer,
-        theme: &iced::Theme,
+        _theme: &iced::Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
@@ -363,31 +342,6 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Oscilloscope<
     ) {
         let bounds = layout.bounds();
         let params = self.state.visual_params(bounds);
-        let background = theme.extended_palette().background.base.color;
-
-        if params.fade_alpha >= 0.999 {
-            let mut clear_color = background;
-            clear_color.a = 1.0;
-            renderer.fill_quad(
-                Quad {
-                    bounds,
-                    border: Default::default(),
-                    shadow: Default::default(),
-                },
-                Background::Color(clear_color),
-            );
-        } else if params.fade_alpha > f32::EPSILON {
-            let mut fade_color = background;
-            fade_color.a = params.fade_alpha.clamp(0.0, 1.0);
-            renderer.fill_quad(
-                Quad {
-                    bounds,
-                    border: Default::default(),
-                    shadow: Default::default(),
-                },
-                Background::Color(fade_color),
-            );
-        }
 
         renderer.draw_primitive(bounds, OscilloscopePrimitive::new(params));
     }

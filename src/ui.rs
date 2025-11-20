@@ -5,6 +5,7 @@ pub mod hardware_sink;
 pub mod pane_grid;
 pub mod render;
 pub mod settings;
+pub mod settings_window;
 pub mod theme;
 pub mod visualization;
 

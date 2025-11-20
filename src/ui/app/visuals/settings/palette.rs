@@ -203,8 +203,16 @@ impl PaletteEditor {
 }
 
 fn swatch_style(color: Color, active: bool) -> container::Style {
+    // Premultiply alpha for the swatch display to match the window renderer
+    let display_color = Color {
+        r: color.r * color.a,
+        g: color.g * color.a,
+        b: color.b * color.a,
+        a: color.a,
+    };
+
     container::Style::default()
-        .background(Background::Color(color))
+        .background(Background::Color(display_color))
         .border(if active {
             theme::focus_border()
         } else {
@@ -216,7 +224,13 @@ fn to_hex(c: Color) -> String {
     let r = (c.r.clamp(0.0, 1.0) * 255.0).round() as u8;
     let g = (c.g.clamp(0.0, 1.0) * 255.0).round() as u8;
     let b = (c.b.clamp(0.0, 1.0) * 255.0).round() as u8;
-    format!("#{r:02X}{g:02X}{b:02X}")
+    let a = (c.a.clamp(0.0, 1.0) * 255.0).round() as u8;
+
+    if a == 255 {
+        format!("#{r:02X}{g:02X}{b:02X}")
+    } else {
+        format!("#{r:02X}{g:02X}{b:02X}{a:02X}")
+    }
 }
 
 #[inline]
@@ -242,7 +256,8 @@ fn set_b(mut c: Color, v: f32) -> Color {
     c
 }
 fn set_a(mut c: Color, v: f32) -> Color {
-    c.a = v;
+    // Snap to 0.0 if very close to ensure clean transparency
+    c.a = if v < 0.005 { 0.0 } else { v };
     c
 }
 
