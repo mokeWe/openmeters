@@ -13,6 +13,7 @@ use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Widget, layout, mouse};
 use iced::{Color, Element, Length, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -172,11 +173,11 @@ impl Default for StereometerStyle {
 
 #[derive(Debug)]
 pub struct Stereometer<'a> {
-    state: &'a StereometerState,
+    state: &'a RefCell<StereometerState>,
 }
 
 impl<'a> Stereometer<'a> {
-    pub fn new(state: &'a StereometerState) -> Self {
+    pub fn new(state: &'a RefCell<StereometerState>) -> Self {
         Self { state }
     }
 }
@@ -215,7 +216,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Stereometer<'
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let params = self.state.visual_params(bounds);
+        let params = self.state.borrow().visual_params(bounds);
 
         renderer.draw_primitive(bounds, StereometerPrimitive::new(params));
     }
@@ -227,7 +228,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Stereometer<'
     fn diff(&self, _tree: &mut Tree) {}
 }
 
-pub fn widget<'a, Message>(state: &'a StereometerState) -> Element<'a, Message>
+pub fn widget<'a, Message>(state: &'a RefCell<StereometerState>) -> Element<'a, Message>
 where
     Message: 'a,
 {

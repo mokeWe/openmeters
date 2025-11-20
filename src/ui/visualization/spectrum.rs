@@ -15,6 +15,7 @@ use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Widget, layout, mouse};
 use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
+use std::cell::RefCell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
@@ -421,11 +422,11 @@ impl SpectrumState {
 
 #[derive(Debug)]
 pub struct Spectrum<'a> {
-    state: &'a SpectrumState,
+    state: &'a RefCell<SpectrumState>,
 }
 
 impl<'a> Spectrum<'a> {
-    pub fn new(state: &'a SpectrumState) -> Self {
+    pub fn new(state: &'a RefCell<SpectrumState>) -> Self {
         Self { state }
     }
 }
@@ -465,7 +466,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> 
     ) {
         let bounds = layout.bounds();
 
-        let Some(visual) = self.state.visual(bounds, theme) else {
+        let Some(visual) = self.state.borrow().visual(bounds, theme) else {
             renderer.fill_quad(
                 Quad {
                     bounds,
@@ -509,7 +510,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> 
     fn diff(&self, _tree: &mut Tree) {}
 }
 
-pub fn widget<'a, Message>(state: &'a SpectrumState) -> Element<'a, Message>
+pub fn widget<'a, Message>(state: &'a RefCell<SpectrumState>) -> Element<'a, Message>
 where
     Message: 'a,
 {

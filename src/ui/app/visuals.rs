@@ -75,7 +75,7 @@ impl VisualPane {
                 )
             }
             VisualContent::Spectrogram { state } => {
-                let spec = spectrogram::widget(state.as_ref());
+                let spec = spectrogram::widget(state);
                 Element::from(
                     container(spec)
                         .width(Length::Fill)
@@ -102,7 +102,7 @@ impl VisualPane {
                 )
             }
             VisualContent::Waveform { state } => {
-                let wave = waveform::widget(state.as_ref());
+                let wave = waveform::widget(state);
                 Element::from(
                     container(wave)
                         .width(Length::Fill)

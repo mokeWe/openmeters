@@ -115,12 +115,24 @@ pub struct VisualSlotSnapshot {
 
 #[derive(Debug, Clone)]
 pub enum VisualContent {
-    LoudnessMeter { state: LoudnessMeterState },
-    Oscilloscope { state: OscilloscopeState },
-    Spectrogram { state: Box<SpectrogramState> },
-    Spectrum { state: SpectrumState },
-    Stereometer { state: StereometerState },
-    Waveform { state: Box<WaveformState> },
+    LoudnessMeter {
+        state: LoudnessMeterState,
+    },
+    Oscilloscope {
+        state: Rc<RefCell<OscilloscopeState>>,
+    },
+    Spectrogram {
+        state: Rc<RefCell<SpectrogramState>>,
+    },
+    Spectrum {
+        state: Rc<RefCell<SpectrumState>>,
+    },
+    Stereometer {
+        state: Rc<RefCell<StereometerState>>,
+    },
+    Waveform {
+        state: Rc<RefCell<WaveformState>>,
+    },
 }
 
 trait VisualModule {
@@ -307,14 +319,14 @@ impl VisualModule for LoudnessVisual {
 
 struct OscilloscopeVisual {
     processor: OscilloscopeProcessor,
-    state: OscilloscopeState,
+    state: Rc<RefCell<OscilloscopeState>>,
 }
 
 impl Default for OscilloscopeVisual {
     fn default() -> Self {
         Self {
             processor: OscilloscopeProcessor::new(DEFAULT_SAMPLE_RATE),
-            state: OscilloscopeState::new(),
+            state: Rc::new(RefCell::new(OscilloscopeState::new())),
         }
     }
 }
@@ -322,7 +334,7 @@ impl Default for OscilloscopeVisual {
 impl VisualModule for OscilloscopeVisual {
     fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
         let snapshot = self.processor.ingest(samples, format);
-        self.state.apply_snapshot(&snapshot);
+        self.state.borrow_mut().apply_snapshot(&snapshot);
     }
 
     fn content(&self) -> VisualContent {
@@ -336,28 +348,31 @@ impl VisualModule for OscilloscopeVisual {
             let mut config = self.processor.config();
             stored.apply_to(&mut config);
             self.processor.update_config(config);
-            self.state.update_view_settings(stored);
+
+            let mut state = self.state.borrow_mut();
+            state.update_view_settings(stored);
 
             if let Some(palette) = stored
                 .palette
                 .as_ref()
                 .and_then(|p| p.to_array::<OSCILLOSCOPE_PALETTE_SIZE>())
             {
-                self.state.set_palette(&palette);
+                state.set_palette(&palette);
             } else {
-                self.state.set_palette(&theme::DEFAULT_OSCILLOSCOPE_PALETTE);
+                state.set_palette(&theme::DEFAULT_OSCILLOSCOPE_PALETTE);
             }
         }
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
         let mut settings = ModuleSettings::default();
-        let persistence = self.state.view_settings();
+        let state = self.state.borrow();
+        let persistence = state.view_settings();
         let mut snapshot = OscilloscopeSettings::from_config(&self.processor.config());
         snapshot.persistence = persistence;
-        snapshot.channel_mode = self.state.channel_mode();
+        snapshot.channel_mode = state.channel_mode();
         snapshot.palette = PaletteSettings::maybe_from_colors(
-            self.state.palette(),
+            state.palette(),
             &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
         );
         settings.set_oscilloscope(snapshot);
@@ -367,14 +382,14 @@ impl VisualModule for OscilloscopeVisual {
 
 struct WaveformVisual {
     processor: WaveformUiProcessor,
-    state: WaveformState,
+    state: Rc<RefCell<WaveformState>>,
 }
 
 impl Default for WaveformVisual {
     fn default() -> Self {
         Self {
             processor: WaveformUiProcessor::new(DEFAULT_SAMPLE_RATE),
-            state: WaveformState::new(),
+            state: Rc::new(RefCell::new(WaveformState::new())),
         }
     }
 }
@@ -383,13 +398,13 @@ impl VisualModule for WaveformVisual {
     fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
         self.ensure_capacity();
         if let Some(snapshot) = self.processor.ingest(samples, format) {
-            self.state.apply_snapshot(snapshot);
+            self.state.borrow_mut().apply_snapshot(snapshot);
         }
     }
 
     fn content(&self) -> VisualContent {
         VisualContent::Waveform {
-            state: Box::new(self.state.clone()),
+            state: self.state.clone(),
         }
     }
 
@@ -400,10 +415,11 @@ impl VisualModule for WaveformVisual {
             self.processor.update_config(config);
             self.ensure_capacity();
 
+            let mut state = self.state.borrow_mut();
             if let Some(palette) = stored.palette_array::<WAVEFORM_PALETTE_SIZE>() {
-                self.state.set_palette(&palette);
+                state.set_palette(&palette);
             } else {
-                self.state.set_palette(&theme::DEFAULT_WAVEFORM_PALETTE);
+                state.set_palette(&theme::DEFAULT_WAVEFORM_PALETTE);
             }
         }
     }
@@ -412,7 +428,7 @@ impl VisualModule for WaveformVisual {
         let mut module = ModuleSettings::default();
         let mut snapshot = WaveformSettings::from_config(&self.processor.config());
         snapshot.palette = PaletteSettings::maybe_from_colors(
-            self.state.palette(),
+            self.state.borrow().palette(),
             &theme::DEFAULT_WAVEFORM_PALETTE,
         );
         module.set_waveform(snapshot);
@@ -431,21 +447,21 @@ impl WaveformVisual {
     }
 
     fn target_capacity(&self) -> usize {
-        let desired = self.state.desired_columns();
+        let desired = self.state.borrow().desired_columns();
         desired.clamp(MIN_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY)
     }
 }
 
 struct SpectrogramVisual {
     processor: SpectrogramProcessor,
-    state: Box<SpectrogramState>,
+    state: Rc<RefCell<SpectrogramState>>,
 }
 
 impl Default for SpectrogramVisual {
     fn default() -> Self {
         Self {
             processor: SpectrogramProcessor::new(DEFAULT_SAMPLE_RATE),
-            state: Box::new(SpectrogramState::new()),
+            state: Rc::new(RefCell::new(SpectrogramState::new())),
         }
     }
 }
@@ -453,7 +469,7 @@ impl Default for SpectrogramVisual {
 impl VisualModule for SpectrogramVisual {
     fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
         if let ProcessorUpdate::Snapshot(update) = self.processor.ingest(samples, format) {
-            self.state.apply_update(&update);
+            self.state.borrow_mut().apply_update(&update);
         }
     }
 
@@ -469,10 +485,11 @@ impl VisualModule for SpectrogramVisual {
             stored.apply_to(&mut config);
             self.processor.update_config(config);
 
+            let mut state = self.state.borrow_mut();
             if let Some(palette) = stored.palette_array::<SPECTROGRAM_PALETTE_SIZE>() {
-                self.state.set_palette(palette);
+                state.set_palette(palette);
             } else {
-                self.state.set_palette(theme::DEFAULT_SPECTROGRAM_PALETTE);
+                state.set_palette(theme::DEFAULT_SPECTROGRAM_PALETTE);
             }
         }
     }
@@ -480,7 +497,7 @@ impl VisualModule for SpectrogramVisual {
     fn export_settings(&self) -> Option<ModuleSettings> {
         let mut settings = ModuleSettings::default();
         let mut snapshot = SpectrogramSettings::from_config(&self.processor.config());
-        let palette = self.state.palette();
+        let palette = self.state.borrow().palette();
         snapshot.palette =
             PaletteSettings::maybe_from_colors(&palette, &theme::DEFAULT_SPECTROGRAM_PALETTE);
         settings.set_spectrogram(snapshot);
@@ -490,14 +507,14 @@ impl VisualModule for SpectrogramVisual {
 
 struct SpectrumVisual {
     processor: SpectrumProcessor,
-    state: SpectrumState,
+    state: Rc<RefCell<SpectrumState>>,
 }
 
 impl Default for SpectrumVisual {
     fn default() -> Self {
         Self {
             processor: SpectrumProcessor::new(DEFAULT_SAMPLE_RATE),
-            state: SpectrumState::new(),
+            state: Rc::new(RefCell::new(SpectrumState::new())),
         }
     }
 }
@@ -505,7 +522,7 @@ impl Default for SpectrumVisual {
 impl VisualModule for SpectrumVisual {
     fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
         if let Some(snapshot) = self.processor.ingest(samples, format) {
-            self.state.apply_snapshot(&snapshot);
+            self.state.borrow_mut().apply_snapshot(&snapshot);
         }
     }
 
@@ -524,26 +541,29 @@ impl VisualModule for SpectrumVisual {
             let palette = stored
                 .palette_array::<5>()
                 .unwrap_or(theme::DEFAULT_SPECTRUM_PALETTE);
-            self.state.set_palette(&palette);
+
+            let mut state = self.state.borrow_mut();
+            state.set_palette(&palette);
 
             let updated = self.processor.config();
-            let style = self.state.style_mut();
+            let style = state.style_mut();
             style.frequency_scale = updated.frequency_scale;
             style.reverse_frequency = updated.reverse_frequency;
             style.smoothing_radius = stored.smoothing_radius;
             style.smoothing_passes = stored.smoothing_passes;
-            self.state.update_show_grid(updated.show_grid);
-            self.state.update_show_peak_label(updated.show_peak_label);
+            state.update_show_grid(updated.show_grid);
+            state.update_show_peak_label(updated.show_peak_label);
         }
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
         let mut settings = ModuleSettings::default();
         let mut spectrum_settings = SpectrumSettings::from_config(&self.processor.config());
-        let palette = self.state.palette();
+        let state = self.state.borrow();
+        let palette = state.palette();
         spectrum_settings.palette =
             PaletteSettings::maybe_from_colors(&palette, &theme::DEFAULT_SPECTRUM_PALETTE);
-        let style = self.state.style();
+        let style = state.style();
         spectrum_settings.smoothing_radius = style.smoothing_radius;
         spectrum_settings.smoothing_passes = style.smoothing_passes;
         settings.set_spectrum(spectrum_settings);
@@ -553,14 +573,14 @@ impl VisualModule for SpectrumVisual {
 
 struct StereometerVisual {
     processor: StereometerProcessor,
-    state: StereometerState,
+    state: Rc<RefCell<StereometerState>>,
 }
 
 impl Default for StereometerVisual {
     fn default() -> Self {
         Self {
             processor: StereometerProcessor::new(DEFAULT_SAMPLE_RATE),
-            state: StereometerState::new(),
+            state: Rc::new(RefCell::new(StereometerState::new())),
         }
     }
 }
@@ -568,7 +588,7 @@ impl Default for StereometerVisual {
 impl VisualModule for StereometerVisual {
     fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
         let snapshot = self.processor.ingest(samples, format);
-        self.state.apply_snapshot(&snapshot);
+        self.state.borrow_mut().apply_snapshot(&snapshot);
     }
 
     fn content(&self) -> VisualContent {
@@ -582,27 +602,30 @@ impl VisualModule for StereometerVisual {
             let mut config = self.processor.config();
             stored.apply_to(&mut config);
             self.processor.update_config(config);
-            self.state.update_view_settings(stored);
+
+            let mut state = self.state.borrow_mut();
+            state.update_view_settings(stored);
 
             if let Some(palette) = stored
                 .palette
                 .as_ref()
                 .and_then(|p| p.to_array::<STEREOMETER_PALETTE_SIZE>())
             {
-                self.state.set_palette(&palette);
+                state.set_palette(&palette);
             } else {
-                self.state.set_palette(&theme::DEFAULT_STEREOMETER_PALETTE);
+                state.set_palette(&theme::DEFAULT_STEREOMETER_PALETTE);
             }
         }
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
         let mut settings = ModuleSettings::default();
-        let persistence = self.state.view_settings();
+        let state = self.state.borrow();
+        let persistence = state.view_settings();
         let mut snapshot =
             StereometerSettings::from_config_with_view(&self.processor.config(), persistence);
         snapshot.palette = PaletteSettings::maybe_from_colors(
-            self.state.palette(),
+            state.palette(),
             &theme::DEFAULT_STEREOMETER_PALETTE,
         );
         settings.set_stereometer(snapshot);

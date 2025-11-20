@@ -408,11 +408,11 @@ struct GradientStop {
 
 #[derive(Debug)]
 pub struct Waveform<'a> {
-    state: &'a WaveformState,
+    state: &'a RefCell<WaveformState>,
 }
 
 impl<'a> Waveform<'a> {
-    pub fn new(state: &'a WaveformState) -> Self {
+    pub fn new(state: &'a RefCell<WaveformState>) -> Self {
         Self { state }
     }
 }
@@ -460,7 +460,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Waveform<'a> 
             Background::Color(theme.extended_palette().background.base.color),
         );
 
-        if let Some(params) = self.state.visual(bounds) {
+        if let Some(params) = self.state.borrow().visual(bounds) {
             renderer.draw_primitive(bounds, WaveformPrimitive::new(params));
         }
     }
@@ -472,7 +472,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Waveform<'a> 
     fn diff(&self, _tree: &mut Tree) {}
 }
 
-pub fn widget<'a, Message>(state: &'a WaveformState) -> Element<'a, Message>
+pub fn widget<'a, Message>(state: &'a RefCell<WaveformState>) -> Element<'a, Message>
 where
     Message: 'a,
 {

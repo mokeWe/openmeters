@@ -13,6 +13,7 @@ use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Widget, layout, mouse};
 use iced::{Color, Element, Length, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -298,11 +299,11 @@ impl Default for OscilloscopeStyle {
 
 #[derive(Debug)]
 pub struct Oscilloscope<'a> {
-    state: &'a OscilloscopeState,
+    state: &'a RefCell<OscilloscopeState>,
 }
 
 impl<'a> Oscilloscope<'a> {
-    pub fn new(state: &'a OscilloscopeState) -> Self {
+    pub fn new(state: &'a RefCell<OscilloscopeState>) -> Self {
         Self { state }
     }
 }
@@ -341,7 +342,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Oscilloscope<
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let params = self.state.visual_params(bounds);
+        let params = self.state.borrow().visual_params(bounds);
 
         renderer.draw_primitive(bounds, OscilloscopePrimitive::new(params));
     }
@@ -353,7 +354,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Oscilloscope<
     fn diff(&self, _tree: &mut Tree) {}
 }
 
-pub fn widget<'a, Message>(state: &'a OscilloscopeState) -> Element<'a, Message>
+pub fn widget<'a, Message>(state: &'a RefCell<OscilloscopeState>) -> Element<'a, Message>
 where
     Message: 'a,
 {

@@ -1015,11 +1015,11 @@ struct TooltipState {
 /// widget wrapper that renders the spectrogram buffer
 #[derive(Debug)]
 pub struct Spectrogram<'a> {
-    state: &'a SpectrogramState,
+    state: &'a RefCell<SpectrogramState>,
 }
 
 impl<'a> Spectrogram<'a> {
-    pub fn new(state: &'a SpectrogramState) -> Self {
+    pub fn new(state: &'a RefCell<SpectrogramState>) -> Self {
         Self { state }
     }
 
@@ -1030,22 +1030,23 @@ impl<'a> Spectrogram<'a> {
         }
 
         let normalized_y = (y - bounds.y) / bounds.height;
+        let state = self.state.borrow();
 
         // If synchrosqueezed bins are active, directly look up frequency
-        if let Some(bins) = self.state.synchro_bins_hz.as_deref() {
+        if let Some(bins) = state.synchro_bins_hz.as_deref() {
             let bin_index = (normalized_y * bins.len() as f32).floor() as usize;
             return bins.get(bin_index).copied();
         }
 
-        if self.state.fft_size == 0 || self.state.sample_rate <= 0.0 {
+        if state.fft_size == 0 || state.sample_rate <= 0.0 {
             return None;
         }
 
         let frequency = calculate_frequency(
             normalized_y,
-            self.state.sample_rate,
-            self.state.fft_size,
-            self.state.frequency_scale,
+            state.sample_rate,
+            state.fft_size,
+            state.frequency_scale,
         );
 
         (frequency.is_finite() && frequency > 0.0).then_some(frequency)
@@ -1217,16 +1218,18 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
+        let state = self.state.borrow();
+
         renderer.fill_quad(
             Quad {
                 bounds,
                 border: Default::default(),
                 shadow: Default::default(),
             },
-            Background::Color(self.state.style.background),
+            Background::Color(state.style.background),
         );
 
-        if let Some(params) = self.state.visual_params(bounds) {
+        if let Some(params) = state.visual_params(bounds) {
             renderer.draw_primitive(bounds, SpectrogramPrimitive::new(params));
         }
 
@@ -1257,7 +1260,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
     }
 }
 
-pub fn widget<'a, Message>(state: &'a SpectrogramState) -> Element<'a, Message>
+pub fn widget<'a, Message>(state: &'a RefCell<SpectrogramState>) -> Element<'a, Message>
 where
     Message: 'a,
 {
