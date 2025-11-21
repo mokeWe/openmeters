@@ -14,14 +14,7 @@ use iced::advanced::{Layout, Widget, layout, mouse};
 use iced::{Color, Element, Length, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-
-static NEXT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
-
-fn next_instance_id() -> u64 {
-    NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed)
-}
 
 #[derive(Debug, Clone)]
 pub struct OscilloscopeProcessor {
@@ -47,7 +40,7 @@ impl OscilloscopeProcessor {
         let mut config = self.inner.config();
         if (config.sample_rate - sample_rate).abs() > f32::EPSILON {
             config.sample_rate = sample_rate;
-            self.update_config(config);
+            self.inner.update_config(config);
         }
 
         let block = AudioBlock::new(samples, format.channels.max(1), sample_rate, Instant::now());
@@ -75,7 +68,6 @@ pub struct OscilloscopeState {
     display_samples: Vec<f32>,
     persistence: f32,
     channel_mode: OscilloscopeChannelMode,
-    instance_id: u64,
 }
 
 impl OscilloscopeState {
@@ -87,7 +79,6 @@ impl OscilloscopeState {
             display_samples: Vec::new(),
             persistence: 0.1,
             channel_mode: OscilloscopeChannelMode::Both,
-            instance_id: next_instance_id(),
         }
     }
 
@@ -100,12 +91,12 @@ impl OscilloscopeState {
     }
 
     pub fn set_palette(&mut self, palette: &[Color]) {
-        self.style.channel_colors.clear();
-        self.style.channel_colors.extend_from_slice(palette);
+        self.style.colors.clear();
+        self.style.colors.extend_from_slice(palette);
     }
 
     pub fn palette(&self) -> &[Color] {
-        &self.style.channel_colors
+        &self.style.colors
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &OscilloscopeSnapshot) {
@@ -114,129 +105,94 @@ impl OscilloscopeState {
             self.display_samples.clear();
             return;
         }
-
         self.latest_snapshot = snapshot.clone();
-        self.project_snapshot(self.latest_snapshot.clone(), true);
-    }
-
-    pub fn view_settings(&self) -> f32 {
-        self.persistence
+        self.project_snapshot(true);
     }
 
     pub fn channel_mode(&self) -> OscilloscopeChannelMode {
         self.channel_mode
     }
 
-    fn effective_persistence(&self) -> f32 {
-        self.persistence.clamp(0.0, 0.98)
+    pub fn persistence(&self) -> f32 {
+        self.persistence
     }
 
     fn reproject_latest(&mut self, blend: bool) {
-        let latest = self.latest_snapshot.clone();
-        if latest.samples.is_empty() {
-            self.snapshot = latest;
+        if self.latest_snapshot.samples.is_empty() {
+            self.snapshot = self.latest_snapshot.clone();
             self.display_samples.clear();
             return;
         }
-        self.project_snapshot(latest, blend);
+        self.project_snapshot(blend);
     }
 
-    fn project_snapshot(&mut self, source: OscilloscopeSnapshot, blend: bool) {
-        let Some(projection) = self.project_samples(&source) else {
+    fn project_snapshot(&mut self, blend: bool) {
+        let Some((channels, samples_per_channel, samples)) =
+            self.project_samples(&self.latest_snapshot)
+        else {
             self.snapshot = OscilloscopeSnapshot::default();
             self.display_samples.clear();
             return;
         };
 
-        if self.display_samples.len() != projection.samples.len() {
-            self.display_samples
-                .resize(projection.samples.len(), 0.0_f32);
-        }
+        self.display_samples.resize(samples.len(), 0.0);
 
         if blend {
-            let persistence = self.effective_persistence();
+            let persistence = self.persistence.clamp(0.0, 0.98);
             if persistence <= f32::EPSILON {
-                self.display_samples.copy_from_slice(&projection.samples);
+                self.display_samples.copy_from_slice(&samples);
             } else {
-                let fresh = 1.0_f32 - persistence;
-                for (current, incoming) in self
-                    .display_samples
-                    .iter_mut()
-                    .zip(projection.samples.iter())
-                {
-                    *current = (*current * persistence) + (*incoming * fresh);
+                let fresh = 1.0 - persistence;
+                for (current, incoming) in self.display_samples.iter_mut().zip(&samples) {
+                    *current = *current * persistence + incoming * fresh;
                 }
             }
         } else {
-            self.display_samples.copy_from_slice(&projection.samples);
+            self.display_samples.copy_from_slice(&samples);
         }
 
-        self.snapshot.channels = projection.channels;
-        self.snapshot.samples_per_channel = projection.samples_per_channel;
-        self.snapshot.samples.clear();
-        self.snapshot
-            .samples
-            .extend_from_slice(&self.display_samples);
+        self.snapshot.channels = channels;
+        self.snapshot.samples_per_channel = samples_per_channel;
+        self.snapshot.samples.clone_from(&self.display_samples);
     }
 
-    fn project_samples(&self, source: &OscilloscopeSnapshot) -> Option<Projection> {
+    fn project_samples(&self, source: &OscilloscopeSnapshot) -> Option<(usize, usize, Vec<f32>)> {
         let channels = source.channels.max(1);
         let samples_per_channel = source.samples_per_channel;
         if samples_per_channel == 0 || source.samples.len() < samples_per_channel {
             return None;
         }
 
-        let mut projection = Projection {
-            channels,
-            samples_per_channel,
-            samples: Vec::new(),
-        };
-
         match self.channel_mode {
             OscilloscopeChannelMode::Both => {
-                projection.samples = source.samples.clone();
-                projection.channels = channels;
+                Some((channels, samples_per_channel, source.samples.clone()))
             }
             OscilloscopeChannelMode::Left => {
-                projection.channels = 1;
-                let slice = source
-                    .samples
-                    .chunks(samples_per_channel)
-                    .next()
-                    .unwrap_or(&[]);
-                projection.samples.extend_from_slice(slice);
+                let samples = source.samples.chunks(samples_per_channel).next()?.to_vec();
+                Some((1, samples_per_channel, samples))
             }
             OscilloscopeChannelMode::Right => {
-                projection.channels = 1;
-                let slice = source
+                let samples = source
                     .samples
                     .chunks(samples_per_channel)
                     .nth(1)
-                    .or_else(|| source.samples.chunks(samples_per_channel).last())
-                    .unwrap_or(&[]);
-                projection.samples.extend_from_slice(slice);
+                    .or_else(|| source.samples.chunks(samples_per_channel).last())?
+                    .to_vec();
+                Some((1, samples_per_channel, samples))
             }
             OscilloscopeChannelMode::Mono => {
-                projection.channels = 1;
-                projection.samples.resize(samples_per_channel, 0.0);
+                let mut samples = vec![0.0; samples_per_channel];
                 for channel_samples in source.samples.chunks(samples_per_channel).take(channels) {
-                    for (idx, sample) in channel_samples.iter().enumerate() {
-                        projection.samples[idx] += *sample;
+                    for (dest, src) in samples.iter_mut().zip(channel_samples) {
+                        *dest += *src;
                     }
                 }
-                let denom = channels as f32;
-                if denom > 0.0 {
-                    for sample in &mut projection.samples {
-                        *sample /= denom;
-                    }
+                let scale = 1.0 / channels as f32;
+                for sample in &mut samples {
+                    *sample *= scale;
                 }
+                Some((1, samples_per_channel, samples))
             }
-        }
-
-        if projection.samples.is_empty() {
-            None
-        } else {
-            Some(projection)
         }
     }
 
@@ -244,7 +200,7 @@ impl OscilloscopeState {
         let channels = self.snapshot.channels.max(1);
         let colors = self
             .style
-            .channel_colors
+            .colors
             .iter()
             .cycle()
             .take(channels)
@@ -252,47 +208,24 @@ impl OscilloscopeState {
             .collect();
 
         OscilloscopeParams {
-            instance_id: self.instance_id,
             bounds,
             channels,
             samples_per_channel: self.snapshot.samples_per_channel,
             samples: self.snapshot.samples.clone(),
             colors,
-            line_alpha: self.style.line_alpha,
-            vertical_padding: self.style.vertical_padding,
-            channel_gap: self.style.channel_gap,
-            amplitude_scale: self.style.amplitude_scale,
-            stroke_width: self.style.stroke_width,
         }
     }
 }
 
 #[derive(Debug, Clone)]
-struct Projection {
-    channels: usize,
-    samples_per_channel: usize,
-    samples: Vec<f32>,
-}
-
-#[derive(Debug, Clone)]
 pub struct OscilloscopeStyle {
-    pub channel_colors: Vec<Color>,
-    pub line_alpha: f32,
-    pub vertical_padding: f32,
-    pub channel_gap: f32,
-    pub amplitude_scale: f32,
-    pub stroke_width: f32,
+    pub colors: Vec<Color>,
 }
 
 impl Default for OscilloscopeStyle {
     fn default() -> Self {
         Self {
-            channel_colors: theme::DEFAULT_OSCILLOSCOPE_PALETTE.to_vec(),
-            line_alpha: 0.92,
-            vertical_padding: 8.0,
-            channel_gap: 12.0,
-            amplitude_scale: 0.9,
-            stroke_width: 1.0,
+            colors: theme::DEFAULT_OSCILLOSCOPE_PALETTE.to_vec(),
         }
     }
 }

@@ -200,7 +200,7 @@ const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
             fill_horizontal: true,
             fill_vertical: true,
             min_width: 160.0,
-            max_width: 220.0,
+            max_width: f32::INFINITY,
         },
         default_enabled: false,
         build: build_module::<OscilloscopeVisual>,
@@ -367,7 +367,7 @@ impl VisualModule for OscilloscopeVisual {
     fn export_settings(&self) -> Option<ModuleSettings> {
         let mut settings = ModuleSettings::default();
         let state = self.state.borrow();
-        let persistence = state.view_settings();
+        let persistence = state.persistence();
         let mut snapshot = OscilloscopeSettings::from_config(&self.processor.config());
         snapshot.persistence = persistence;
         snapshot.channel_mode = state.channel_mode();

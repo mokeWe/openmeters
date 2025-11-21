@@ -345,9 +345,10 @@ impl UiApp {
             toasts.push("rendering paused (press p to resume)");
         }
         if let Some(deadline) = self.exit_warning_until
-            && Instant::now() < deadline {
-                toasts.push("press q again to exit");
-            }
+            && Instant::now() < deadline
+        {
+            toasts.push("press q again to exit");
+        }
 
         let toast_bar = if !toasts.is_empty() {
             let toast_elements: Vec<Element<'_, Message>> = toasts
@@ -544,9 +545,10 @@ fn update(app: &mut UiApp, message: Message) -> Task<Message> {
         Message::QuitRequested => {
             let now = Instant::now();
             if let Some(deadline) = app.exit_warning_until
-                && now < deadline {
-                    return exit();
-                }
+                && now < deadline
+            {
+                return exit();
+            }
             app.exit_warning_until = Some(now + Duration::from_secs(2));
             Task::none()
         }
