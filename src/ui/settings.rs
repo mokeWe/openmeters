@@ -451,8 +451,6 @@ impl OscilloscopeSettings {
 pub struct WaveformSettings {
     pub scroll_speed: f32,
     pub downsample: DownsampleStrategy,
-    #[serde(default, rename = "max_columns", skip_serializing)]
-    _legacy_max_columns: Option<usize>,
     #[serde(default)]
     pub palette: Option<PaletteSettings>,
 }
@@ -468,7 +466,6 @@ impl WaveformSettings {
         Self {
             scroll_speed: config.scroll_speed,
             downsample: config.downsample,
-            _legacy_max_columns: None,
             palette: None,
         }
     }
