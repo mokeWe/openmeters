@@ -214,18 +214,17 @@ impl AudioProcessor for OscilloscopeProcessor {
         self.snapshot.samples.clear();
         self.snapshot.samples.reserve(target * channels);
 
-        let (trigger_frame, sub_sample) = self
-            .trigger
-            .find_trigger(data, frames, channels, &self.config)
-            .map(|result| {
-                self.freerun_position = 0;
-                result
-            })
-            .unwrap_or_else(|| {
-                let advance = (target / 10).max(1);
-                self.freerun_position = (self.freerun_position + advance) % frames;
-                (self.freerun_position, 0.0)
-            });
+        let (trigger_frame, sub_sample) = if let Some(result) =
+            self.trigger
+                .find_trigger(data, frames, channels, &self.config)
+        {
+            self.freerun_position = 0;
+            result
+        } else {
+            let advance = (target / 10).max(1);
+            self.freerun_position = (self.freerun_position + advance) % frames;
+            (self.freerun_position, 0.0)
+        };
 
         downsample_interleaved(
             &mut self.snapshot.samples,

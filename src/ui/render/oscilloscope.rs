@@ -3,7 +3,9 @@ use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{Primitive, Storage};
 use iced_wgpu::wgpu;
 
-use crate::ui::render::common::{ClipTransform, InstanceBuffer, SimpleVertex, create_shader_module};
+use crate::ui::render::common::{
+    ClipTransform, InstanceBuffer, SimpleVertex, create_shader_module,
+};
 use crate::ui::render::geometry::compute_normals;
 
 #[derive(Debug, Clone)]
