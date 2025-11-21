@@ -213,6 +213,7 @@ impl OscilloscopeState {
             samples_per_channel: self.snapshot.samples_per_channel,
             samples: self.snapshot.samples.clone(),
             colors,
+            fill_alpha: 0.15,
         }
     }
 }

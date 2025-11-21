@@ -1,11 +1,9 @@
-use bytemuck::{Pod, Zeroable};
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{Primitive, Storage};
 use iced_wgpu::wgpu;
-use std::mem;
 
-use crate::ui::render::common::{ClipTransform, InstanceBuffer, create_shader_module};
+use crate::ui::render::common::{ClipTransform, InstanceBuffer, SimpleVertex, create_shader_module};
 use crate::ui::render::geometry::compute_normals;
 
 #[derive(Debug, Clone)]
@@ -15,6 +13,7 @@ pub struct OscilloscopeParams {
     pub samples_per_channel: usize,
     pub samples: Vec<f32>,
     pub colors: Vec<[f32; 4]>,
+    pub fill_alpha: f32,
 }
 
 #[derive(Debug)]
@@ -27,7 +26,7 @@ impl OscilloscopePrimitive {
         Self { params }
     }
 
-    fn build_vertices(&self, viewport: &Viewport) -> Vec<Vertex> {
+    fn build_vertices(&self, viewport: &Viewport) -> Vec<SimpleVertex> {
         let samples_per_channel = self.params.samples_per_channel;
         let channels = self.params.channels.max(1);
 
@@ -56,7 +55,26 @@ impl OscilloscopePrimitive {
         let feather = 1.0f32;
         let outer = half + feather;
 
-        let mut vertices = Vec::with_capacity(samples_per_channel * 2 * channels);
+        let mut vertices = Vec::new();
+
+        let append_strip = |dest: &mut Vec<SimpleVertex>, strip: Vec<SimpleVertex>| {
+            if strip.is_empty() {
+                return;
+            }
+            if !dest.is_empty()
+                && let Some(last) = dest.last().copied()
+            {
+                let mut iter = strip.into_iter();
+                let first = iter.next().unwrap();
+                dest.push(last);
+                dest.push(last);
+                dest.push(first);
+                dest.push(first);
+                dest.extend(iter);
+                return;
+            }
+            dest.extend(strip);
+        };
 
         for (channel_idx, channel_samples) in self
             .params
@@ -71,7 +89,6 @@ impl OscilloscopePrimitive {
                 .get(channel_idx)
                 .copied()
                 .unwrap_or([0.6, 0.8, 0.9, 1.0]);
-            let color = [color[0], color[1], color[2], LINE_ALPHA];
             let center = bounds.y
                 + VERTICAL_PADDING
                 + channel_idx as f32 * (channel_height + CHANNEL_GAP)
@@ -88,51 +105,48 @@ impl OscilloscopePrimitive {
                 })
                 .collect();
 
-            let normals = compute_normals(&positions);
-            let channel_vertices =
-                build_line_strip(&positions, &normals, color, outer, half, feather, &clip);
+            let mut fill_vertices = Vec::with_capacity(positions.len() * 2);
+            let fill_color = [color[0], color[1], color[2], self.params.fill_alpha];
 
-            // Insert degenerate triangles to break the strip between channels
-            if channel_idx > 0
-                && !channel_vertices.is_empty()
-                && let Some(&last) = vertices.last()
-            {
-                vertices.push(last);
-                vertices.push(channel_vertices[0]);
+            for &(x, y) in &positions {
+                let above_zero = y < center;
+                let fill_to_y = if above_zero { y } else { center };
+                let fill_from_y = if above_zero { center } else { y };
+
+                fill_vertices.push(SimpleVertex {
+                    position: clip.to_clip(x, fill_to_y),
+                    color: fill_color,
+                });
+                fill_vertices.push(SimpleVertex {
+                    position: clip.to_clip(x, fill_from_y),
+                    color: fill_color,
+                });
             }
 
-            vertices.extend(channel_vertices);
+            append_strip(&mut vertices, fill_vertices);
+
+            let normals = compute_normals(&positions);
+            let line_color = [color[0], color[1], color[2], LINE_ALPHA];
+            let mut line_vertices = Vec::with_capacity(positions.len() * 2);
+
+            for (pos, normal) in positions.iter().zip(normals.iter()) {
+                let offset_x = normal.0 * outer;
+                let offset_y = normal.1 * outer;
+                line_vertices.push(SimpleVertex {
+                    position: clip.to_clip(pos.0 - offset_x, pos.1 - offset_y),
+                    color: line_color,
+                });
+                line_vertices.push(SimpleVertex {
+                    position: clip.to_clip(pos.0 + offset_x, pos.1 + offset_y),
+                    color: line_color,
+                });
+            }
+
+            append_strip(&mut vertices, line_vertices);
         }
 
         vertices
     }
-}
-
-fn build_line_strip(
-    positions: &[(f32, f32)],
-    normals: &[(f32, f32)],
-    color: [f32; 4],
-    outer: f32,
-    half: f32,
-    feather: f32,
-    clip: &ClipTransform,
-) -> Vec<Vertex> {
-    let mut vertices = Vec::with_capacity(positions.len() * 2);
-    for (pos, normal) in positions.iter().zip(normals.iter()) {
-        let offset_x = normal.0 * outer;
-        let offset_y = normal.1 * outer;
-        vertices.push(Vertex {
-            position: clip.to_clip(pos.0 - offset_x, pos.1 - offset_y),
-            color,
-            params: [-outer, half, feather, 0.0],
-        });
-        vertices.push(Vertex {
-            position: clip.to_clip(pos.0 + offset_x, pos.1 + offset_y),
-            color,
-            params: [outer, half, feather, 0.0],
-        });
-    }
-    vertices
 }
 
 impl Primitive for OscilloscopePrimitive {
@@ -205,46 +219,10 @@ impl Primitive for OscilloscopePrimitive {
     }
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    color: [f32; 4],
-    params: [f32; 4],
-}
-
-impl Vertex {
-    fn layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: 8,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: 24,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-            ],
-        }
-    }
-}
-
-const VERTEX_LABEL: &str = "Oscilloscope vertex buffer";
-
 #[derive(Debug)]
 struct Pipeline {
     pipeline: wgpu::RenderPipeline,
-    buffer: InstanceBuffer<Vertex>,
+    buffer: InstanceBuffer<SimpleVertex>,
 }
 
 impl Pipeline {
@@ -267,7 +245,7 @@ impl Pipeline {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
-                buffers: &[Vertex::layout()],
+                buffers: &[SimpleVertex::layout()],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -298,11 +276,11 @@ impl Pipeline {
 
         Self {
             pipeline,
-            buffer: InstanceBuffer::new(device, VERTEX_LABEL, 1024),
+            buffer: InstanceBuffer::new(device, "Oscilloscope vertex buffer", 1024),
         }
     }
 
-    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[Vertex]) {
+    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[SimpleVertex]) {
         if vertices.is_empty() {
             self.buffer.vertex_count = 0;
             return;
@@ -310,7 +288,7 @@ impl Pipeline {
 
         let required_size = std::mem::size_of_val(vertices) as wgpu::BufferAddress;
         self.buffer
-            .ensure_capacity(device, VERTEX_LABEL, required_size);
+            .ensure_capacity(device, "Oscilloscope vertex buffer", required_size);
         self.buffer.write(queue, vertices);
     }
 }
