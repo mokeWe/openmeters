@@ -8,9 +8,10 @@ use std::collections::VecDeque;
 pub struct OscilloscopeConfig {
     pub sample_rate: f32,
     pub segment_duration: f32,
-    pub trigger_level: f32,
     pub trigger_rising: bool,
     pub target_sample_count: usize,
+    pub hysteresis: f32,
+    pub min_slope: f32,
 }
 
 impl Default for OscilloscopeConfig {
@@ -18,10 +19,102 @@ impl Default for OscilloscopeConfig {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
             segment_duration: 0.02,
-            trigger_level: 0.0,
             trigger_rising: true,
-            target_sample_count: 1_024,
+            target_sample_count: 4_096,
+            hysteresis: 0.02,
+            min_slope: 0.01,
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct Prefilter {
+    prev1: f32,
+    prev2: f32,
+}
+
+impl Prefilter {
+    fn process(&mut self, sample: f32) -> f32 {
+        let filtered = self.prev2 * 0.25 + self.prev1 * 0.5 + sample * 0.25;
+        self.prev2 = self.prev1;
+        self.prev1 = sample;
+        filtered
+    }
+
+    fn reset(&mut self, sample: f32) {
+        self.prev1 = sample;
+        self.prev2 = sample;
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Trigger {
+    prefilter: Prefilter,
+}
+
+impl Trigger {
+    fn new() -> Self {
+        Self {
+            prefilter: Prefilter::default(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.prefilter = Prefilter::default();
+    }
+
+    fn find_trigger(
+        &mut self,
+        data: &[f32],
+        frames: usize,
+        channels: usize,
+        config: &OscilloscopeConfig,
+    ) -> Option<(usize, f32)> {
+        if frames < 2 || channels == 0 {
+            return None;
+        }
+
+        let upper = config.hysteresis;
+        let lower = -config.hysteresis;
+        let min_slope = config.min_slope;
+        let rising = config.trigger_rising;
+
+        let mono_sum: Vec<f32> = (0..frames)
+            .map(|frame| {
+                let sum: f32 = (0..channels).map(|ch| data[frame * channels + ch]).sum();
+                sum / channels as f32
+            })
+            .collect();
+
+        self.prefilter.reset(mono_sum[0]);
+        let filtered: Vec<f32> = mono_sum
+            .iter()
+            .map(|&s| self.prefilter.process(s))
+            .collect();
+
+        let mut armed = false;
+        let mut prev = filtered[0];
+
+        for (frame, &curr) in filtered.iter().enumerate().skip(1) {
+            armed = armed || if rising { curr < lower } else { curr > upper };
+
+            if armed && (curr - prev).abs() >= min_slope {
+                let crossed = if rising {
+                    prev < 0.0 && curr >= 0.0
+                } else {
+                    prev > 0.0 && curr <= 0.0
+                };
+
+                if crossed {
+                    let t = (prev / (prev - curr)).clamp(0.0, 1.0);
+                    return Some((frame, t));
+                }
+            }
+
+            prev = curr;
+        }
+
+        None
     }
 }
 
@@ -48,6 +141,8 @@ pub struct OscilloscopeProcessor {
     snapshot: OscilloscopeSnapshot,
     history: VecDeque<f32>,
     history_channels: usize,
+    trigger: Trigger,
+    freerun_position: usize,
 }
 
 impl OscilloscopeProcessor {
@@ -57,6 +152,8 @@ impl OscilloscopeProcessor {
             snapshot: OscilloscopeSnapshot::default(),
             history: VecDeque::new(),
             history_channels: 0,
+            trigger: Trigger::new(),
+            freerun_position: 0,
         }
     }
 
@@ -87,6 +184,7 @@ impl AudioProcessor for OscilloscopeProcessor {
         if self.history_channels != channels {
             self.history.clear();
             self.history_channels = channels;
+            self.trigger.reset();
         }
 
         let frames = self.segment_frames();
@@ -94,19 +192,16 @@ impl AudioProcessor for OscilloscopeProcessor {
 
         if block.samples.len() >= capacity {
             self.history.clear();
-            self.history.extend(
-                block.samples[block.samples.len() - capacity..]
-                    .iter()
-                    .copied(),
-            );
+            self.history
+                .extend(&block.samples[block.samples.len() - capacity..]);
         } else {
             let overflow = self.history.len() + block.samples.len();
             if overflow > capacity {
                 let remove =
-                    (overflow - capacity).div_ceil(channels) * channels.min(self.history.len());
+                    ((overflow - capacity).div_ceil(channels) * channels).min(self.history.len());
                 self.history.drain(..remove);
             }
-            self.history.extend(block.samples.iter().copied());
+            self.history.extend(block.samples);
         }
 
         if self.history.len() < capacity {
@@ -119,20 +214,27 @@ impl AudioProcessor for OscilloscopeProcessor {
         self.snapshot.samples.clear();
         self.snapshot.samples.reserve(target * channels);
 
-        let trigger = find_trigger(
-            data,
-            frames,
-            channels,
-            self.config.trigger_level,
-            self.config.trigger_rising,
-        );
+        let (trigger_frame, sub_sample) = self
+            .trigger
+            .find_trigger(data, frames, channels, &self.config)
+            .map(|result| {
+                self.freerun_position = 0;
+                result
+            })
+            .unwrap_or_else(|| {
+                let advance = (target / 10).max(1);
+                self.freerun_position = (self.freerun_position + advance) % frames;
+                (self.freerun_position, 0.0)
+            });
+
         downsample_interleaved(
             &mut self.snapshot.samples,
             data,
             frames,
             channels,
             target,
-            trigger,
+            trigger_frame,
+            sub_sample,
         );
 
         self.snapshot.channels = channels;
@@ -145,6 +247,8 @@ impl AudioProcessor for OscilloscopeProcessor {
         self.snapshot = OscilloscopeSnapshot::default();
         self.history.clear();
         self.history_channels = 0;
+        self.trigger.reset();
+        self.freerun_position = 0;
     }
 }
 
@@ -155,28 +259,6 @@ impl Reconfigurable<OscilloscopeConfig> for OscilloscopeProcessor {
     }
 }
 
-fn find_trigger(data: &[f32], frames: usize, channels: usize, level: f32, rising: bool) -> usize {
-    if frames < 2 || channels == 0 {
-        return 0;
-    }
-
-    let mut prev = data[0];
-    for frame in 1..frames {
-        let current = data[frame * channels];
-        let crossed = if rising {
-            prev < level && current >= level
-        } else {
-            prev > level && current <= level
-        };
-        if crossed {
-            return frame;
-        }
-        prev = current;
-    }
-
-    frames / 2
-}
-
 fn downsample_interleaved(
     output: &mut Vec<f32>,
     data: &[f32],
@@ -184,16 +266,30 @@ fn downsample_interleaved(
     channels: usize,
     target: usize,
     start_frame: usize,
+    sub_sample_offset: f32,
 ) {
     if frames == 0 || channels == 0 || target == 0 {
         return;
     }
 
     let base = start_frame % frames;
+    let step = frames as f32 / target as f32;
+
     for channel in 0..channels {
         for index in 0..target {
-            let frame = (base + index * frames / target) % frames;
-            output.push(data[frame * channels + channel]);
+            let frame_pos = base as f32 + index as f32 * step + sub_sample_offset;
+            let frame_int = frame_pos as usize % frames;
+            let frac = frame_pos.fract();
+
+            let sample = if frac > f32::EPSILON && frame_int + 1 < frames {
+                let curr = data[frame_int * channels + channel];
+                let next = data[(frame_int + 1) * channels + channel];
+                curr + (next - curr) * frac
+            } else {
+                data[frame_int * channels + channel]
+            };
+
+            output.push(sample);
         }
     }
 }
@@ -213,7 +309,6 @@ mod tests {
         let mut processor = OscilloscopeProcessor::new(OscilloscopeConfig {
             segment_duration: 0.01,
             target_sample_count: 64,
-            trigger_level: 0.0,
             ..Default::default()
         });
 
@@ -240,7 +335,6 @@ mod tests {
     fn trigger_rotation_aligns_snapshot() {
         let mut processor = OscilloscopeProcessor::new(OscilloscopeConfig {
             segment_duration: 0.01,
-            trigger_level: 0.5,
             target_sample_count: 32,
             ..Default::default()
         });

@@ -409,7 +409,6 @@ impl std::fmt::Display for OscilloscopeChannelMode {
 #[serde(deny_unknown_fields)]
 pub struct OscilloscopeSettings {
     pub segment_duration: f32,
-    pub trigger_level: f32,
     pub trigger_rising: bool,
     pub target_sample_count: usize,
     pub persistence: f32,
@@ -417,6 +416,8 @@ pub struct OscilloscopeSettings {
     pub channel_mode: OscilloscopeChannelMode,
     #[serde(default)]
     pub palette: Option<PaletteSettings>,
+    #[serde(default)]
+    pub hysteresis: f32,
 }
 
 impl Default for OscilloscopeSettings {
@@ -429,20 +430,20 @@ impl OscilloscopeSettings {
     pub fn from_config(config: &OscilloscopeConfig) -> Self {
         Self {
             segment_duration: config.segment_duration,
-            trigger_level: config.trigger_level,
             trigger_rising: config.trigger_rising,
             target_sample_count: config.target_sample_count,
             persistence: 0.85,
             channel_mode: OscilloscopeChannelMode::Both,
             palette: None,
+            hysteresis: config.hysteresis,
         }
     }
 
     pub fn apply_to(&self, config: &mut OscilloscopeConfig) {
         config.segment_duration = self.segment_duration;
-        config.trigger_level = self.trigger_level;
         config.trigger_rising = self.trigger_rising;
         config.target_sample_count = self.target_sample_count;
+        config.hysteresis = self.hysteresis;
     }
 }
 

@@ -6,8 +6,8 @@ use crate::ui::settings::{
 };
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
-use iced::widget::{column, row, slider, text, toggler};
-use iced::{Element, Length};
+use iced::Element;
+use iced::widget::{column, text, toggler};
 
 #[derive(Debug)]
 pub struct OscilloscopeSettingsPane {
@@ -19,11 +19,11 @@ pub struct OscilloscopeSettingsPane {
 #[derive(Debug, Clone)]
 pub enum Message {
     SegmentDuration(f32),
-    TriggerLevel(f32),
     Persistence(f32),
     TriggerMode(bool),
     ChannelMode(OscilloscopeChannelMode),
     Palette(PaletteEvent),
+    Hysteresis(f32),
 }
 
 const CHANNEL_OPTIONS: [OscilloscopeChannelMode; 4] = [
@@ -91,24 +91,22 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             ),
             column![
                 text("Trigger"),
-                row![
-                    slider(0.0..=1.0, self.settings.trigger_level, |value| {
-                        SettingsMessage::Oscilloscope(Message::TriggerLevel(value))
+                toggler(self.settings.trigger_rising)
+                    .label(trigger_label)
+                    .spacing(4)
+                    .text_size(12)
+                    .on_toggle(|value| {
+                        SettingsMessage::Oscilloscope(Message::TriggerMode(value))
                     })
-                    .step(0.01)
-                    .width(Length::Fill),
-                    toggler(self.settings.trigger_rising)
-                        .label(trigger_label)
-                        .spacing(4)
-                        .text_size(12)
-                        .on_toggle(|value| {
-                            SettingsMessage::Oscilloscope(Message::TriggerMode(value))
-                        })
-                ]
-                .spacing(12),
-                text(format!("Level {:.2}", self.settings.trigger_level)).size(12)
             ]
             .spacing(8),
+            labeled_slider(
+                "Hysteresis",
+                self.settings.hysteresis,
+                format!("{:.1}%", self.settings.hysteresis * 100.0),
+                SliderRange::new(0.0, 0.1, 0.001),
+                |value| SettingsMessage::Oscilloscope(Message::Hysteresis(value)),
+            ),
             column![
                 text("Color").size(14),
                 self.palette
@@ -135,9 +133,6 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             Message::SegmentDuration(value) => {
                 set_f32(&mut self.settings.segment_duration, value.clamp(0.005, 0.1))
             }
-            Message::TriggerLevel(value) => {
-                set_f32(&mut self.settings.trigger_level, value.clamp(0.0, 1.0))
-            }
             Message::Persistence(value) => {
                 set_f32(&mut self.settings.persistence, value.clamp(0.0, 1.0))
             }
@@ -151,6 +146,9 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             }
             Message::ChannelMode(mode) => set_if_changed(&mut self.settings.channel_mode, *mode),
             Message::Palette(event) => self.palette.update(*event),
+            Message::Hysteresis(value) => {
+                set_f32(&mut self.settings.hysteresis, value.clamp(0.0, 0.1))
+            }
         };
 
         if changed {
