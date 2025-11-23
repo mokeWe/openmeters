@@ -4,11 +4,14 @@ use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::util::audio::{DEFAULT_SAMPLE_RATE, interpolate_linear};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
+use wide::f32x4;
 
 const PITCH_MIN_HZ: f32 = 10.0;
-const PITCH_MAX_HZ: f32 = 8000.0;
+const PITCH_MAX_HZ: f32 = 10000.0;
+// lower = more sensitive. 0.15 was chosen practically arbitrarily but works.
 const PITCH_THRESHOLD: f32 = 0.15;
-const PITCH_DOWNSAMPLE_RATE: f32 = 12_000.0;
+// Could be lowered, but at the cost of accuracy. Here for future use maybe.
+const PITCH_DOWNSAMPLE_RATE: f32 = 48_000.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum TriggerMode {
@@ -41,112 +44,148 @@ impl Default for OscilloscopeConfig {
 
 #[derive(Debug, Clone)]
 struct PitchDetector {
-    difference: Vec<f32>,
-    cumulative_mean: Vec<f32>,
-    downsample_buffer: Vec<f32>,
+    diff: Vec<f32>,
+    cmean: Vec<f32>,
+    downsampled: Vec<f32>,
+    energy: Vec<f32>,
+    left_simd: Vec<f32x4>,
+    left_tail: [f32; 4],
+    left_tail_len: usize,
 }
 
 impl PitchDetector {
     fn new() -> Self {
         Self {
-            difference: Vec::new(),
-            cumulative_mean: Vec::new(),
-            downsample_buffer: Vec::new(),
+            diff: Vec::new(),
+            cmean: Vec::new(),
+            downsampled: Vec::new(),
+            energy: Vec::new(),
+            left_simd: Vec::new(),
+            left_tail: [0.0; 4],
+            left_tail_len: 0,
         }
     }
 
-    fn detect_pitch(&mut self, samples: &[f32], sample_rate: f32) -> Option<f32> {
+    fn detect_pitch(&mut self, samples: &[f32], rate: f32) -> Option<f32> {
         if samples.is_empty() {
             return None;
         }
 
-        let downsampled = if sample_rate > PITCH_DOWNSAMPLE_RATE * 1.5 {
-            self.downsample(samples, sample_rate, PITCH_DOWNSAMPLE_RATE);
-            &self.downsample_buffer
+        let data = if rate > PITCH_DOWNSAMPLE_RATE * 1.5 {
+            self.downsample(samples, rate, PITCH_DOWNSAMPLE_RATE);
+            &self.downsampled
         } else {
             samples
         };
 
-        let working_rate = if sample_rate > PITCH_DOWNSAMPLE_RATE * 1.5 {
+        let work_rate = if rate > PITCH_DOWNSAMPLE_RATE * 1.5 {
             PITCH_DOWNSAMPLE_RATE
         } else {
-            sample_rate
+            rate
         };
 
-        let min_period = (working_rate / PITCH_MAX_HZ).max(2.0) as usize;
-        let max_period = (working_rate / PITCH_MIN_HZ).min(downsampled.len() as f32 / 2.0) as usize;
+        let min_period = (work_rate / PITCH_MAX_HZ).max(2.0) as usize;
+        let max_period = (work_rate / PITCH_MIN_HZ).min(data.len() as f32 / 2.0) as usize;
 
-        if max_period <= min_period || downsampled.len() < max_period * 2 {
+        if max_period <= min_period || data.len() < max_period * 2 {
             return None;
         }
 
-        self.difference.resize(max_period, 0.0);
-        self.cumulative_mean.resize(max_period, 0.0);
+        self.diff.resize(max_period, 0.0);
+        self.cmean.resize(max_period, 0.0);
+        self.energy.resize(data.len() + 1, 0.0);
 
-        let stride = ((max_period - min_period) / 64).max(1);
-        let len = downsampled.len() - max_period;
+        let len = data.len() - max_period;
+        let precise_limit = 256.min(max_period);
 
-        for tau in (0..max_period).step_by(stride) {
-            let mut sum = 0.0_f32;
-            for i in (0..len).step_by(4) {
-                let remaining = len - i;
-                if remaining >= 4 {
-                    let d0 = unsafe {
-                        *downsampled.get_unchecked(i) - *downsampled.get_unchecked(i + tau)
-                    };
-                    let d1 = unsafe {
-                        *downsampled.get_unchecked(i + 1) - *downsampled.get_unchecked(i + 1 + tau)
-                    };
-                    let d2 = unsafe {
-                        *downsampled.get_unchecked(i + 2) - *downsampled.get_unchecked(i + 2 + tau)
-                    };
-                    let d3 = unsafe {
-                        *downsampled.get_unchecked(i + 3) - *downsampled.get_unchecked(i + 3 + tau)
-                    };
-                    sum += d0 * d0 + d1 * d1 + d2 * d2 + d3 * d3;
-                } else {
-                    for j in 0..remaining {
-                        let delta = downsampled[i + j] - downsampled[i + j + tau];
-                        sum += delta * delta;
-                    }
-                }
-            }
-            self.difference[tau] = sum;
+        let mut acc = 0.0_f32;
+        self.energy[0] = 0.0;
+        for (i, &s) in data.iter().enumerate() {
+            acc = s.mul_add(s, acc);
+            self.energy[i + 1] = acc;
         }
 
-        for tau in 0..max_period {
-            if tau % stride != 0 {
-                let prev = (tau / stride) * stride;
+        let left_energy = self.energy[len];
+        let left = &data[..len];
+
+        if left.is_empty() {
+            return None;
+        }
+
+        self.left_simd.clear();
+        self.left_tail.fill(0.0);
+        let (chunks, tail) = left.as_chunks::<4>();
+        self.left_simd.reserve(chunks.len());
+        for chunk in chunks {
+            self.left_simd.push(f32x4::new(*chunk));
+        }
+        self.left_tail_len = tail.len();
+        if self.left_tail_len > 0 {
+            self.left_tail[..self.left_tail_len].copy_from_slice(tail);
+        }
+
+        // 1. Precise region (stride = 1)
+        for tau in 0..precise_limit {
+            let right = &data[tau..tau + len];
+            let base = self.energy[tau];
+            let right_energy = self.energy[tau + len] - base;
+            self.diff[tau] = Self::diff_at_tau(
+                &self.left_simd,
+                &self.left_tail[..self.left_tail_len],
+                right,
+                left_energy,
+                right_energy,
+            );
+        }
+
+        // 2. Strided region
+        let stride = ((max_period - precise_limit) / 64).max(1);
+        for tau in (precise_limit..max_period).step_by(stride) {
+            let right = &data[tau..tau + len];
+            let base = self.energy[tau];
+            let right_energy = self.energy[tau + len] - base;
+            self.diff[tau] = Self::diff_at_tau(
+                &self.left_simd,
+                &self.left_tail[..self.left_tail_len],
+                right,
+                left_energy,
+                right_energy,
+            );
+        }
+
+        // 3. Interpolate strided region
+        for tau in precise_limit..max_period {
+            if (tau - precise_limit) % stride != 0 {
+                let prev = precise_limit + ((tau - precise_limit) / stride) * stride;
                 let next = prev + stride;
                 if next < max_period {
                     let t = (tau - prev) as f32 / stride as f32;
-                    self.difference[tau] =
-                        self.difference[prev] * (1.0 - t) + self.difference[next] * t;
+                    self.diff[tau] = self.diff[prev] * (1.0 - t) + self.diff[next] * t;
                 } else {
-                    self.difference[tau] = self.difference[prev];
+                    self.diff[tau] = self.diff[prev];
                 }
             }
         }
 
-        self.cumulative_mean[0] = 1.0;
-        let mut running_sum = 0.0;
+        self.cmean[0] = 1.0;
+        let mut sum = 0.0;
         for tau in 1..max_period {
-            running_sum += self.difference[tau];
-            self.cumulative_mean[tau] = if running_sum > f32::EPSILON {
-                self.difference[tau] * tau as f32 / running_sum
+            sum += self.diff[tau];
+            self.cmean[tau] = if sum > f32::EPSILON {
+                self.diff[tau] * tau as f32 / sum
             } else {
                 1.0
             };
         }
 
         for tau in min_period..max_period {
-            if self.cumulative_mean[tau] < PITCH_THRESHOLD
+            if self.cmean[tau] < PITCH_THRESHOLD
                 && tau + 1 < max_period
-                && self.cumulative_mean[tau] < self.cumulative_mean[tau + 1]
+                && self.cmean[tau] < self.cmean[tau + 1]
             {
-                let confidence = 1.0 - self.cumulative_mean[tau];
+                let confidence = 1.0 - self.cmean[tau];
                 if confidence > PITCH_THRESHOLD {
-                    return Some(working_rate / tau as f32);
+                    return Some(work_rate / tau as f32);
                 }
             }
         }
@@ -154,131 +193,219 @@ impl PitchDetector {
         None
     }
 
-    fn downsample(&mut self, samples: &[f32], original_rate: f32, target_rate: f32) {
-        let ratio = original_rate / target_rate;
-        let output_len = (samples.len() as f32 / ratio) as usize;
+    #[inline(always)]
+    fn diff_at_tau(
+        left_chunks: &[f32x4],
+        left_tail: &[f32],
+        right: &[f32],
+        left_energy: f32,
+        right_energy: f32,
+    ) -> f32 {
+        let expected_len = left_chunks.len() * 4 + left_tail.len();
+        debug_assert_eq!(expected_len, right.len());
 
-        self.downsample_buffer.clear();
-        self.downsample_buffer.reserve(output_len);
+        if expected_len == 0 {
+            return 0.0;
+        }
 
-        for i in 0..output_len {
-            let pos = i as f32 * ratio;
-            self.downsample_buffer
-                .push(interpolate_linear(samples, pos));
+        let dot = simd_dot_product(left_chunks, left_tail, right);
+        let diff = left_energy + right_energy - 2.0 * dot;
+        diff.max(0.0)
+    }
+
+    fn downsample(&mut self, samples: &[f32], src_rate: f32, dst_rate: f32) {
+        let ratio = src_rate / dst_rate;
+        let len = (samples.len() as f32 / ratio) as usize;
+
+        self.downsampled.clear();
+        self.downsampled.reserve(len);
+
+        for i in 0..len {
+            self.downsampled
+                .push(interpolate_linear(samples, i as f32 * ratio));
         }
     }
-}
-
-#[inline]
-fn find_best_trigger_offset(mono: &[f32], sine_table: &[f32], num_cycles: usize) -> usize {
-    let period = sine_table.len();
-    if period == 0 {
-        return 0;
-    }
-
-    let cycles = num_cycles.max(1);
-    let eval_length = period.saturating_mul(cycles);
-    if eval_length == 0 || mono.len() < eval_length {
-        return 0;
-    }
-
-    let search_range = mono.len() - eval_length;
-    let stride = (period / 4).max(1);
-
-    let mut best_correlation = f32::NEG_INFINITY;
-    let mut best_offset = 0;
-
-    for offset in (0..=search_range).step_by(stride) {
-        let signal = &mono[offset..offset + eval_length];
-        let correlation = compute_correlation_chunked(signal, sine_table);
-        if correlation > best_correlation {
-            best_correlation = correlation;
-            best_offset = offset;
-        }
-    }
-
-    let refine_start = best_offset.saturating_sub(stride);
-    let refine_end = (best_offset + stride).min(search_range);
-
-    for offset in refine_start..=refine_end {
-        if offset == best_offset || offset % stride == 0 {
-            continue;
-        }
-        let signal = &mono[offset..offset + eval_length];
-        let correlation = compute_correlation_chunked(signal, sine_table);
-        if correlation > best_correlation {
-            best_correlation = correlation;
-            best_offset = offset;
-        }
-    }
-
-    best_offset
-}
-
-#[inline]
-fn compute_trigger_region(
-    period: usize,
-    num_cycles: usize,
-    available_frames: usize,
-    mono: &[f32],
-    sine_table: &[f32],
-) -> (usize, usize) {
-    if period == 0 || sine_table.is_empty() {
-        return (0, available_frames);
-    }
-
-    let cycles = num_cycles.max(1);
-    let cycle_frames = period.saturating_mul(cycles);
-    let guard_frames = period.saturating_mul(2);
-    let search_window = cycle_frames.saturating_add(guard_frames);
-    let search_start = available_frames.saturating_sub(search_window);
-
-    let trigger_slice = &mono[search_start..];
-    let trigger_offset = find_best_trigger_offset(trigger_slice, sine_table, cycles);
-
-    (cycle_frames, search_start + trigger_offset)
 }
 
 #[inline(always)]
-fn compute_correlation_chunked(signal: &[f32], sine_table: &[f32]) -> f32 {
-    let period = sine_table.len();
-    if period == 0 || signal.is_empty() {
-        return 0.0;
+fn simd_dot_product(left_chunks: &[f32x4], left_tail: &[f32], right: &[f32]) -> f32 {
+    let (right_chunks, right_tail) = right.as_chunks::<4>();
+    debug_assert_eq!(right_chunks.len(), left_chunks.len());
+    debug_assert_eq!(right_tail.len(), left_tail.len());
+
+    let mut left_iter = left_chunks.chunks_exact(4);
+    let mut right_iter = right_chunks.chunks_exact(4);
+
+    let mut acc0 = f32x4::splat(0.0);
+    let mut acc1 = f32x4::splat(0.0);
+    let mut acc2 = f32x4::splat(0.0);
+    let mut acc3 = f32x4::splat(0.0);
+
+    for (left_block, right_block) in left_iter.by_ref().zip(right_iter.by_ref()) {
+        acc0 = left_block[0].mul_add(f32x4::new(right_block[0]), acc0);
+        acc1 = left_block[1].mul_add(f32x4::new(right_block[1]), acc1);
+        acc2 = left_block[2].mul_add(f32x4::new(right_block[2]), acc2);
+        acc3 = left_block[3].mul_add(f32x4::new(right_block[3]), acc3);
     }
 
-    let mut correlation = 0.0_f32;
-    let mut chunks = signal.chunks_exact(period);
+    let mut acc = (acc0 + acc1) + (acc2 + acc3);
 
-    for chunk in &mut chunks {
-        let mut i = 0;
-        while i + 3 < period {
-            correlation += chunk[i] * sine_table[i]
-                + chunk[i + 1] * sine_table[i + 1]
-                + chunk[i + 2] * sine_table[i + 2]
-                + chunk[i + 3] * sine_table[i + 3];
-            i += 4;
+    for (left_chunk, right_chunk) in left_iter.remainder().iter().zip(right_iter.remainder()) {
+        acc = left_chunk.mul_add(f32x4::new(*right_chunk), acc);
+    }
+
+    let dot = acc.reduce_add();
+
+    let tail_dot = match left_tail.len() {
+        0 => 0.0,
+        1 => left_tail[0] * right_tail[0],
+        2 => left_tail[0].mul_add(right_tail[0], left_tail[1] * right_tail[1]),
+        3 => {
+            let partial = left_tail[0].mul_add(right_tail[0], left_tail[1] * right_tail[1]);
+            left_tail[2].mul_add(right_tail[2], partial)
         }
-        while i < period {
-            correlation += chunk[i] * sine_table[i];
-            i += 1;
+        _ => {
+            let mut scalar = 0.0;
+            for (l, r) in left_tail.iter().zip(right_tail.iter()) {
+                scalar = l.mul_add(*r, scalar);
+            }
+            scalar
+        }
+    };
+
+    dot + tail_dot
+}
+
+// Stores cached sine/cosine prefix sums so trigger correlation reuses a single pass.
+#[derive(Debug, Clone, Default)]
+struct TriggerScratch {
+    sin: Vec<f32>,
+    cos: Vec<f32>,
+    psin: Vec<f32>,
+    pcos: Vec<f32>,
+}
+
+impl TriggerScratch {
+    fn clear(&mut self) {
+        self.sin.clear();
+        self.cos.clear();
+        self.psin.clear();
+        self.pcos.clear();
+    }
+
+    fn prepare(&mut self, data: &[f32], period: usize) {
+        let len = data.len();
+
+        self.sin.clear();
+        self.cos.clear();
+        self.psin.clear();
+        self.pcos.clear();
+
+        self.sin.resize(len + 1, 0.0);
+        self.cos.resize(len + 1, 0.0);
+        self.psin.resize(len + 1, 0.0);
+        self.pcos.resize(len + 1, 0.0);
+
+        let step = std::f32::consts::TAU / period as f32;
+        let (s_step, c_step) = step.sin_cos();
+
+        let mut s = 0.0_f32;
+        let mut c = 1.0_f32;
+
+        self.psin[0] = s;
+        self.pcos[0] = c;
+
+        for (i, &sample) in data.iter().take(len).enumerate() {
+            self.sin[i + 1] = self.sin[i] + sample * s;
+            self.cos[i + 1] = self.cos[i] + sample * c;
+
+            let mut ns = s * c_step + c * s_step;
+            let mut nc = c * c_step - s * s_step;
+
+            if (i & 127) == 127 {
+                let mag = (ns * ns + nc * nc).sqrt();
+                if mag > f32::EPSILON {
+                    ns /= mag;
+                    nc /= mag;
+                } else {
+                    ns = 0.0;
+                    nc = 1.0;
+                }
+            }
+
+            s = ns;
+            c = nc;
+
+            self.psin[i + 1] = s;
+            self.pcos[i + 1] = c;
         }
     }
 
-    let remainder = chunks.remainder();
-    let mut i = 0;
-    while i + 3 < remainder.len() {
-        correlation += remainder[i] * sine_table[i]
-            + remainder[i + 1] * sine_table[i + 1]
-            + remainder[i + 2] * sine_table[i + 2]
-            + remainder[i + 3] * sine_table[i + 3];
-        i += 4;
+    #[inline]
+    fn correlation(&self, offset: usize, length: usize) -> f32 {
+        debug_assert!(offset + length < self.sin.len());
+        debug_assert!(offset < self.pcos.len());
+
+        let ss = self.sin[offset + length] - self.sin[offset];
+        let sc = self.cos[offset + length] - self.cos[offset];
+        self.pcos[offset] * ss - self.psin[offset] * sc
     }
-    while i < remainder.len() {
-        correlation += remainder[i] * sine_table[i];
-        i += 1;
+}
+
+#[inline]
+fn find_trigger(
+    period: usize,
+    cycles: usize,
+    available: usize,
+    mono: &[f32],
+    scratch: &mut TriggerScratch,
+) -> (usize, usize) {
+    let cycles = cycles.max(1);
+    let len = period.saturating_mul(cycles);
+    let guard = period.saturating_mul(2);
+    let window = len.saturating_add(guard);
+    let start = available.saturating_sub(window);
+
+    let data = &mono[start..];
+    if period == 0 || len == 0 {
+        return (0, available);
     }
 
-    correlation
+    if data.len() <= len {
+        return (len, start);
+    }
+
+    scratch.prepare(data, period);
+
+    let range = data.len() - len;
+    let stride = (period / 4).max(1);
+
+    let mut best = f32::NEG_INFINITY;
+    let mut pos = 0;
+
+    for i in (0..=range).step_by(stride) {
+        let corr = scratch.correlation(i, len);
+        if corr > best {
+            best = corr;
+            pos = i;
+        }
+    }
+
+    let refine_start = pos.saturating_sub(stride);
+    let refine_end = (pos + stride).min(range);
+
+    for i in refine_start..=refine_end {
+        if i == pos || i % stride == 0 {
+            continue;
+        }
+        let corr = scratch.correlation(i, len);
+        if corr > best {
+            best = corr;
+            pos = i;
+        }
+    }
+
+    (len, start + pos)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -296,8 +423,7 @@ pub struct OscilloscopeProcessor {
     pitch_detector: PitchDetector,
     last_pitch: Option<f32>,
     mono_buffer: Vec<f32>,
-    sine_table: Vec<f32>,
-    sine_table_period: usize,
+    trigger_scratch: TriggerScratch,
 }
 
 impl OscilloscopeProcessor {
@@ -309,58 +435,12 @@ impl OscilloscopeProcessor {
             pitch_detector: PitchDetector::new(),
             last_pitch: None,
             mono_buffer: Vec::new(),
-            sine_table: Vec::new(),
-            sine_table_period: 0,
+            trigger_scratch: TriggerScratch::default(),
         }
     }
 
     pub fn config(&self) -> OscilloscopeConfig {
         self.config
-    }
-
-    fn ensure_sine_table(&mut self, period: usize) {
-        if self.sine_table_period == period {
-            return;
-        }
-
-        if period == 0 {
-            self.sine_table.clear();
-            self.sine_table_period = 0;
-            return;
-        }
-
-        self.sine_table.resize(period, 0.0);
-
-        let angle_step = std::f32::consts::TAU / period as f32;
-        let (sin_step, cos_step) = angle_step.sin_cos();
-        let mut sin_value = 0.0_f32;
-        let mut cos_value = 1.0_f32;
-        let mut refresh_counter = 0_usize;
-
-        for value in &mut self.sine_table {
-            *value = sin_value;
-
-            let next_sin = sin_value * cos_step + cos_value * sin_step;
-            let next_cos = cos_value * cos_step - sin_value * sin_step;
-
-            sin_value = next_sin;
-            cos_value = next_cos;
-
-            refresh_counter += 1;
-            if refresh_counter == 128 {
-                let magnitude = (sin_value * sin_value + cos_value * cos_value).sqrt();
-                if magnitude > f32::EPSILON {
-                    sin_value /= magnitude;
-                    cos_value /= magnitude;
-                } else {
-                    sin_value = 0.0;
-                    cos_value = 1.0;
-                }
-                refresh_counter = 0;
-            }
-        }
-
-        self.sine_table_period = period;
     }
 }
 
@@ -368,19 +448,19 @@ impl AudioProcessor for OscilloscopeProcessor {
     type Output = OscilloscopeSnapshot;
 
     fn process_block(&mut self, block: &AudioBlock<'_>) -> ProcessorUpdate<Self::Output> {
-        let channels = block.channels.max(1);
+        let ch = block.channels.max(1);
         if block.frame_count() == 0 {
             return ProcessorUpdate::None;
         }
 
-        let base_frames = (self.config.sample_rate * self.config.segment_duration)
+        let base = (self.config.sample_rate * self.config.segment_duration)
             .round()
             .max(1.0) as usize;
-        let detection_frames = (self.config.sample_rate * 0.1) as usize;
-        let capacity = detection_frames.max(base_frames) * channels;
+        let detect = (self.config.sample_rate * 0.1) as usize;
+        let capacity = detect.max(base) * ch;
 
-        if !self.history.is_empty() && !self.history.len().is_multiple_of(channels) {
-            self.history.clear();
+        if !self.history.is_empty() && !self.history.len().is_multiple_of(ch) {
+            self.history.clear(); // will drop on channel count change. sort of an edge case
             self.last_pitch = None;
         }
 
@@ -391,89 +471,85 @@ impl AudioProcessor for OscilloscopeProcessor {
         } else {
             let overflow = self.history.len() + block.samples.len();
             if overflow > capacity {
-                let remove =
-                    ((overflow - capacity).div_ceil(channels) * channels).min(self.history.len());
+                let remove = ((overflow - capacity).div_ceil(ch) * ch).min(self.history.len());
                 self.history.drain(..remove);
             }
             self.history.extend(block.samples);
         }
 
-        let available_frames = self.history.len() / channels;
+        let avail = self.history.len() / ch;
 
-        let (frames, start_frame) = match self.config.trigger_mode {
+        let (frames, start) = match self.config.trigger_mode {
             TriggerMode::FreeRun => {
-                let frames = base_frames.min(available_frames);
+                let frames = base.min(avail);
                 if frames == 0 {
                     return ProcessorUpdate::None;
                 }
-                (frames, available_frames.saturating_sub(frames))
+                (frames, avail.saturating_sub(frames))
             }
             TriggerMode::Stable { num_cycles } => {
-                if available_frames < base_frames {
+                if avail < base {
                     return ProcessorUpdate::None;
                 }
 
                 {
                     let data = self.history.make_contiguous();
                     self.mono_buffer.clear();
-                    self.mono_buffer.reserve(available_frames);
+                    self.mono_buffer.reserve(avail);
 
-                    if channels == 1 {
-                        self.mono_buffer
-                            .extend_from_slice(&data[..available_frames]);
+                    if ch == 1 {
+                        self.mono_buffer.extend_from_slice(&data[..avail]);
                     } else {
-                        let scale = 1.0 / channels as f32;
-                        for frame in 0..available_frames {
-                            let idx = frame * channels;
+                        let scale = 1.0 / ch as f32;
+                        for i in 0..avail {
+                            let idx = i * ch;
                             let mut sum = 0.0_f32;
-                            for ch in 0..channels {
-                                sum += data[idx + ch];
+                            for c in 0..ch {
+                                sum += data[idx + c];
                             }
                             self.mono_buffer.push(sum * scale);
                         }
                     }
                 }
 
-                let frequency = self
+                let freq = self
                     .pitch_detector
                     .detect_pitch(&self.mono_buffer, self.config.sample_rate)
                     .or(self.last_pitch);
 
-                if let Some(freq) = frequency {
-                    self.last_pitch = Some(freq);
-                    let period = (self.config.sample_rate / freq).max(1.0) as usize;
-                    self.ensure_sine_table(period);
-                    let sine_table = self.sine_table.as_slice();
-                    compute_trigger_region(
+                if let Some(f) = freq {
+                    self.last_pitch = Some(f);
+                    let period = (self.config.sample_rate / f).max(1.0) as usize;
+                    find_trigger(
                         period,
                         num_cycles,
-                        available_frames,
+                        avail,
                         &self.mono_buffer,
-                        sine_table,
+                        &mut self.trigger_scratch,
                     )
                 } else {
-                    (base_frames, available_frames.saturating_sub(base_frames))
+                    (base, avail.saturating_sub(base))
                 }
             }
         };
 
-        const TARGET_SAMPLES: usize = 4096;
-        let target = TARGET_SAMPLES.clamp(1, frames);
-        let extract_start = start_frame * channels;
+        const TARGET: usize = 4096;
+        let target = TARGET.clamp(1, frames);
+        let extract_start = start * ch;
         let data = self.history.make_contiguous();
-        let extract_len = (frames * channels).min(data.len() - extract_start);
+        let extract_len = (frames * ch).min(data.len() - extract_start);
 
         self.snapshot.samples.clear();
 
         downsample_interleaved(
             &mut self.snapshot.samples,
             &data[extract_start..extract_start + extract_len],
-            frames.min(extract_len / channels),
-            channels,
+            frames.min(extract_len / ch),
+            ch,
             target,
         );
 
-        self.snapshot.channels = channels;
+        self.snapshot.channels = ch;
         self.snapshot.samples_per_channel = target;
 
         ProcessorUpdate::Snapshot(self.snapshot.clone())
@@ -484,8 +560,7 @@ impl AudioProcessor for OscilloscopeProcessor {
         self.history.clear();
         self.last_pitch = None;
         self.mono_buffer.clear();
-        self.sine_table.clear();
-        self.sine_table_period = 0;
+        self.trigger_scratch.clear();
     }
 }
 
@@ -500,27 +575,27 @@ fn downsample_interleaved(
     output: &mut Vec<f32>,
     data: &[f32],
     frames: usize,
-    channels: usize,
+    ch: usize,
     target: usize,
 ) {
-    if frames == 0 || channels == 0 || target == 0 {
+    if frames == 0 || ch == 0 || target == 0 {
         return;
     }
 
     let step = frames as f32 / target as f32;
 
-    for channel in 0..channels {
-        for index in 0..target {
-            let pos = index as f32 * step;
+    for c in 0..ch {
+        for i in 0..target {
+            let pos = i as f32 * step;
             let idx = pos as usize;
             let frac = pos - idx as f32;
 
             let sample = if frac > f32::EPSILON && idx + 1 < frames {
-                let curr = data[idx * channels + channel];
-                let next = data[(idx + 1) * channels + channel];
+                let curr = data[idx * ch + c];
+                let next = data[(idx + 1) * ch + c];
                 crate::util::audio::lerp(curr, next, frac)
             } else {
-                data[idx * channels + channel]
+                data[idx * ch + c]
             };
 
             output.push(sample);
@@ -597,5 +672,33 @@ mod tests {
             }
             ProcessorUpdate::None => panic!("expected snapshot"),
         }
+    }
+
+    #[test]
+    fn high_frequency_pitch_detection() {
+        let mut detector = PitchDetector::new();
+        let sample_rate = 48_000.0;
+        // yeah this is a lofty goal. pitch detection is fucking expensive.
+        // still made it work
+        let frequency = 12_000.0;
+        let duration = 0.05;
+        let total_samples = (sample_rate * duration) as usize;
+        let mut samples = Vec::with_capacity(total_samples);
+
+        for i in 0..total_samples {
+            let t = i as f32 / sample_rate;
+            let sample = (t * frequency * std::f32::consts::TAU).sin();
+            samples.push(sample);
+        }
+
+        let detected = detector.detect_pitch(&samples, sample_rate);
+        assert!(detected.is_some(), "Failed to detect 12kHz pitch");
+        let detected_freq = detected.unwrap();
+        assert!(
+            (detected_freq - frequency).abs() < frequency * 0.05,
+            "Detected frequency {} is too far from expected {}",
+            detected_freq,
+            frequency
+        );
     }
 }
