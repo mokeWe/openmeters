@@ -451,18 +451,21 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Waveform<'a> 
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        renderer.fill_quad(
-            Quad {
-                bounds,
-                border: Default::default(),
-                shadow: Default::default(),
-            },
-            Background::Color(theme.extended_palette().background.base.color),
-        );
+        let params = self.state.borrow().visual(bounds);
 
-        if let Some(params) = self.state.borrow().visual(bounds) {
-            renderer.draw_primitive(bounds, WaveformPrimitive::new(params));
-        }
+        let Some(params) = params else {
+            renderer.fill_quad(
+                Quad {
+                    bounds,
+                    border: Default::default(),
+                    shadow: Default::default(),
+                },
+                Background::Color(theme.extended_palette().background.base.color),
+            );
+            return;
+        };
+
+        renderer.draw_primitive(bounds, WaveformPrimitive::new(params));
     }
 
     fn children(&self) -> Vec<Tree> {

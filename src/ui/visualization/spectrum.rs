@@ -219,7 +219,6 @@ pub struct SpectrumState {
 #[derive(Debug)]
 pub struct SpectrumVisual {
     pub primitive: SpectrumParams,
-    pub background: Color,
     label: Option<PeakLabel>,
     grid_lines: Arc<Vec<GridLine>>,
 }
@@ -410,7 +409,6 @@ impl SpectrumState {
                     .map(|&c| theme::color_to_rgba(c))
                     .collect(),
             },
-            background: palette.background.base.color,
             label: self
                 .style
                 .show_peak_label
@@ -478,15 +476,6 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> 
             );
             return;
         };
-
-        renderer.fill_quad(
-            Quad {
-                bounds,
-                border: Default::default(),
-                shadow: Default::default(),
-            },
-            Background::Color(visual.background),
-        );
 
         let grid_lines = visual.grid_lines.clone();
         if !grid_lines.is_empty() {
