@@ -8,10 +8,11 @@ use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::oscilloscope::{OscilloscopeParams, OscilloscopePrimitive};
 use crate::ui::settings::OscilloscopeChannelMode;
 use crate::ui::theme;
-use iced::advanced::renderer;
+use iced::advanced::Renderer as _;
+use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Widget, layout, mouse};
-use iced::{Color, Element, Length, Rectangle, Size};
+use iced::{Background, Color, Element, Length, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::time::Instant;
@@ -177,8 +178,15 @@ impl OscilloscopeState {
         }
     }
 
-    fn visual_params(&self, bounds: Rectangle) -> OscilloscopeParams {
+    fn visual_params(&self, bounds: Rectangle) -> Option<OscilloscopeParams> {
         let channels = self.snapshot.channels.max(1);
+        let samples_per_channel = self.snapshot.samples_per_channel;
+        let required = channels.saturating_mul(samples_per_channel);
+
+        if samples_per_channel < 2 || self.snapshot.samples.len() < required {
+            return None;
+        }
+
         let colors = self
             .style
             .colors
@@ -188,14 +196,14 @@ impl OscilloscopeState {
             .map(|c| theme::color_to_rgba(*c))
             .collect();
 
-        OscilloscopeParams {
+        Some(OscilloscopeParams {
             bounds,
             channels,
-            samples_per_channel: self.snapshot.samples_per_channel,
+            samples_per_channel,
             samples: self.snapshot.samples.clone(),
             colors,
             fill_alpha: 0.15,
-        }
+        })
     }
 }
 
@@ -250,14 +258,24 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Oscilloscope<
         &self,
         _tree: &Tree,
         renderer: &mut iced::Renderer,
-        _theme: &iced::Theme,
+        theme: &iced::Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let params = self.state.borrow().visual_params(bounds);
+        let Some(params) = self.state.borrow().visual_params(bounds) else {
+            renderer.fill_quad(
+                Quad {
+                    bounds,
+                    border: Default::default(),
+                    shadow: Default::default(),
+                },
+                Background::Color(theme.extended_palette().background.base.color),
+            );
+            return;
+        };
 
         renderer.draw_primitive(bounds, OscilloscopePrimitive::new(params));
     }

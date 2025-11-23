@@ -8,10 +8,11 @@ use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::stereometer::{StereometerParams, StereometerPrimitive};
 use crate::ui::settings::StereometerSettings;
 use crate::ui::theme;
-use iced::advanced::renderer;
+use iced::advanced::Renderer as _;
+use iced::advanced::renderer::{self, Quad};
 use iced::advanced::widget::{Tree, tree};
 use iced::advanced::{Layout, Widget, layout, mouse};
-use iced::{Color, Element, Length, Rectangle, Size};
+use iced::{Background, Color, Element, Length, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -137,10 +138,14 @@ impl StereometerState {
         self.persistence
     }
 
-    fn visual_params(&self, bounds: Rectangle) -> StereometerParams {
+    fn visual_params(&self, bounds: Rectangle) -> Option<StereometerParams> {
+        if self.snapshot.xy_points.len() < 2 {
+            return None;
+        }
+
         let color = theme::color_to_rgba(self.style.trace_color);
 
-        StereometerParams {
+        Some(StereometerParams {
             instance_id: self.instance_id,
             bounds,
             xy_points: self.snapshot.xy_points.clone(),
@@ -148,7 +153,7 @@ impl StereometerState {
             line_alpha: self.style.line_alpha,
             amplitude_scale: self.style.amplitude_scale,
             stroke_width: self.style.stroke_width,
-        }
+        })
     }
 }
 
@@ -209,14 +214,24 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Stereometer<'
         &self,
         _tree: &Tree,
         renderer: &mut iced::Renderer,
-        _theme: &iced::Theme,
+        theme: &iced::Theme,
         _style: &renderer::Style,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
         _viewport: &Rectangle,
     ) {
         let bounds = layout.bounds();
-        let params = self.state.borrow().visual_params(bounds);
+        let Some(params) = self.state.borrow().visual_params(bounds) else {
+            renderer.fill_quad(
+                Quad {
+                    bounds,
+                    border: Default::default(),
+                    shadow: Default::default(),
+                },
+                Background::Color(theme.extended_palette().background.base.color),
+            );
+            return;
+        };
 
         renderer.draw_primitive(bounds, StereometerPrimitive::new(params));
     }
