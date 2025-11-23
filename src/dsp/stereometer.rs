@@ -25,19 +25,10 @@ impl Default for StereometerConfig {
 }
 
 /// Snapshot containing the latest stereometer data.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct StereometerSnapshot {
     pub xy_points: Vec<(f32, f32)>,
     pub correlation: Correlation,
-}
-
-impl Default for StereometerSnapshot {
-    fn default() -> Self {
-        Self {
-            xy_points: Vec::new(),
-            correlation: 0.0,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -92,11 +83,8 @@ impl AudioProcessor for StereometerProcessor {
 
         if block.samples.len() >= capacity {
             self.history.clear();
-            self.history.extend(
-                block.samples[block.samples.len() - capacity..]
-                    .iter()
-                    .copied(),
-            );
+            self.history
+                .extend(&block.samples[block.samples.len() - capacity..]);
         } else {
             let overflow = self.history.len() + block.samples.len();
             if overflow > capacity {
@@ -104,7 +92,7 @@ impl AudioProcessor for StereometerProcessor {
                     (overflow - capacity).div_ceil(channels) * channels.min(self.history.len());
                 self.history.drain(..remove);
             }
-            self.history.extend(block.samples.iter().copied());
+            self.history.extend(block.samples);
         }
 
         if self.history.len() < capacity {

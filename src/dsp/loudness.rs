@@ -296,11 +296,7 @@ impl AudioProcessor for LoudnessProcessor {
     fn reset(&mut self) {
         let channels = self.channels.len();
         self.channels.clear();
-        self.snapshot = if channels == 0 {
-            LoudnessSnapshot::default()
-        } else {
-            LoudnessSnapshot::with_channels(channels, self.config.floor_db)
-        };
+        self.snapshot = LoudnessSnapshot::with_channels(channels, self.config.floor_db);
     }
 }
 

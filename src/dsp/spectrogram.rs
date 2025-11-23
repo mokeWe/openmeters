@@ -391,7 +391,6 @@ pub struct SpectrogramColumn {
 }
 
 /// Incremental update emitted by the spectrogram processor.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SpectrogramUpdate {
     pub fft_size: usize,
@@ -400,7 +399,6 @@ pub struct SpectrogramUpdate {
     pub frequency_scale: FrequencyScale,
     pub history_length: usize,
     pub reset: bool,
-    pub reassignment_enabled: bool,
     pub synchro_bins_hz: Option<Arc<[f32]>>,
     pub new_columns: Vec<SpectrogramColumn>,
 }
@@ -735,7 +733,6 @@ impl SynchroState {
 }
 
 pub struct SpectrogramProcessor {
-    stored_config: SpectrogramConfig,
     config: SpectrogramConfig,
     planner: RealFftPlanner<f32>,
     fft: Arc<dyn RealToComplex<f32>>,
@@ -772,7 +769,6 @@ pub struct SpectrogramProcessor {
 
 impl SpectrogramProcessor {
     pub fn new(config: SpectrogramConfig) -> Self {
-        let stored_config = config;
         let mut runtime_config = config;
         Self::normalize_config(&mut runtime_config);
 
@@ -796,7 +792,8 @@ impl SpectrogramProcessor {
         let scratch_buffer = fft.make_scratch_vec();
         let magnitude_buffer = vec![0.0; bins];
         let reassigned_power_buffer = vec![0.0; bins];
-        let bin_normalization = Self::compute_bin_normalization(window.as_ref(), fft_size);
+        let bin_normalization =
+            crate::util::audio::compute_fft_bin_normalization(window.as_ref(), fft_size);
         let energy_normalization = Self::compute_energy_normalization(window.as_ref(), fft_size);
         let pcm_buffer = VecDeque::with_capacity(window_size.saturating_mul(2));
         let history = SpectrogramHistory::new(history_len);
@@ -809,7 +806,6 @@ impl SpectrogramProcessor {
         let reassignment_sample_cache = Vec::with_capacity(bins >> 4);
 
         Self {
-            stored_config,
             config: runtime_config,
             planner,
             fft,
@@ -879,7 +875,8 @@ impl SpectrogramProcessor {
 
         self.magnitude_buffer.resize(bins, 0.0);
         self.reassigned_power_buffer.resize(bins, 0.0);
-        self.bin_normalization = Self::compute_bin_normalization(self.window.as_ref(), fft_size);
+        self.bin_normalization =
+            crate::util::audio::compute_fft_bin_normalization(self.window.as_ref(), fft_size);
         self.energy_normalization =
             Self::compute_energy_normalization(self.window.as_ref(), fft_size);
 
@@ -911,7 +908,6 @@ impl SpectrogramProcessor {
 
         self.pcm_buffer.clear();
         self.buffer_start_index = 0;
-        self.start_instant = None;
         self.accumulated_offset = Duration::default();
         self.pending_reset = true;
     }
@@ -925,6 +921,7 @@ impl SpectrogramProcessor {
             || self.real_buffer.len() != expected_fft
         {
             self.rebuild_fft();
+            self.start_instant = None;
         }
     }
 
@@ -969,7 +966,7 @@ impl SpectrogramProcessor {
                     window_input[..split].copy_from_slice(head);
                     window_input[split..window_size].copy_from_slice(&tail[..window_size - split]);
                 }
-                Self::remove_dc(window_input);
+                crate::util::audio::remove_dc(window_input);
             }
 
             if reassignment_enabled {
@@ -979,7 +976,10 @@ impl SpectrogramProcessor {
                 self.derivative_buffer[window_size..fft_size].fill(0.0);
             }
 
-            Self::apply_window(&mut self.real_buffer[..window_size], self.window.as_ref());
+            crate::util::audio::apply_window(
+                &mut self.real_buffer[..window_size],
+                self.window.as_ref(),
+            );
 
             if fft_size > window_size {
                 self.real_buffer[window_size..fft_size].fill(0.0);
@@ -1110,9 +1110,6 @@ impl SpectrogramProcessor {
         let samples = &mut self.reassignment_sample_cache;
         samples.clear();
 
-        let sample_limit_reached = samples.len() >= MAX_REASSIGNMENT_SAMPLES;
-        let collect_samples = !sample_limit_reached;
-
         for k in 0..reassignment_bin_limit {
             let k_f32 = k as f32;
 
@@ -1154,7 +1151,7 @@ impl SpectrogramProcessor {
                 self.synchro.accumulate(freq_hz as f64, display_power);
             }
 
-            if collect_samples && samples.len() < MAX_REASSIGNMENT_SAMPLES {
+            if samples.len() < MAX_REASSIGNMENT_SAMPLES {
                 let magnitude_db = if display_power > POWER_EPSILON {
                     (display_power.ln() * LN_TO_DB).max(DB_FLOOR)
                 } else {
@@ -1307,10 +1304,8 @@ impl AudioProcessor for SpectrogramProcessor {
         } else if (self.config.sample_rate - block.sample_rate).abs() > f32::EPSILON {
             let duration_elapsed =
                 duration_from_samples(self.buffer_start_index, self.config.sample_rate);
-            let previous_start = self.start_instant;
             self.config.sample_rate = block.sample_rate;
             self.rebuild_fft();
-            self.start_instant = previous_start;
             self.accumulated_offset = duration_elapsed;
         }
 
@@ -1334,7 +1329,6 @@ impl AudioProcessor for SpectrogramProcessor {
                 frequency_scale: self.config.frequency_scale,
                 history_length: self.config.history_length,
                 reset,
-                reassignment_enabled: self.config.use_reassignment,
                 synchro_bins_hz: self.synchro.bins_arc().cloned(),
                 new_columns,
             })
@@ -1369,126 +1363,7 @@ impl AudioProcessor for SpectrogramProcessor {
 impl SpectrogramProcessor {
     #[inline]
     fn mixdown_interleaved(&mut self, samples: &[f32], channels: usize) {
-        if channels == 0 {
-            return;
-        }
-
-        if channels == 1 {
-            self.pcm_buffer.extend(samples);
-            return;
-        }
-
-        let frame_count = samples.len() / channels;
-        if frame_count == 0 {
-            return;
-        }
-
-        self.pcm_buffer.reserve(frame_count);
-
-        match channels {
-            2 => {
-                let mut chunks = samples.chunks_exact(8);
-                for chunk in chunks.by_ref() {
-                    self.pcm_buffer.push_back((chunk[0] + chunk[1]) * 0.5);
-                    self.pcm_buffer.push_back((chunk[2] + chunk[3]) * 0.5);
-                    self.pcm_buffer.push_back((chunk[4] + chunk[5]) * 0.5);
-                    self.pcm_buffer.push_back((chunk[6] + chunk[7]) * 0.5);
-                }
-                for chunk in chunks.remainder().chunks_exact(2) {
-                    self.pcm_buffer.push_back((chunk[0] + chunk[1]) * 0.5);
-                }
-            }
-            4 => {
-                let mut chunks = samples.chunks_exact(8);
-                for chunk in chunks.by_ref() {
-                    let sum1 = (chunk[0] + chunk[1]) + (chunk[2] + chunk[3]);
-                    let sum2 = (chunk[4] + chunk[5]) + (chunk[6] + chunk[7]);
-                    self.pcm_buffer.push_back(sum1 * 0.25);
-                    self.pcm_buffer.push_back(sum2 * 0.25);
-                }
-                for chunk in chunks.remainder().chunks_exact(4) {
-                    let sum = (chunk[0] + chunk[1]) + (chunk[2] + chunk[3]);
-                    self.pcm_buffer.push_back(sum * 0.25);
-                }
-            }
-            6 => {
-                for chunk in samples.chunks_exact(6) {
-                    let sum = (chunk[0] + chunk[1]) + (chunk[2] + chunk[3]) + (chunk[4] + chunk[5]);
-                    self.pcm_buffer.push_back(sum * (1.0 / 6.0));
-                }
-            }
-            8 => {
-                for chunk in samples.chunks_exact(8) {
-                    let sum = ((chunk[0] + chunk[1]) + (chunk[2] + chunk[3]))
-                        + ((chunk[4] + chunk[5]) + (chunk[6] + chunk[7]));
-                    self.pcm_buffer.push_back(sum * 0.125);
-                }
-            }
-            _ => {
-                let inv_channels = 1.0 / channels as f32;
-                for frame in samples.chunks_exact(channels) {
-                    let sum: f32 = frame.iter().copied().sum();
-                    self.pcm_buffer.push_back(sum * inv_channels);
-                }
-            }
-        }
-    }
-
-    #[inline(always)]
-    fn apply_window(buffer: &mut [f32], window: &[f32]) {
-        debug_assert_eq!(buffer.len(), window.len());
-
-        let mut chunks = buffer.chunks_exact_mut(4);
-        let mut window_chunks = window.chunks_exact(4);
-
-        for (buf_chunk, win_chunk) in chunks.by_ref().zip(window_chunks.by_ref()) {
-            buf_chunk[0] *= win_chunk[0];
-            buf_chunk[1] *= win_chunk[1];
-            buf_chunk[2] *= win_chunk[2];
-            buf_chunk[3] *= win_chunk[3];
-        }
-
-        for (b, &w) in chunks
-            .into_remainder()
-            .iter_mut()
-            .zip(window_chunks.remainder().iter())
-        {
-            *b *= w;
-        }
-    }
-
-    #[inline]
-    fn remove_dc(buffer: &mut [f32]) {
-        let len = buffer.len();
-        if len == 0 {
-            return;
-        }
-
-        let mut sum = 0.0f32;
-        let mut compensation = 0.0f32;
-
-        for &sample in buffer.iter() {
-            let y = sample - compensation;
-            let t = sum + y;
-            compensation = (t - sum) - y;
-            sum = t;
-        }
-
-        let mean = sum / len as f32;
-
-        if mean.abs() <= f32::EPSILON {
-            return;
-        }
-
-        for sample in buffer.iter_mut() {
-            *sample -= mean;
-        }
-    }
-
-    fn compute_bin_normalization(window: &[f32], fft_size: usize) -> Vec<f32> {
-        let window_sum: f32 = window.iter().sum();
-        let inv = 1.0 / window_sum;
-        Self::compute_normalization(fft_size, window_sum, inv * inv, 4.0 * inv * inv)
+        crate::util::audio::mixdown_into_deque(&mut self.pcm_buffer, samples, channels);
     }
 
     fn compute_energy_normalization(window: &[f32], fft_size: usize) -> Vec<f32> {
@@ -1768,8 +1643,6 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
     fn update_config(&mut self, config: SpectrogramConfig) {
         let previous = self.config;
 
-        self.stored_config = config;
-
         self.config = config;
         Self::normalize_config(&mut self.config);
 
@@ -1780,6 +1653,7 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
 
         if fft_related_changed {
             self.rebuild_fft();
+            self.start_instant = None;
             return;
         }
 
@@ -1986,7 +1860,6 @@ mod tests {
             ProcessorUpdate::None => panic!("expected reassignment snapshot"),
         };
 
-        assert!(update.reassignment_enabled);
         let sample_count = update
             .new_columns
             .last()

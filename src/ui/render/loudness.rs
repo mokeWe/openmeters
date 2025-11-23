@@ -7,6 +7,7 @@ use iced_wgpu::wgpu;
 use std::collections::HashMap;
 
 use crate::ui::render::common::{ClipTransform, SimplePipeline, SimpleVertex, quad_vertices};
+use crate::util::audio::lerp;
 
 const VALUE_SCALE_BASE: &[(f32, f32)] = &[
     (0.0, 0.0),
@@ -356,10 +357,6 @@ impl LayoutContext {
             ));
         }
     }
-}
-
-fn lerp(a: f32, b: f32, t: f32) -> f32 {
-    a + (b - a) * t
 }
 
 impl Primitive for LoudnessMeterPrimitive {

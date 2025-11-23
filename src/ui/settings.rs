@@ -1,6 +1,6 @@
 //! Settings persistence and management.
 
-use crate::dsp::oscilloscope::OscilloscopeConfig;
+use crate::dsp::oscilloscope::{OscilloscopeConfig, TriggerMode};
 use crate::dsp::spectrogram::{FrequencyScale, SpectrogramConfig, WindowKind};
 use crate::dsp::spectrum::SpectrumConfig;
 use crate::dsp::stereometer::StereometerConfig;
@@ -386,10 +386,10 @@ impl<'de> Deserialize<'de> for ModuleSettings {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum OscilloscopeChannelMode {
-    #[default]
     Both,
     Left,
     Right,
+    #[default]
     Mono,
 }
 
@@ -406,44 +406,26 @@ impl std::fmt::Display for OscilloscopeChannelMode {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct OscilloscopeSettings {
     pub segment_duration: f32,
-    pub trigger_rising: bool,
-    pub target_sample_count: usize,
+    #[serde(default)]
+    pub trigger_mode: TriggerMode,
     pub persistence: f32,
     #[serde(default)]
     pub channel_mode: OscilloscopeChannelMode,
     #[serde(default)]
     pub palette: Option<PaletteSettings>,
-    #[serde(default)]
-    pub hysteresis: f32,
 }
 
 impl Default for OscilloscopeSettings {
     fn default() -> Self {
-        Self::from_config(&OscilloscopeConfig::default())
-    }
-}
-
-impl OscilloscopeSettings {
-    pub fn from_config(config: &OscilloscopeConfig) -> Self {
         Self {
-            segment_duration: config.segment_duration,
-            trigger_rising: config.trigger_rising,
-            target_sample_count: config.target_sample_count,
-            persistence: 0.85,
-            channel_mode: OscilloscopeChannelMode::Both,
+            segment_duration: OscilloscopeConfig::default().segment_duration,
+            trigger_mode: TriggerMode::default(),
+            persistence: 0.0,
+            channel_mode: OscilloscopeChannelMode::default(),
             palette: None,
-            hysteresis: config.hysteresis,
         }
-    }
-
-    pub fn apply_to(&self, config: &mut OscilloscopeConfig) {
-        config.segment_duration = self.segment_duration;
-        config.trigger_rising = self.trigger_rising;
-        config.target_sample_count = self.target_sample_count;
-        config.hysteresis = self.hysteresis;
     }
 }
 

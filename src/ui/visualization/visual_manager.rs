@@ -2,6 +2,7 @@
 
 use crate::audio::meter_tap::{self, MeterFormat};
 use crate::dsp::ProcessorUpdate;
+use crate::dsp::oscilloscope::OscilloscopeConfig;
 use crate::dsp::waveform::{MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY};
 use crate::ui::render::spectrogram::SPECTROGRAM_PALETTE_SIZE;
 use crate::ui::settings::{
@@ -188,7 +189,7 @@ const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
             min_width: 200.0,
             max_width: 300.0,
         },
-        default_enabled: true,
+        default_enabled: false,
         build: build_module::<LoudnessVisual>,
     },
     VisualDescriptor {
@@ -216,7 +217,7 @@ const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
             min_width: 220.0,
             max_width: f32::INFINITY,
         },
-        default_enabled: true,
+        default_enabled: false,
         build: build_module::<WaveformVisual>,
     },
     VisualDescriptor {
@@ -325,7 +326,10 @@ struct OscilloscopeVisual {
 impl Default for OscilloscopeVisual {
     fn default() -> Self {
         Self {
-            processor: OscilloscopeProcessor::new(DEFAULT_SAMPLE_RATE),
+            processor: OscilloscopeProcessor::new(OscilloscopeConfig {
+                sample_rate: DEFAULT_SAMPLE_RATE,
+                ..Default::default()
+            }),
             state: Rc::new(RefCell::new(OscilloscopeState::new())),
         }
     }
@@ -333,8 +337,9 @@ impl Default for OscilloscopeVisual {
 
 impl VisualModule for OscilloscopeVisual {
     fn ingest(&mut self, samples: &[f32], format: MeterFormat) {
-        let snapshot = self.processor.ingest(samples, format);
-        self.state.borrow_mut().apply_snapshot(&snapshot);
+        if let Some(snapshot) = self.processor.ingest(samples, format) {
+            self.state.borrow_mut().apply_snapshot(&snapshot);
+        }
     }
 
     fn content(&self) -> VisualContent {
@@ -346,37 +351,40 @@ impl VisualModule for OscilloscopeVisual {
     fn apply_settings(&mut self, settings: &ModuleSettings) {
         if let Some(stored) = settings.oscilloscope() {
             let mut config = self.processor.config();
-            stored.apply_to(&mut config);
+            config.segment_duration = stored.segment_duration;
+            config.trigger_mode = stored.trigger_mode;
             self.processor.update_config(config);
 
-            let mut state = self.state.borrow_mut();
-            state.update_view_settings(stored);
-
-            if let Some(palette) = stored
+            let palette = stored
                 .palette
                 .as_ref()
                 .and_then(|p| p.to_array::<OSCILLOSCOPE_PALETTE_SIZE>())
-            {
-                state.set_palette(&palette);
-            } else {
-                state.set_palette(&theme::DEFAULT_OSCILLOSCOPE_PALETTE);
-            }
+                .unwrap_or(theme::DEFAULT_OSCILLOSCOPE_PALETTE);
+
+            let mut state = self.state.borrow_mut();
+            state.update_view_settings(stored.persistence, stored.channel_mode);
+            state.set_palette(&palette);
         }
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
-        let mut settings = ModuleSettings::default();
+        let config = self.processor.config();
         let state = self.state.borrow();
-        let persistence = state.persistence();
-        let mut snapshot = OscilloscopeSettings::from_config(&self.processor.config());
-        snapshot.persistence = persistence;
-        snapshot.channel_mode = state.channel_mode();
-        snapshot.palette = PaletteSettings::maybe_from_colors(
-            state.palette(),
-            &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
-        );
-        settings.set_oscilloscope(snapshot);
-        Some(settings)
+
+        let settings = OscilloscopeSettings {
+            segment_duration: config.segment_duration,
+            trigger_mode: config.trigger_mode,
+            persistence: state.persistence(),
+            channel_mode: state.channel_mode(),
+            palette: PaletteSettings::maybe_from_colors(
+                state.palette(),
+                &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
+            ),
+        };
+
+        let mut module_settings = ModuleSettings::default();
+        module_settings.set_oscilloscope(settings);
+        Some(module_settings)
     }
 }
 

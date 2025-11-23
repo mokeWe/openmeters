@@ -12,7 +12,7 @@ use super::SettingsMessage;
 pub const CONTROL_SPACING: f32 = 8.0;
 pub const LABEL_SIZE: u16 = 12;
 pub const VALUE_SIZE: u16 = 11;
-const VALUE_GAP: f32 = 6.0;
+pub const VALUE_GAP: f32 = 6.0;
 pub struct SliderRange {
     pub min: f32,
     pub max: f32,

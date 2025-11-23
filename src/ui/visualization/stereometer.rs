@@ -82,7 +82,7 @@ impl StereometerState {
             snapshot: StereometerSnapshot::default(),
             style: StereometerStyle::default(),
             display_points: Vec::new(),
-            persistence: 0.85,
+            persistence: 0.0,
             instance_id: next_instance_id(),
         }
     }

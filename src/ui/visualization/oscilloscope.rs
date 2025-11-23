@@ -6,7 +6,7 @@ use crate::dsp::oscilloscope::{
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::oscilloscope::{OscilloscopeParams, OscilloscopePrimitive};
-use crate::ui::settings::{OscilloscopeChannelMode, OscilloscopeSettings};
+use crate::ui::settings::OscilloscopeChannelMode;
 use crate::ui::theme;
 use iced::advanced::renderer;
 use iced::advanced::widget::{Tree, tree};
@@ -22,18 +22,15 @@ pub struct OscilloscopeProcessor {
 }
 
 impl OscilloscopeProcessor {
-    pub fn new(sample_rate: f32) -> Self {
+    pub fn new(config: OscilloscopeConfig) -> Self {
         Self {
-            inner: CoreOscilloscopeProcessor::new(OscilloscopeConfig {
-                sample_rate,
-                ..Default::default()
-            }),
+            inner: CoreOscilloscopeProcessor::new(config),
         }
     }
 
-    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> OscilloscopeSnapshot {
+    pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> Option<OscilloscopeSnapshot> {
         if samples.is_empty() {
-            return self.inner.snapshot().clone();
+            return None;
         }
 
         let sample_rate = format.sample_rate.max(1.0);
@@ -46,8 +43,8 @@ impl OscilloscopeProcessor {
         let block = AudioBlock::new(samples, format.channels.max(1), sample_rate, Instant::now());
 
         match self.inner.process_block(&block) {
-            ProcessorUpdate::Snapshot(snapshot) => snapshot,
-            ProcessorUpdate::None => self.inner.snapshot().clone(),
+            ProcessorUpdate::Snapshot(snapshot) => Some(snapshot),
+            ProcessorUpdate::None => None,
         }
     }
 
@@ -63,9 +60,7 @@ impl OscilloscopeProcessor {
 #[derive(Debug, Clone)]
 pub struct OscilloscopeState {
     snapshot: OscilloscopeSnapshot,
-    latest_snapshot: OscilloscopeSnapshot,
     style: OscilloscopeStyle,
-    display_samples: Vec<f32>,
     persistence: f32,
     channel_mode: OscilloscopeChannelMode,
 }
@@ -74,19 +69,22 @@ impl OscilloscopeState {
     pub fn new() -> Self {
         Self {
             snapshot: OscilloscopeSnapshot::default(),
-            latest_snapshot: OscilloscopeSnapshot::default(),
             style: OscilloscopeStyle::default(),
-            display_samples: Vec::new(),
-            persistence: 0.1,
-            channel_mode: OscilloscopeChannelMode::Both,
+            persistence: 0.0,
+            channel_mode: OscilloscopeChannelMode::default(),
         }
     }
 
-    pub fn update_view_settings(&mut self, settings: &OscilloscopeSettings) {
-        self.persistence = settings.persistence.clamp(0.0, 1.0);
-        if self.channel_mode != settings.channel_mode {
-            self.channel_mode = settings.channel_mode;
-            self.reproject_latest(false);
+    pub fn update_view_settings(
+        &mut self,
+        persistence: f32,
+        channel_mode: OscilloscopeChannelMode,
+    ) {
+        self.persistence = persistence.clamp(0.0, 1.0);
+        let mode_changed = self.channel_mode != channel_mode;
+        self.channel_mode = channel_mode;
+        if mode_changed {
+            self.snapshot = Self::project_channels(&self.snapshot, channel_mode);
         }
     }
 
@@ -100,13 +98,24 @@ impl OscilloscopeState {
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &OscilloscopeSnapshot) {
-        if snapshot.samples.is_empty() {
-            self.snapshot = snapshot.clone();
-            self.display_samples.clear();
-            return;
+        let projected = Self::project_channels(snapshot, self.channel_mode);
+
+        if !projected.samples.is_empty()
+            && !self.snapshot.samples.is_empty()
+            && projected.samples.len() == self.snapshot.samples.len()
+        {
+            let persistence = self.persistence.clamp(0.0, 0.98);
+            if persistence > f32::EPSILON {
+                let fresh = 1.0 - persistence;
+                for (current, incoming) in self.snapshot.samples.iter_mut().zip(&projected.samples)
+                {
+                    *current = *current * persistence + incoming * fresh;
+                }
+                return;
+            }
         }
-        self.latest_snapshot = snapshot.clone();
-        self.project_snapshot(true);
+
+        self.snapshot = projected;
     }
 
     pub fn channel_mode(&self) -> OscilloscopeChannelMode {
@@ -117,82 +126,54 @@ impl OscilloscopeState {
         self.persistence
     }
 
-    fn reproject_latest(&mut self, blend: bool) {
-        if self.latest_snapshot.samples.is_empty() {
-            self.snapshot = self.latest_snapshot.clone();
-            self.display_samples.clear();
-            return;
-        }
-        self.project_snapshot(blend);
-    }
-
-    fn project_snapshot(&mut self, blend: bool) {
-        let Some((channels, samples_per_channel, samples)) =
-            self.project_samples(&self.latest_snapshot)
-        else {
-            self.snapshot = OscilloscopeSnapshot::default();
-            self.display_samples.clear();
-            return;
-        };
-
-        self.display_samples.resize(samples.len(), 0.0);
-
-        if blend {
-            let persistence = self.persistence.clamp(0.0, 0.98);
-            if persistence <= f32::EPSILON {
-                self.display_samples.copy_from_slice(&samples);
-            } else {
-                let fresh = 1.0 - persistence;
-                for (current, incoming) in self.display_samples.iter_mut().zip(&samples) {
-                    *current = *current * persistence + incoming * fresh;
-                }
-            }
-        } else {
-            self.display_samples.copy_from_slice(&samples);
-        }
-
-        self.snapshot.channels = channels;
-        self.snapshot.samples_per_channel = samples_per_channel;
-        self.snapshot.samples.clone_from(&self.display_samples);
-    }
-
-    fn project_samples(&self, source: &OscilloscopeSnapshot) -> Option<(usize, usize, Vec<f32>)> {
+    fn project_channels(
+        source: &OscilloscopeSnapshot,
+        mode: OscilloscopeChannelMode,
+    ) -> OscilloscopeSnapshot {
         let channels = source.channels.max(1);
-        let samples_per_channel = source.samples_per_channel;
-        if samples_per_channel == 0 || source.samples.len() < samples_per_channel {
-            return None;
+        let spc = source.samples_per_channel;
+
+        if spc == 0 || source.samples.len() < spc {
+            return OscilloscopeSnapshot::default();
         }
 
-        match self.channel_mode {
-            OscilloscopeChannelMode::Both => {
-                Some((channels, samples_per_channel, source.samples.clone()))
-            }
+        let (out_channels, samples) = match mode {
+            OscilloscopeChannelMode::Both => (channels, source.samples.clone()),
             OscilloscopeChannelMode::Left => {
-                let samples = source.samples.chunks(samples_per_channel).next()?.to_vec();
-                Some((1, samples_per_channel, samples))
+                let samples = source
+                    .samples
+                    .chunks(spc)
+                    .next()
+                    .map(|s| s.to_vec())
+                    .unwrap_or_default();
+                (1, samples)
             }
             OscilloscopeChannelMode::Right => {
                 let samples = source
                     .samples
-                    .chunks(samples_per_channel)
+                    .chunks(spc)
                     .nth(1)
-                    .or_else(|| source.samples.chunks(samples_per_channel).last())?
-                    .to_vec();
-                Some((1, samples_per_channel, samples))
+                    .or_else(|| source.samples.chunks(spc).last())
+                    .map(|s| s.to_vec())
+                    .unwrap_or_default();
+                (1, samples)
             }
             OscilloscopeChannelMode::Mono => {
-                let mut samples = vec![0.0; samples_per_channel];
-                for channel_samples in source.samples.chunks(samples_per_channel).take(channels) {
+                let mut samples = vec![0.0; spc];
+                let scale = 1.0 / channels as f32;
+                for channel_samples in source.samples.chunks(spc).take(channels) {
                     for (dest, src) in samples.iter_mut().zip(channel_samples) {
-                        *dest += *src;
+                        *dest += *src * scale;
                     }
                 }
-                let scale = 1.0 / channels as f32;
-                for sample in &mut samples {
-                    *sample *= scale;
-                }
-                Some((1, samples_per_channel, samples))
+                (1, samples)
             }
+        };
+
+        OscilloscopeSnapshot {
+            channels: out_channels,
+            samples_per_channel: spc,
+            samples,
         }
     }
 

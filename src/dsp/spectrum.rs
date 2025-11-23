@@ -79,7 +79,7 @@ impl SpectrumConfig {
         self.hop_size = if self.hop_size == 0 {
             (self.fft_size / DEFAULT_SPECTRUM_HOP_DIVISOR).max(1)
         } else {
-            self.hop_size.min(self.fft_size).max(1)
+            self.hop_size.clamp(1, self.fft_size)
         };
 
         self.averaging = self.averaging.normalized();
@@ -199,9 +199,11 @@ impl SpectrumProcessor {
         self.real_buffer.resize(fft_size, 0.0);
         self.spectrum_buffer = self.fft.make_output_vec();
         self.scratch_buffer = self.fft.make_scratch_vec();
-        self.bin_normalization = compute_bin_normalization(&self.window);
+        self.bin_normalization =
+            crate::util::audio::compute_fft_bin_normalization(&self.window, fft_size);
         let bins = fft_size / 2 + 1;
-        self.snapshot.frequency_bins = frequency_bins(self.config.sample_rate, fft_size);
+        self.snapshot.frequency_bins =
+            crate::util::audio::frequency_bins(self.config.sample_rate, fft_size);
         self.snapshot.magnitudes_db = vec![DB_FLOOR; bins];
         self.snapshot.magnitudes_unweighted_db = vec![DB_FLOOR; bins];
         self.snapshot.peak_frequency_hz = None;
@@ -227,33 +229,7 @@ impl SpectrumProcessor {
     }
 
     fn mixdown_into(&mut self, block: &AudioBlock<'_>) {
-        if block.channels == 0 || block.samples.is_empty() {
-            return;
-        }
-
-        match block.channels {
-            1 => {
-                for &sample in block.samples {
-                    self.pcm_buffer.push_back(sample);
-                }
-            }
-            2 => {
-                let mut iter = block.samples.chunks_exact(2);
-                for frame in iter.by_ref() {
-                    self.pcm_buffer.push_back((frame[0] + frame[1]) * 0.5);
-                }
-                if let [last] = iter.remainder() {
-                    self.pcm_buffer.push_back(*last);
-                }
-            }
-            channels => {
-                let inv = 1.0 / channels as f32;
-                for frame in block.samples.chunks_exact(channels) {
-                    let sum: f32 = frame.iter().copied().sum();
-                    self.pcm_buffer.push_back(sum * inv);
-                }
-            }
-        }
+        crate::util::audio::mixdown_into_deque(&mut self.pcm_buffer, block.samples, block.channels);
     }
 
     fn process_ready_windows(&mut self, timestamp: Instant) -> bool {
@@ -272,8 +248,8 @@ impl SpectrumProcessor {
                 *target = *sample;
             }
 
-            remove_dc(&mut self.real_buffer);
-            apply_window(&mut self.real_buffer, &self.window);
+            crate::util::audio::remove_dc(&mut self.real_buffer);
+            crate::util::audio::apply_window(&mut self.real_buffer, &self.window);
 
             self.fft
                 .process_with_scratch(
@@ -467,54 +443,6 @@ fn averaging_update(
     peak_index
 }
 
-fn apply_window(buffer: &mut [f32], window: &[f32]) {
-    debug_assert_eq!(buffer.len(), window.len());
-    for (sample, coeff) in buffer.iter_mut().zip(window.iter()) {
-        *sample *= *coeff;
-    }
-}
-
-fn remove_dc(buffer: &mut [f32]) {
-    if buffer.is_empty() {
-        return;
-    }
-
-    let mean = buffer.iter().sum::<f32>() / buffer.len() as f32;
-    if mean.abs() <= f32::EPSILON {
-        return;
-    }
-
-    for sample in buffer.iter_mut() {
-        *sample -= mean;
-    }
-}
-
-fn compute_bin_normalization(window: &[f32]) -> Vec<f32> {
-    let fft_size = window.len();
-    let bins = fft_size / 2 + 1;
-    if bins == 0 {
-        return Vec::new();
-    }
-
-    let window_sum: f32 = window.iter().sum();
-    let inv_sum = if window_sum.abs() > f32::EPSILON {
-        1.0 / window_sum
-    } else if fft_size > 0 {
-        1.0 / fft_size as f32
-    } else {
-        0.0
-    };
-
-    let dc_scale = inv_sum * inv_sum;
-    let ac_scale = (2.0 * inv_sum) * (2.0 * inv_sum);
-    let mut norms = vec![ac_scale; bins];
-    norms[0] = dc_scale;
-    if bins > 1 {
-        norms[bins - 1] = dc_scale;
-    }
-    norms
-}
-
 fn a_weight(freq_hz: f32) -> f32 {
     const MIN_DB: f32 = -80.0;
     if freq_hz <= 0.0 {
@@ -539,20 +467,6 @@ fn a_weight(freq_hz: f32) -> f32 {
     let ra = numerator / denom;
     let db = 20.0 * ra.log10() + 2.0;
     db.max(MIN_DB as f64) as f32
-}
-
-fn frequency_bins(sample_rate: f32, fft_size: usize) -> Vec<f32> {
-    if fft_size == 0 {
-        return Vec::new();
-    }
-
-    let bins = fft_size / 2 + 1;
-    let bin_hz = if sample_rate > 0.0 {
-        sample_rate / fft_size as f32
-    } else {
-        0.0
-    };
-    (0..bins).map(|i| i as f32 * bin_hz).collect()
 }
 
 #[cfg(test)]

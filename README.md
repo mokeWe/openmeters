@@ -21,21 +21,27 @@ Checked features are implemented, unchecked features are planned. If you have id
     - [x] Slow
   - [x] True Peak
 - [x] **oscilloscope**
+  - [x] Stable mode - Follows X cycles of the fundamental.
+  - [x] Free-run mode - Scrolls continuously through time, not triggered.
 - [x] **spectrogram**
-  - [x] Reassignment for better low-frequency resolution
+  - [x] Reassignment and synchrosqueezing (sharper frequency resolution)
   - [x] Note & frequency tooltips
   - [x] mel, log, and linear scales
-  - [x] Color maps
+  - [x] Adjustable colormap
 - [x] **spectrum analyzer**
-  - [x] dynamic frequency tooltips
+  - [x] peak frequency label
+  - [x] averaging modes
+    - [x] exponential
+    - [x] peak hold
+    - [x] none
   - [x] mel, log, and linear scales
-  - [x] Color maps
+  - [x] Adjustable colormap
 - [x] **stereometer**
   - [ ] Correlation meter
-  - [x] Vectorscope
+  - [x] Vectorscope/XY mode
   - [ ] Dot cloud
 - [x] **waveform**
-  - [x] Color maps
+  - [x] Adjustable colormap
 
 ## build and run
 

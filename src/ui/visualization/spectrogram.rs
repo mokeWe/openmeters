@@ -888,7 +888,6 @@ mod tests {
             frequency_scale: FrequencyScale::default(),
             history_length: 4,
             reset: true,
-            reassignment_enabled: true,
             synchro_bins_hz: Some(Arc::from(vec![40.0, 80.0, 160.0, 320.0].into_boxed_slice())),
             new_columns: vec![column],
         };
@@ -919,7 +918,6 @@ mod tests {
             frequency_scale: FrequencyScale::default(),
             history_length: 4,
             reset: true,
-            reassignment_enabled: true,
             synchro_bins_hz: Some(Arc::from(
                 vec![10_000.0, 2_500.0, 625.0, 156.25].into_boxed_slice(),
             )),
@@ -965,7 +963,6 @@ mod tests {
             frequency_scale: FrequencyScale::default(),
             history_length: 8,
             reset: true,
-            reassignment_enabled: false,
             synchro_bins_hz: None,
             new_columns: vec![column],
         };

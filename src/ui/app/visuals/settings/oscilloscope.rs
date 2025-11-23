@@ -1,13 +1,17 @@
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
+use super::widgets::{
+    CONTROL_SPACING, LABEL_SIZE, SliderRange, VALUE_GAP, VALUE_SIZE, labeled_pick_list,
+    labeled_slider, set_f32, set_if_changed,
+};
 use super::{ModuleSettingsPane, SettingsMessage};
+use crate::dsp::oscilloscope::TriggerMode;
 use crate::ui::settings::{
     ModuleSettings, OscilloscopeChannelMode, OscilloscopeSettings, SettingsHandle,
 };
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
-use iced::widget::{column, text, toggler};
+use iced::widget::{column, row, slider, text};
 
 #[derive(Debug)]
 pub struct OscilloscopeSettingsPane {
@@ -20,10 +24,10 @@ pub struct OscilloscopeSettingsPane {
 pub enum Message {
     SegmentDuration(f32),
     Persistence(f32),
-    TriggerMode(bool),
+    TriggerMode(TriggerMode),
+    NumCycles(usize),
     ChannelMode(OscilloscopeChannelMode),
     Palette(PaletteEvent),
-    Hysteresis(f32),
 }
 
 const CHANNEL_OPTIONS: [OscilloscopeChannelMode; 4] = [
@@ -32,6 +36,13 @@ const CHANNEL_OPTIONS: [OscilloscopeChannelMode; 4] = [
     OscilloscopeChannelMode::Right,
     OscilloscopeChannelMode::Mono,
 ];
+
+const TRIGGER_MODE_OPTIONS: [(&str, TriggerMode); 2] = [
+    ("Free-run", TriggerMode::FreeRun),
+    ("Stable", TriggerMode::Stable { num_cycles: 1 }),
+];
+
+const TRIGGER_MODE_LABELS: [&str; 2] = ["Free-run", "Stable"];
 
 pub fn create(
     visual_id: VisualId,
@@ -62,51 +73,94 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
     }
 
     fn view(&self) -> Element<'_, SettingsMessage> {
-        let trigger_label = if self.settings.trigger_rising {
-            "Rising edge"
-        } else {
-            "Falling edge"
+        let current_mode_label = match self.settings.trigger_mode {
+            TriggerMode::FreeRun => "Free-run",
+            TriggerMode::Stable { .. } => "Stable",
         };
 
-        column![
-            labeled_slider(
+        let mut items: Vec<Element<'_, SettingsMessage>> = vec![
+            labeled_pick_list(
+                "Mode",
+                &TRIGGER_MODE_LABELS,
+                Some(current_mode_label),
+                |label| {
+                    let mode = TRIGGER_MODE_OPTIONS
+                        .iter()
+                        .find(|(l, _)| *l == label)
+                        .map(|(_, m)| *m)
+                        .unwrap_or(TriggerMode::FreeRun);
+                    SettingsMessage::Oscilloscope(Message::TriggerMode(mode))
+                },
+            )
+            .into(),
+        ];
+
+        if let TriggerMode::Stable { num_cycles } = self.settings.trigger_mode {
+            items.push(
+                labeled_slider(
+                    "Cycles",
+                    num_cycles as f32,
+                    format!("{}", num_cycles),
+                    SliderRange::new(1.0, 4.0, 1.0),
+                    |value| SettingsMessage::Oscilloscope(Message::NumCycles(value as usize)),
+                )
+                .into(),
+            );
+        }
+
+        let secondary_weak = |theme: &iced::Theme| iced::widget::text::Style {
+            color: Some(theme.extended_palette().secondary.weak.text),
+        };
+
+        items.extend(vec![
+            labeled_pick_list(
+                "Channels",
+                &CHANNEL_OPTIONS,
+                Some(self.settings.channel_mode),
+                |mode| SettingsMessage::Oscilloscope(Message::ChannelMode(mode)),
+            )
+            .into(),
+        ]);
+
+        let duration_value = format!("{:.1} ms", self.settings.segment_duration * 1_000.0);
+        let segment_duration_widget = match self.settings.trigger_mode {
+            TriggerMode::Stable { .. } => column![
+                row![
+                    text("Segment duration").size(LABEL_SIZE),
+                    text("(fallback)")
+                        .size(VALUE_SIZE - 1)
+                        .style(secondary_weak),
+                    text(duration_value).size(VALUE_SIZE).style(secondary_weak),
+                ]
+                .spacing(VALUE_GAP),
+                slider::Slider::new(0.005..=0.1, self.settings.segment_duration, |value| {
+                    SettingsMessage::Oscilloscope(Message::SegmentDuration(value))
+                })
+                .step(0.001),
+            ]
+            .spacing(CONTROL_SPACING),
+            TriggerMode::FreeRun => labeled_slider(
                 "Segment duration",
                 self.settings.segment_duration,
-                format!("{:.1} ms", self.settings.segment_duration * 1_000.0),
+                duration_value,
                 SliderRange::new(0.005, 0.1, 0.001),
                 |value| SettingsMessage::Oscilloscope(Message::SegmentDuration(value)),
             ),
+        };
+
+        items.extend(vec![
+            segment_duration_widget.into(),
             labeled_slider(
                 "Persistence",
                 self.settings.persistence,
                 format!("{:.2}", self.settings.persistence),
                 SliderRange::new(0.0, 1.0, 0.01),
                 |value| SettingsMessage::Oscilloscope(Message::Persistence(value)),
-            ),
-            labeled_pick_list(
-                "Channels",
-                &CHANNEL_OPTIONS,
-                Some(self.settings.channel_mode),
-                |mode| SettingsMessage::Oscilloscope(Message::ChannelMode(mode)),
-            ),
-            column![
-                text("Trigger"),
-                toggler(self.settings.trigger_rising)
-                    .label(trigger_label)
-                    .spacing(4)
-                    .text_size(12)
-                    .on_toggle(|value| {
-                        SettingsMessage::Oscilloscope(Message::TriggerMode(value))
-                    })
-            ]
-            .spacing(8),
-            labeled_slider(
-                "Hysteresis",
-                self.settings.hysteresis,
-                format!("{:.1}%", self.settings.hysteresis * 100.0),
-                SliderRange::new(0.0, 0.1, 0.001),
-                |value| SettingsMessage::Oscilloscope(Message::Hysteresis(value)),
-            ),
+            )
+            .into(),
+        ]);
+
+        items.push(
             column![
                 text("Color").size(14),
                 self.palette
@@ -114,9 +168,10 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
                     .map(|e| SettingsMessage::Oscilloscope(Message::Palette(e)))
             ]
             .spacing(8)
-        ]
-        .spacing(16)
-        .into()
+            .into(),
+        );
+
+        column(items).spacing(16).into()
     }
 
     fn handle(
@@ -136,19 +191,31 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             Message::Persistence(value) => {
                 set_f32(&mut self.settings.persistence, value.clamp(0.0, 1.0))
             }
-            Message::TriggerMode(rising) => {
-                if self.settings.trigger_rising != *rising {
-                    self.settings.trigger_rising = *rising;
+            Message::TriggerMode(mode) => {
+                if self.settings.trigger_mode != *mode {
+                    self.settings.trigger_mode = *mode;
                     true
+                } else {
+                    false
+                }
+            }
+            Message::NumCycles(cycles) => {
+                if let TriggerMode::Stable { num_cycles } = self.settings.trigger_mode {
+                    let clamped = (*cycles).clamp(1, 4);
+                    if num_cycles != clamped {
+                        self.settings.trigger_mode = TriggerMode::Stable {
+                            num_cycles: clamped,
+                        };
+                        true
+                    } else {
+                        false
+                    }
                 } else {
                     false
                 }
             }
             Message::ChannelMode(mode) => set_if_changed(&mut self.settings.channel_mode, *mode),
             Message::Palette(event) => self.palette.update(*event),
-            Message::Hysteresis(value) => {
-                set_f32(&mut self.settings.hysteresis, value.clamp(0.0, 0.1))
-            }
         };
 
         if changed {
@@ -157,12 +224,10 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
                 &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
             );
 
-            let module_settings = ModuleSettings::with_oscilloscope_settings(&self.settings);
-
-            if visual_manager
-                .borrow_mut()
-                .apply_module_settings(VisualKind::OSCILLOSCOPE, &module_settings)
-            {
+            if visual_manager.borrow_mut().apply_module_settings(
+                VisualKind::OSCILLOSCOPE,
+                &ModuleSettings::with_oscilloscope_settings(&self.settings),
+            ) {
                 settings.update(|mgr| {
                     mgr.set_oscilloscope_settings(VisualKind::OSCILLOSCOPE, &self.settings);
                 });

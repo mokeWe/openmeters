@@ -10,6 +10,25 @@ pub use batcher::SampleBatcher;
 /// Default sample rate (Hz) used throughout the audio pipeline.
 pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
 
+#[inline(always)]
+pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
+    a + (b - a) * t
+}
+
+#[inline]
+pub fn interpolate_linear(samples: &[f32], position: f32) -> f32 {
+    let idx = position as usize;
+    let frac = position - idx as f32;
+
+    if frac > f32::EPSILON && idx + 1 < samples.len() {
+        let curr = samples[idx];
+        let next = samples[idx + 1];
+        lerp(curr, next, frac)
+    } else {
+        samples[idx.min(samples.len() - 1)]
+    }
+}
+
 pub fn bytes_per_sample(format: spa::param::audio::AudioFormat) -> Option<usize> {
     use spa::param::audio::AudioFormat as Fmt;
 
@@ -104,6 +123,92 @@ pub fn convert_samples_to_f32(
     }
 
     Some(samples)
+}
+
+pub fn mixdown_into_deque(
+    buffer: &mut std::collections::VecDeque<f32>,
+    samples: &[f32],
+    channels: usize,
+) {
+    if channels == 0 || samples.is_empty() {
+        return;
+    }
+
+    if channels == 1 {
+        buffer.extend(samples);
+        return;
+    }
+
+    let frame_count = samples.len() / channels;
+    buffer.reserve(frame_count);
+
+    let inv = 1.0 / channels as f32;
+    for frame in samples.chunks_exact(channels) {
+        let sum: f32 = frame.iter().sum();
+        buffer.push_back(sum * inv);
+    }
+}
+
+#[inline]
+pub fn apply_window(buffer: &mut [f32], window: &[f32]) {
+    debug_assert_eq!(buffer.len(), window.len());
+    for (sample, coeff) in buffer.iter_mut().zip(window.iter()) {
+        *sample *= *coeff;
+    }
+}
+
+pub fn remove_dc(buffer: &mut [f32]) {
+    if buffer.is_empty() {
+        return;
+    }
+
+    let mean = buffer.iter().sum::<f32>() / buffer.len() as f32;
+    if mean.abs() <= f32::EPSILON {
+        return;
+    }
+
+    for sample in buffer.iter_mut() {
+        *sample -= mean;
+    }
+}
+
+pub fn compute_fft_bin_normalization(window: &[f32], fft_size: usize) -> Vec<f32> {
+    let bins = fft_size / 2 + 1;
+    if bins == 0 {
+        return Vec::new();
+    }
+
+    let window_sum: f32 = window.iter().sum();
+    let inv_sum = if window_sum.abs() > f32::EPSILON {
+        1.0 / window_sum
+    } else if fft_size > 0 {
+        1.0 / fft_size as f32
+    } else {
+        0.0
+    };
+
+    let dc_scale = inv_sum * inv_sum;
+    let ac_scale = 4.0 * dc_scale;
+    let mut norms = vec![ac_scale; bins];
+    norms[0] = dc_scale;
+    if bins > 1 {
+        norms[bins - 1] = dc_scale;
+    }
+    norms
+}
+
+pub fn frequency_bins(sample_rate: f32, fft_size: usize) -> Vec<f32> {
+    if fft_size == 0 {
+        return Vec::new();
+    }
+
+    let bins = fft_size / 2 + 1;
+    let bin_hz = if sample_rate > 0.0 {
+        sample_rate / fft_size as f32
+    } else {
+        0.0
+    };
+    (0..bins).map(|i| i as f32 * bin_hz).collect()
 }
 
 #[cfg(test)]

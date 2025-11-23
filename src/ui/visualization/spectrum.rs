@@ -6,6 +6,7 @@ use crate::dsp::spectrum::{
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::spectrum::{SpectrumParams, SpectrumPrimitive};
 use crate::ui::theme;
+use crate::util::audio::lerp;
 use crate::util::audio::musical::MusicalNote;
 use iced::advanced::Renderer as _;
 use iced::advanced::graphics::text::Paragraph as RenderParagraph;
@@ -758,7 +759,7 @@ fn interpolate_magnitude(bins: &[f32], magnitudes: &[f32], target: f32) -> f32 {
             let t = (target - bins[lower]) / (bins[upper] - bins[lower]).max(EPSILON);
             let lower_mag = magnitudes.get(lower).copied().unwrap_or(0.0);
             let upper_mag = magnitudes.get(upper).copied().unwrap_or(lower_mag);
-            lower_mag + (upper_mag - lower_mag) * t
+            lerp(lower_mag, upper_mag, t)
         }
     }
 }
