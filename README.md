@@ -76,7 +76,7 @@ Checked features are implemented, unchecked features are planned. If you have id
 
 ## usage
 
-Upon launch you'll see a configuration page. Here you can select which applications or devices to monitor, the modules you want to display, and some global settings (window decorations, global background color, etc.). By default, we monitor applications. The `loudness` and `waveform` modules are enabled by default as well.
+Upon launch you'll see a configuration page. Here you can select which applications or devices to monitor, the modules you want to display, and some global settings (window decorations, global background color, etc.). By default, we monitor applications.
   
 ### keybinds
 
@@ -86,8 +86,8 @@ Upon launch you'll see a configuration page. Here you can select which applicati
 
 ### configuration
 
-Configurations are saved to `~/.config/openmeters/settings.json`. If you want to use settings/values not listed in the GUI, you can edit this file directly, however absurd values often lead to crashes. Invalid values will be replaced with defaults on load.
-If you encounter a bug that causes OpenMeters to misbehave, you can delete `settings.json` to reset everything.
+Configurations are saved to `~/.config/openmeters/settings.json`. If you want to use settings/values not listed in the GUI, you can edit this file directly, however absurd values often lead to crashes. Invalid values will be replaced with defaults on load, or when saved.
+If you encounter a bug that causes OpenMeters to misbehave, you can delete `settings.json` to reset everything, or change the problematic setting manually.
 
 ## credits
 
