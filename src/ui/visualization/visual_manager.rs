@@ -851,32 +851,30 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_includes_available_slots_enabled_by_default() {
+    fn snapshot_reflects_descriptor_defaults() {
         let manager = VisualManager::new();
         let snapshot = manager.snapshot();
 
-        let mut loudness_enabled = false;
-        let mut oscilloscope_enabled = false;
-        let mut waveform_enabled = false;
+        assert_eq!(snapshot.slots.len(), VISUAL_DESCRIPTORS.len());
 
-        for slot in &snapshot.slots {
-            if slot.kind == VisualKind::LOUDNESS {
-                loudness_enabled = slot.enabled;
-            }
-            if slot.kind == VisualKind::OSCILLOSCOPE {
-                oscilloscope_enabled = slot.enabled;
-            }
-            if slot.kind == VisualKind::WAVEFORM {
-                waveform_enabled = slot.enabled;
-            }
+        for descriptor in VISUAL_DESCRIPTORS {
+            let slot = snapshot
+                .slots
+                .iter()
+                .find(|slot| slot.kind == descriptor.kind)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{} slot missing from snapshot",
+                        descriptor.metadata.display_name
+                    )
+                });
+
+            assert_eq!(
+                slot.enabled, descriptor.default_enabled,
+                "{} default enabled state mismatch",
+                descriptor.metadata.display_name
+            );
         }
-
-        assert!(
-            loudness_enabled,
-            "Loudness meter should be enabled by default"
-        );
-        assert!(!oscilloscope_enabled, "Oscilloscope should start disabled");
-        assert!(waveform_enabled, "Waveform should be enabled by default");
     }
 
     #[test]
@@ -911,6 +909,7 @@ mod tests {
     #[test]
     fn ingest_samples_updates_visual_content() {
         let mut manager = VisualManager::new();
+        manager.set_enabled_by_kind(VisualKind::LOUDNESS, true);
         let baseline = manager.snapshot();
         let baseline_loudness = loudness_average(&baseline);
 
