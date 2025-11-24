@@ -156,7 +156,7 @@ pub struct SpectrumStyle {
 impl Default for SpectrumStyle {
     fn default() -> Self {
         Self {
-            min_db: -80.0,
+            min_db: -120.0,
             max_db: 0.0,
             min_frequency: MIN_FREQUENCY_HZ,
             max_frequency: MAX_FREQUENCY_HZ,
