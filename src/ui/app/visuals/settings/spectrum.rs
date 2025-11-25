@@ -84,7 +84,7 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Spec
     let stored_settings = visual_manager
         .borrow()
         .module_settings(VisualKind::SPECTRUM)
-        .and_then(|stored| stored.spectrum().cloned());
+        .and_then(|stored| stored.config::<SpectrumSettings>());
 
     let config = stored_settings
         .as_ref()
@@ -350,14 +350,14 @@ fn apply_spectrum_config(
     stored.smoothing_radius = pane.smoothing_radius;
     stored.smoothing_passes = pane.smoothing_passes;
 
-    let module_settings = ModuleSettings::with_spectrum_settings(&stored);
+    let module_settings = ModuleSettings::with_config(&stored);
 
     if visual_manager
         .borrow_mut()
         .apply_module_settings(VisualKind::SPECTRUM, &module_settings)
     {
         settings.update(|mgr| {
-            mgr.set_spectrum_settings(VisualKind::SPECTRUM, &stored);
+            mgr.set_module_config(VisualKind::SPECTRUM, &stored);
         });
     }
 }

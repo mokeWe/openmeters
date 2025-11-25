@@ -9,10 +9,10 @@ use crate::ui::theme;
 use crate::ui::visualization::loudness::MeterMode;
 use crate::ui::visualization::visual_manager::VisualKind;
 use iced::Color;
-use serde::de::{self, Deserializer};
-use serde::ser::Serializer;
+use serde::de::{self, DeserializeOwned, Deserializer};
+use serde::ser::{SerializeMap, Serializer};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{Map, Value};
 use std::cell::{Ref, RefCell};
 use std::collections::HashMap;
 use std::fs;
@@ -45,229 +45,65 @@ pub struct VisualSettings {
 
 impl VisualSettings {
     pub fn sanitize(&mut self) {
-        for (kind, module) in &mut self.modules {
-            module.retain_only(*kind);
-        }
+        self.modules
+            .retain(|kind, module| module.matches_kind(*kind));
     }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct ModuleSettings {
     pub enabled: Option<bool>,
-    config: Option<StoredConfig>,
+    raw: Option<Value>,
 }
 
 impl ModuleSettings {
-    pub fn set_spectrogram(&mut self, config: SpectrogramSettings) {
-        self.config = Some(config.into());
+    pub fn with_config<T>(config: &T) -> Self
+    where
+        T: Serialize,
+    {
+        let mut module = Self::default();
+        module.set_config(config);
+        module
     }
 
-    pub fn set_spectrum(&mut self, config: SpectrumSettings) {
-        self.config = Some(config.into());
-    }
-
-    pub fn set_oscilloscope(&mut self, config: OscilloscopeSettings) {
-        self.config = Some(config.into());
-    }
-
-    pub fn set_waveform(&mut self, config: WaveformSettings) {
-        self.config = Some(config.into());
-    }
-
-    pub fn set_loudness(&mut self, config: LoudnessSettings) {
-        self.config = Some(config.into());
-    }
-
-    pub fn set_stereometer(&mut self, config: StereometerSettings) {
-        self.config = Some(config.into());
-    }
-
-    pub fn spectrogram(&self) -> Option<&SpectrogramSettings> {
-        self.config.as_ref().and_then(StoredConfig::as_spectrogram)
-    }
-
-    pub fn spectrum(&self) -> Option<&SpectrumSettings> {
-        self.config.as_ref().and_then(StoredConfig::as_spectrum)
-    }
-
-    pub fn oscilloscope(&self) -> Option<&OscilloscopeSettings> {
-        self.config.as_ref().and_then(StoredConfig::as_oscilloscope)
-    }
-
-    pub fn waveform(&self) -> Option<&WaveformSettings> {
-        self.config.as_ref().and_then(StoredConfig::as_waveform)
-    }
-
-    pub fn loudness(&self) -> Option<&LoudnessSettings> {
-        self.config.as_ref().and_then(StoredConfig::as_loudness)
-    }
-
-    pub fn stereometer(&self) -> Option<&StereometerSettings> {
-        self.config.as_ref().and_then(StoredConfig::as_stereometer)
-    }
-
-    pub fn with_spectrogram_settings(settings: &SpectrogramSettings) -> Self {
-        Self {
-            config: Some(settings.clone().into()),
-            ..Default::default()
+    pub fn set_config<T>(&mut self, config: &T)
+    where
+        T: Serialize,
+    {
+        match serde_json::to_value(config) {
+            Ok(value) => self.raw = Some(value),
+            Err(err) => error!("[settings] failed to serialize module config: {err}"),
         }
     }
 
-    pub fn with_spectrum_settings(settings: &SpectrumSettings) -> Self {
-        Self {
-            config: Some(settings.clone().into()),
-            ..Default::default()
+    pub fn config<T>(&self) -> Option<T>
+    where
+        T: DeserializeOwned,
+    {
+        let raw = self.raw.as_ref()?;
+        T::deserialize(raw).ok()
+    }
+
+    fn matches_kind(&self, kind: VisualKind) -> bool {
+        match kind {
+            VisualKind::SPECTROGRAM => self.validate::<SpectrogramSettings>(),
+            VisualKind::SPECTRUM => self.validate::<SpectrumSettings>(),
+            VisualKind::OSCILLOSCOPE => self.validate::<OscilloscopeSettings>(),
+            VisualKind::WAVEFORM => self.validate::<WaveformSettings>(),
+            VisualKind::LOUDNESS => self.validate::<LoudnessSettings>(),
+            VisualKind::STEREOMETER => self.validate::<StereometerSettings>(),
+            _ => true,
         }
     }
 
-    pub fn with_waveform_settings(settings: &WaveformSettings) -> Self {
-        Self {
-            config: Some(settings.clone().into()),
-            ..Default::default()
+    fn validate<T>(&self) -> bool
+    where
+        T: DeserializeOwned,
+    {
+        match &self.raw {
+            Some(value) => serde_json::from_value::<T>(value.clone()).is_ok(),
+            None => true,
         }
-    }
-
-    pub fn with_oscilloscope_settings(settings: &OscilloscopeSettings) -> Self {
-        Self {
-            config: Some(settings.clone().into()),
-            ..Default::default()
-        }
-    }
-
-    pub fn with_loudness_settings(settings: LoudnessSettings) -> Self {
-        Self {
-            config: Some(settings.into()),
-            ..Default::default()
-        }
-    }
-
-    pub fn with_stereometer_settings(settings: &StereometerSettings) -> Self {
-        Self {
-            config: Some(settings.clone().into()),
-            ..Default::default()
-        }
-    }
-
-    pub fn retain_only(&mut self, kind: VisualKind) {
-        let is_configurable = matches!(
-            kind,
-            VisualKind::SPECTROGRAM
-                | VisualKind::SPECTRUM
-                | VisualKind::OSCILLOSCOPE
-                | VisualKind::WAVEFORM
-                | VisualKind::LOUDNESS
-                | VisualKind::STEREOMETER
-        );
-
-        if !is_configurable || self.config.as_ref().is_some_and(|cfg| cfg.kind() != kind) {
-            self.config = None;
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-enum StoredConfig {
-    Spectrogram(SpectrogramSettings),
-    Spectrum(SpectrumSettings),
-    Oscilloscope(OscilloscopeSettings),
-    Waveform(WaveformSettings),
-    Loudness(LoudnessSettings),
-    Stereometer(StereometerSettings),
-}
-
-impl StoredConfig {
-    fn kind(&self) -> VisualKind {
-        match self {
-            StoredConfig::Spectrogram(_) => VisualKind::SPECTROGRAM,
-            StoredConfig::Spectrum(_) => VisualKind::SPECTRUM,
-            StoredConfig::Oscilloscope(_) => VisualKind::OSCILLOSCOPE,
-            StoredConfig::Waveform(_) => VisualKind::WAVEFORM,
-            StoredConfig::Loudness(_) => VisualKind::LOUDNESS,
-            StoredConfig::Stereometer(_) => VisualKind::STEREOMETER,
-        }
-    }
-
-    fn from_value(value: Value) -> Option<Self> {
-        serde_json::from_value(value).ok()
-    }
-
-    fn as_spectrogram(&self) -> Option<&SpectrogramSettings> {
-        match self {
-            StoredConfig::Spectrogram(cfg) => Some(cfg),
-            _ => None,
-        }
-    }
-
-    fn as_spectrum(&self) -> Option<&SpectrumSettings> {
-        match self {
-            StoredConfig::Spectrum(cfg) => Some(cfg),
-            _ => None,
-        }
-    }
-
-    fn as_oscilloscope(&self) -> Option<&OscilloscopeSettings> {
-        match self {
-            StoredConfig::Oscilloscope(cfg) => Some(cfg),
-            _ => None,
-        }
-    }
-
-    fn as_waveform(&self) -> Option<&WaveformSettings> {
-        match self {
-            StoredConfig::Waveform(cfg) => Some(cfg),
-            _ => None,
-        }
-    }
-
-    fn as_loudness(&self) -> Option<&LoudnessSettings> {
-        match self {
-            StoredConfig::Loudness(cfg) => Some(cfg),
-            _ => None,
-        }
-    }
-
-    fn as_stereometer(&self) -> Option<&StereometerSettings> {
-        match self {
-            StoredConfig::Stereometer(cfg) => Some(cfg),
-            _ => None,
-        }
-    }
-}
-
-impl From<SpectrogramSettings> for StoredConfig {
-    fn from(settings: SpectrogramSettings) -> Self {
-        StoredConfig::Spectrogram(settings)
-    }
-}
-
-impl From<SpectrumSettings> for StoredConfig {
-    fn from(settings: SpectrumSettings) -> Self {
-        StoredConfig::Spectrum(settings)
-    }
-}
-
-impl From<OscilloscopeSettings> for StoredConfig {
-    fn from(settings: OscilloscopeSettings) -> Self {
-        StoredConfig::Oscilloscope(settings)
-    }
-}
-
-impl From<WaveformSettings> for StoredConfig {
-    fn from(settings: WaveformSettings) -> Self {
-        StoredConfig::Waveform(settings)
-    }
-}
-
-impl From<LoudnessSettings> for StoredConfig {
-    fn from(settings: LoudnessSettings) -> Self {
-        StoredConfig::Loudness(settings)
-    }
-}
-
-impl From<StereometerSettings> for StoredConfig {
-    fn from(settings: StereometerSettings) -> Self {
-        StoredConfig::Stereometer(settings)
     }
 }
 
@@ -330,24 +166,30 @@ impl PaletteSettings {
     }
 }
 
-#[derive(Serialize)]
-struct ModuleSettingsSer<'a> {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    enabled: &'a Option<bool>,
-    #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    config: Option<&'a StoredConfig>,
-}
-
 impl Serialize for ModuleSettings {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: Serializer,
     {
-        ModuleSettingsSer {
-            enabled: &self.enabled,
-            config: self.config.as_ref(),
+        let mut map = serializer.serialize_map(None)?;
+
+        if let Some(enabled) = self.enabled {
+            map.serialize_entry("enabled", &enabled)?;
         }
-        .serialize(serializer)
+
+        match &self.raw {
+            Some(Value::Object(object)) => {
+                for (key, value) in object {
+                    map.serialize_entry(key, value)?;
+                }
+            }
+            Some(value) => {
+                map.serialize_entry("config", value)?;
+            }
+            None => {}
+        }
+
+        map.end()
     }
 }
 
@@ -366,20 +208,32 @@ impl<'de> Deserialize<'de> for ModuleSettings {
             .map(|value| bool::deserialize(value).map_err(de::Error::custom))
             .transpose()?;
 
-        let mut module = ModuleSettings {
-            enabled,
-            config: None,
+        let raw = match object.remove("config") {
+            Some(value) => Some(merge_config(value, object)),
+            None if object.is_empty() => None,
+            None => Some(Value::Object(object)),
         };
 
-        if let Some(config_value) = object.remove("config") {
-            module.config = StoredConfig::from_value(config_value);
-        }
+        Ok(Self { enabled, raw })
+    }
+}
 
-        if module.config.is_none() && !object.is_empty() {
-            module.config = StoredConfig::from_value(Value::Object(object.clone()));
+fn merge_config(config: Value, mut remainder: Map<String, Value>) -> Value {
+    match config {
+        Value::Object(mut inner) => {
+            if !remainder.is_empty() {
+                inner.extend(remainder);
+            }
+            Value::Object(inner)
         }
-
-        Ok(module)
+        other => {
+            if remainder.is_empty() {
+                other
+            } else {
+                remainder.insert("config".to_owned(), other);
+                Value::Object(remainder)
+            }
+        }
     }
 }
 
@@ -707,34 +561,12 @@ impl SettingsManager {
         entry.enabled = Some(enabled);
     }
 
-    pub fn set_oscilloscope_settings(&mut self, kind: VisualKind, settings: &OscilloscopeSettings) {
+    pub fn set_module_config<T>(&mut self, kind: VisualKind, config: &T)
+    where
+        T: Serialize,
+    {
         let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.set_oscilloscope(settings.clone());
-    }
-
-    pub fn set_waveform_settings(&mut self, kind: VisualKind, settings: &WaveformSettings) {
-        let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.set_waveform(settings.clone());
-    }
-
-    pub fn set_spectrogram_settings(&mut self, kind: VisualKind, settings: &SpectrogramSettings) {
-        let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.set_spectrogram(settings.clone());
-    }
-
-    pub fn set_spectrum_settings(&mut self, kind: VisualKind, settings: &SpectrumSettings) {
-        let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.set_spectrum(settings.clone());
-    }
-
-    pub fn set_loudness_settings(&mut self, kind: VisualKind, settings: LoudnessSettings) {
-        let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.set_loudness(settings);
-    }
-
-    pub fn set_stereometer_settings(&mut self, kind: VisualKind, settings: &StereometerSettings) {
-        let entry = self.data.visuals.modules.entry(kind).or_default();
-        entry.set_stereometer(settings.clone());
+        entry.set_config(config);
     }
 
     pub fn set_visual_order(&mut self, order: &[VisualKind]) {

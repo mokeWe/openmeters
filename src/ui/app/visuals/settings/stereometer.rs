@@ -29,7 +29,7 @@ pub fn create(
     let settings = visual_manager
         .borrow()
         .module_settings(VisualKind::STEREOMETER)
-        .and_then(|stored| stored.stereometer().cloned())
+        .and_then(|stored| stored.config::<StereometerSettings>())
         .unwrap_or_default();
 
     let palette = settings
@@ -120,14 +120,14 @@ impl ModuleSettingsPane for StereometerSettingsPane {
                 &theme::DEFAULT_STEREOMETER_PALETTE,
             );
 
-            let module_settings = ModuleSettings::with_stereometer_settings(&self.settings);
+            let module_settings = ModuleSettings::with_config(&self.settings);
 
             if visual_manager
                 .borrow_mut()
                 .apply_module_settings(VisualKind::STEREOMETER, &module_settings)
             {
                 settings.update(|mgr| {
-                    mgr.set_stereometer_settings(VisualKind::STEREOMETER, &self.settings);
+                    mgr.set_module_config(VisualKind::STEREOMETER, &self.settings);
                 });
             }
         }

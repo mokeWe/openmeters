@@ -51,7 +51,7 @@ pub fn create(
     let settings = visual_manager
         .borrow()
         .module_settings(VisualKind::OSCILLOSCOPE)
-        .and_then(|stored| stored.oscilloscope().cloned())
+        .and_then(|stored| stored.config::<OscilloscopeSettings>())
         .unwrap_or_default();
 
     let palette = settings
@@ -226,10 +226,10 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
 
             if visual_manager.borrow_mut().apply_module_settings(
                 VisualKind::OSCILLOSCOPE,
-                &ModuleSettings::with_oscilloscope_settings(&self.settings),
+                &ModuleSettings::with_config(&self.settings),
             ) {
                 settings.update(|mgr| {
-                    mgr.set_oscilloscope_settings(VisualKind::OSCILLOSCOPE, &self.settings);
+                    mgr.set_module_config(VisualKind::OSCILLOSCOPE, &self.settings);
                 });
             }
         }

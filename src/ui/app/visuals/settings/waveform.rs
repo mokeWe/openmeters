@@ -38,7 +38,7 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Wave
     let stored = visual_manager
         .borrow()
         .module_settings(VisualKind::WAVEFORM)
-        .and_then(|s| s.waveform().cloned());
+        .and_then(|s| s.config::<WaveformSettings>());
 
     let config = stored.as_ref().map(|s| s.to_config()).unwrap_or_default();
     let palette = stored
@@ -122,11 +122,11 @@ impl ModuleSettingsPane for WaveformSettingsPane {
                 &theme::DEFAULT_WAVEFORM_PALETTE,
             );
 
-            if vm.borrow_mut().apply_module_settings(
-                VisualKind::WAVEFORM,
-                &ModuleSettings::with_waveform_settings(&stored),
-            ) {
-                s.update(|m| m.set_waveform_settings(VisualKind::WAVEFORM, &stored));
+            if vm
+                .borrow_mut()
+                .apply_module_settings(VisualKind::WAVEFORM, &ModuleSettings::with_config(&stored))
+            {
+                s.update(|m| m.set_module_config(VisualKind::WAVEFORM, &stored));
             }
         }
     }

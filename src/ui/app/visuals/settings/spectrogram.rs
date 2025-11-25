@@ -83,15 +83,14 @@ impl SpectrogramSettingsPane {
             &theme::DEFAULT_SPECTROGRAM_PALETTE,
         );
 
-        let module_settings = ModuleSettings::with_spectrogram_settings(&stored);
+        let module_settings = ModuleSettings::with_config(&stored);
 
         if visual_manager
             .borrow_mut()
             .apply_module_settings(VisualKind::SPECTROGRAM, &module_settings)
         {
-            settings.update(|settings| {
-                settings.set_spectrogram_settings(VisualKind::SPECTROGRAM, &stored)
-            });
+            settings
+                .update(|settings| settings.set_module_config(VisualKind::SPECTROGRAM, &stored));
         }
     }
 
@@ -340,7 +339,7 @@ pub fn create(
     let stored_settings = visual_manager
         .borrow()
         .module_settings(VisualKind::SPECTROGRAM)
-        .and_then(|stored| stored.spectrogram().cloned());
+        .and_then(|stored| stored.config::<SpectrogramSettings>());
 
     let mut config = stored_settings
         .as_ref()

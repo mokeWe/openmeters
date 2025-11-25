@@ -27,7 +27,7 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Loud
     let settings = visual_manager
         .borrow()
         .module_settings(VisualKind::LOUDNESS)
-        .and_then(|stored| stored.loudness().copied())
+        .and_then(|stored| stored.config::<LoudnessSettings>())
         .unwrap_or_default();
 
     LoudnessSettingsPane {
@@ -97,14 +97,14 @@ impl LoudnessSettingsPane {
     }
 
     fn push_changes(&self, visual_manager: &VisualManagerHandle, settings_handle: &SettingsHandle) {
-        let module_settings = ModuleSettings::with_loudness_settings(self.settings);
+        let module_settings = ModuleSettings::with_config(&self.settings);
 
         if visual_manager
             .borrow_mut()
             .apply_module_settings(VisualKind::LOUDNESS, &module_settings)
         {
             settings_handle.update(|mgr| {
-                mgr.set_loudness_settings(VisualKind::LOUDNESS, self.settings);
+                mgr.set_module_config(VisualKind::LOUDNESS, &self.settings);
             });
         }
     }

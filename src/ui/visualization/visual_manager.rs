@@ -302,19 +302,17 @@ impl VisualModule for LoudnessVisual {
     }
 
     fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(loudness_settings) = settings.loudness() {
+        if let Some(loudness_settings) = settings.config::<LoudnessSettings>() {
             self.state
                 .set_modes(loudness_settings.left_mode, loudness_settings.right_mode);
         }
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
-        let mut module = ModuleSettings::default();
-        module.set_loudness(LoudnessSettings::new(
+        Some(ModuleSettings::with_config(&LoudnessSettings::new(
             self.state.left_mode(),
             self.state.right_mode(),
-        ));
-        Some(module)
+        )))
     }
 }
 
@@ -349,7 +347,7 @@ impl VisualModule for OscilloscopeVisual {
     }
 
     fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(stored) = settings.oscilloscope() {
+        if let Some(stored) = settings.config::<OscilloscopeSettings>() {
             let mut config = self.processor.config();
             config.segment_duration = stored.segment_duration;
             config.trigger_mode = stored.trigger_mode;
@@ -382,9 +380,7 @@ impl VisualModule for OscilloscopeVisual {
             ),
         };
 
-        let mut module_settings = ModuleSettings::default();
-        module_settings.set_oscilloscope(settings);
-        Some(module_settings)
+        Some(ModuleSettings::with_config(&settings))
     }
 }
 
@@ -417,7 +413,7 @@ impl VisualModule for WaveformVisual {
     }
 
     fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(stored) = settings.waveform() {
+        if let Some(stored) = settings.config::<WaveformSettings>() {
             let mut config = self.processor.config();
             stored.apply_to(&mut config);
             self.processor.update_config(config);
@@ -433,14 +429,12 @@ impl VisualModule for WaveformVisual {
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
-        let mut module = ModuleSettings::default();
         let mut snapshot = WaveformSettings::from_config(&self.processor.config());
         snapshot.palette = PaletteSettings::maybe_from_colors(
             self.state.borrow().palette(),
             &theme::DEFAULT_WAVEFORM_PALETTE,
         );
-        module.set_waveform(snapshot);
-        Some(module)
+        Some(ModuleSettings::with_config(&snapshot))
     }
 }
 
@@ -488,7 +482,7 @@ impl VisualModule for SpectrogramVisual {
     }
 
     fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(stored) = settings.spectrogram() {
+        if let Some(stored) = settings.config::<SpectrogramSettings>() {
             let mut config = self.processor.config();
             stored.apply_to(&mut config);
             self.processor.update_config(config);
@@ -503,13 +497,11 @@ impl VisualModule for SpectrogramVisual {
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
-        let mut settings = ModuleSettings::default();
         let mut snapshot = SpectrogramSettings::from_config(&self.processor.config());
         let palette = self.state.borrow().palette();
         snapshot.palette =
             PaletteSettings::maybe_from_colors(&palette, &theme::DEFAULT_SPECTROGRAM_PALETTE);
-        settings.set_spectrogram(snapshot);
-        Some(settings)
+        Some(ModuleSettings::with_config(&snapshot))
     }
 }
 
@@ -541,7 +533,7 @@ impl VisualModule for SpectrumVisual {
     }
 
     fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(stored) = settings.spectrum() {
+        if let Some(stored) = settings.config::<SpectrumSettings>() {
             let mut config = self.processor.config();
             stored.apply_to(&mut config);
             self.processor.update_config(config);
@@ -565,7 +557,6 @@ impl VisualModule for SpectrumVisual {
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
-        let mut settings = ModuleSettings::default();
         let mut spectrum_settings = SpectrumSettings::from_config(&self.processor.config());
         let state = self.state.borrow();
         let palette = state.palette();
@@ -574,8 +565,7 @@ impl VisualModule for SpectrumVisual {
         let style = state.style();
         spectrum_settings.smoothing_radius = style.smoothing_radius;
         spectrum_settings.smoothing_passes = style.smoothing_passes;
-        settings.set_spectrum(spectrum_settings);
-        Some(settings)
+        Some(ModuleSettings::with_config(&spectrum_settings))
     }
 }
 
@@ -606,13 +596,13 @@ impl VisualModule for StereometerVisual {
     }
 
     fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(stored) = settings.stereometer() {
+        if let Some(stored) = settings.config::<StereometerSettings>() {
             let mut config = self.processor.config();
             stored.apply_to(&mut config);
             self.processor.update_config(config);
 
             let mut state = self.state.borrow_mut();
-            state.update_view_settings(stored);
+            state.update_view_settings(&stored);
 
             if let Some(palette) = stored
                 .palette
@@ -627,7 +617,6 @@ impl VisualModule for StereometerVisual {
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
-        let mut settings = ModuleSettings::default();
         let state = self.state.borrow();
         let persistence = state.view_settings();
         let mut snapshot =
@@ -636,8 +625,7 @@ impl VisualModule for StereometerVisual {
             state.palette(),
             &theme::DEFAULT_STEREOMETER_PALETTE,
         );
-        settings.set_stereometer(snapshot);
-        Some(settings)
+        Some(ModuleSettings::with_config(&snapshot))
     }
 }
 
