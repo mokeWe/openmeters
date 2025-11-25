@@ -13,7 +13,7 @@ Checked features are implemented, unchecked features are planned. If you have id
 - [x] Per-application capture
 - [x] Per-device capture
 - [x] **loudness**
-  - [x] LUFS
+  - [x] LUFS (ITU-R BS.1770-5)
     - [x] Short-term
     - [x] Momentary
   - [x] RMS
