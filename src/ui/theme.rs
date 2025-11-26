@@ -46,7 +46,7 @@ pub const DEFAULT_WAVEFORM_PALETTE: [Color; 5] = [
 ];
 
 pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 1] = [
-    Color::from_rgb(0.529, 0.549, 0.584), // trace color - primary accent
+    Color::from_rgb(1.0, 1.0, 1.0), // white
 ];
 
 pub const DEFAULT_STEREOMETER_PALETTE: [Color; 1] = [
