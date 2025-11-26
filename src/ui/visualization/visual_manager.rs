@@ -256,8 +256,8 @@ const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
             preferred_height: 220.0,
             fill_horizontal: true,
             fill_vertical: true,
-            min_width: 170.0,
-            max_width: 280.0,
+            min_width: 200.0,
+            max_width: f32::INFINITY,
         },
         default_enabled: false,
         build: build_module::<StereometerVisual>,
@@ -618,11 +618,12 @@ impl VisualModule for StereometerVisual {
 
     fn export_settings(&self) -> Option<ModuleSettings> {
         let state = self.state.borrow();
-        let persistence = state.view_settings();
-        let mut snapshot =
-            StereometerSettings::from_config_with_view(&self.processor.config(), persistence);
+        let (persistence, mode) = state.view_settings();
+        let mut snapshot = StereometerSettings::from_config(&self.processor.config());
+        snapshot.persistence = persistence;
+        snapshot.mode = mode;
         snapshot.palette = PaletteSettings::maybe_from_colors(
-            state.palette(),
+            &state.palette(),
             &theme::DEFAULT_STEREOMETER_PALETTE,
         );
         Some(ModuleSettings::with_config(&snapshot))

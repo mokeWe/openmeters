@@ -1,11 +1,13 @@
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{SliderRange, labeled_slider, set_f32};
+use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
 use super::{ModuleSettingsPane, SettingsMessage};
-use crate::ui::settings::{ModuleSettings, SettingsHandle, StereometerSettings};
+use crate::ui::settings::{ModuleSettings, SettingsHandle, StereometerMode, StereometerSettings};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::{column, text};
+
+const MODE_OPTIONS: [StereometerMode; 2] = [StereometerMode::Lissajous, StereometerMode::DotCloud];
 
 #[derive(Debug)]
 pub struct StereometerSettingsPane {
@@ -19,6 +21,7 @@ pub enum Message {
     SegmentDuration(f32),
     TargetSampleCount(f32),
     Persistence(f32),
+    Mode(StereometerMode),
     Palette(PaletteEvent),
 }
 
@@ -35,7 +38,7 @@ pub fn create(
     let palette = settings
         .palette
         .as_ref()
-        .and_then(|p| p.to_array::<1>())
+        .and_then(|p| p.to_array::<2>())
         .unwrap_or(theme::DEFAULT_STEREOMETER_PALETTE);
 
     StereometerSettingsPane {
@@ -52,6 +55,9 @@ impl ModuleSettingsPane for StereometerSettingsPane {
 
     fn view(&self) -> Element<'_, SettingsMessage> {
         column![
+            labeled_pick_list("Mode", &MODE_OPTIONS, Some(self.settings.mode), |mode| {
+                SettingsMessage::Stereometer(Message::Mode(mode))
+            }),
             labeled_slider(
                 "Segment duration",
                 self.settings.segment_duration,
@@ -74,7 +80,7 @@ impl ModuleSettingsPane for StereometerSettingsPane {
                 |value| SettingsMessage::Stereometer(Message::Persistence(value)),
             ),
             column![
-                text("Color").size(14),
+                text("Colors").size(14),
                 self.palette
                     .view()
                     .map(|e| SettingsMessage::Stereometer(Message::Palette(e)))
@@ -111,6 +117,7 @@ impl ModuleSettingsPane for StereometerSettingsPane {
             Message::Persistence(value) => {
                 set_f32(&mut self.settings.persistence, value.clamp(0.0, 1.0))
             }
+            Message::Mode(mode) => set_if_changed(&mut self.settings.mode, *mode),
             Message::Palette(event) => self.palette.update(*event),
         };
 

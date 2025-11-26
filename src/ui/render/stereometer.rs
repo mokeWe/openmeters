@@ -9,17 +9,19 @@ use std::mem;
 use crate::ui::render::common::{
     CacheTracker, ClipTransform, InstanceBuffer, create_shader_module,
 };
-use crate::ui::render::geometry::compute_normals;
+use crate::ui::settings::StereometerMode;
+
+const PI: f32 = std::f32::consts::PI;
+const SQRT2_INV: f32 = std::f32::consts::FRAC_1_SQRT_2;
 
 #[derive(Debug, Clone)]
 pub struct StereometerParams {
     pub instance_id: u64,
     pub bounds: Rectangle,
-    pub xy_points: Vec<(f32, f32)>,
-    pub color: [f32; 4],
-    pub line_alpha: f32,
-    pub amplitude_scale: f32,
-    pub stroke_width: f32,
+    pub points: Vec<(f32, f32)>,
+    pub trace_color: [f32; 4],
+    pub grid_color: [f32; 4],
+    pub mode: StereometerMode,
 }
 
 #[derive(Debug)]
@@ -32,77 +34,211 @@ impl StereometerPrimitive {
         Self { params }
     }
 
-    fn key(&self) -> u64 {
-        self.params.instance_id
-    }
-
     fn build_vertices(&self, viewport: &Viewport) -> Vec<Vertex> {
-        if self.params.xy_points.len() < 2 {
-            return Vec::new();
-        }
-
         let bounds = self.params.bounds;
         let clip = ClipTransform::from_viewport(viewport);
+        let cx = bounds.x + bounds.width * 0.5;
+        let cy = bounds.y + bounds.height * 0.5;
+        let radius = (bounds.width.min(bounds.height) * 0.5) - 2.0;
 
-        let center_x = bounds.x + bounds.width * 0.5;
-        let center_y = bounds.y + bounds.height * 0.5;
-        let scale = 0.9 * self.params.amplitude_scale.max(0.01);
-        let scale_x = bounds.width * 0.5 * scale;
-        let scale_y = bounds.height * 0.5 * scale;
+        let mut verts = Vec::new();
 
-        let color = [
-            self.params.color[0],
-            self.params.color[1],
-            self.params.color[2],
-            self.params.line_alpha,
-        ];
+        match self.params.mode {
+            StereometerMode::DotCloud => {
+                self.build_grid(&mut verts, cx, cy, radius, &clip);
+                self.build_dots(&mut verts, cx, cy, radius, &clip);
+            }
+            StereometerMode::Lissajous => {
+                self.build_trace(&mut verts, cx, cy, radius * 0.9, &clip);
+            }
+        }
 
-        let positions: Vec<_> = self
-            .params
-            .xy_points
-            .iter()
-            .map(|(x, y)| {
-                (
-                    center_x + x.clamp(-1.0, 1.0) * scale_x,
-                    center_y - y.clamp(-1.0, 1.0) * scale_y,
-                )
-            })
-            .collect();
-
-        let normals = compute_normals(&positions);
-        let half = self.params.stroke_width.max(0.1) * 0.5;
-        let feather = 1.0f32;
-        let outer = half + feather;
-
-        build_line_strip(&positions, &normals, color, outer, half, feather, &clip)
+        verts
     }
-}
 
-fn build_line_strip(
-    positions: &[(f32, f32)],
-    normals: &[(f32, f32)],
-    color: [f32; 4],
-    outer: f32,
-    half: f32,
-    feather: f32,
-    clip: &ClipTransform,
-) -> Vec<Vertex> {
-    let mut vertices = Vec::with_capacity(positions.len() * 2);
-    for (pos, normal) in positions.iter().zip(normals.iter()) {
-        let offset_x = normal.0 * outer;
-        let offset_y = normal.1 * outer;
-        vertices.push(Vertex {
-            position: clip.to_clip(pos.0 - offset_x, pos.1 - offset_y),
-            color,
-            params: [-outer, half, feather, 0.0],
-        });
-        vertices.push(Vertex {
-            position: clip.to_clip(pos.0 + offset_x, pos.1 + offset_y),
-            color,
-            params: [outer, half, feather, 0.0],
-        });
+    fn build_grid(
+        &self,
+        verts: &mut Vec<Vertex>,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        clip: &ClipTransform,
+    ) {
+        let color = self.params.grid_color;
+
+        for &r in &[0.125, 0.25, 0.5, 1.0] {
+            self.build_circle(verts, cx, cy, radius * r, color, clip);
+        }
+
+        for &(dx, dy) in &[
+            (1.0, 0.0),
+            (0.0, 1.0),
+            (SQRT2_INV, SQRT2_INV),
+            (SQRT2_INV, -SQRT2_INV),
+        ] {
+            let p0 = (cx - dx * radius, cy - dy * radius);
+            let p1 = (cx + dx * radius, cy + dy * radius);
+            self.build_line_segment(verts, p0, p1, color, color, clip);
+        }
     }
-    vertices
+
+    fn build_dots(
+        &self,
+        verts: &mut Vec<Vertex>,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        clip: &ClipTransform,
+    ) {
+        let n = self.params.points.len();
+        if n == 0 {
+            return;
+        }
+
+        let scale = radius * SQRT2_INV;
+        let [cr, cg, cb, ca] = self.params.trace_color;
+
+        for (i, &(l, r)) in self.params.points.iter().enumerate() {
+            let alpha = ca * (i + 1) as f32 / n as f32;
+            let px = cx + (r - l) * SQRT2_INV * scale;
+            let py = cy - (l + r) * SQRT2_INV * scale;
+            self.build_dot(verts, px, py, [cr, cg, cb, alpha], clip);
+        }
+    }
+
+    fn build_trace(
+        &self,
+        verts: &mut Vec<Vertex>,
+        cx: f32,
+        cy: f32,
+        radius: f32,
+        clip: &ClipTransform,
+    ) {
+        let n = self.params.points.len();
+        if n < 2 {
+            return;
+        }
+
+        let [cr, cg, cb, ca] = self.params.trace_color;
+
+        for i in 0..n - 1 {
+            let (x0, y0) = self.params.points[i];
+            let (x1, y1) = self.params.points[i + 1];
+
+            let p0 = (
+                cx + x0.clamp(-1.0, 1.0) * radius,
+                cy - y0.clamp(-1.0, 1.0) * radius,
+            );
+            let p1 = (
+                cx + x1.clamp(-1.0, 1.0) * radius,
+                cy - y1.clamp(-1.0, 1.0) * radius,
+            );
+
+            let t0 = i as f32 / (n - 1) as f32;
+            let t1 = (i + 1) as f32 / (n - 1) as f32;
+
+            self.build_line_segment(
+                verts,
+                p0,
+                p1,
+                [cr, cg, cb, ca * t0],
+                [cr, cg, cb, ca * t1],
+                clip,
+            );
+        }
+    }
+
+    fn build_circle(
+        &self,
+        verts: &mut Vec<Vertex>,
+        cx: f32,
+        cy: f32,
+        r: f32,
+        color: [f32; 4],
+        clip: &ClipTransform,
+    ) {
+        const SEGMENTS: usize = 64;
+        for i in 0..SEGMENTS {
+            let a0 = (i as f32 / SEGMENTS as f32) * 2.0 * PI;
+            let a1 = ((i + 1) as f32 / SEGMENTS as f32) * 2.0 * PI;
+            let p0 = (cx + a0.cos() * r, cy + a0.sin() * r);
+            let p1 = (cx + a1.cos() * r, cy + a1.sin() * r);
+            self.build_line_segment(verts, p0, p1, color, color, clip);
+        }
+    }
+
+    fn build_line_segment(
+        &self,
+        verts: &mut Vec<Vertex>,
+        p0: (f32, f32),
+        p1: (f32, f32),
+        c0: [f32; 4],
+        c1: [f32; 4],
+        clip: &ClipTransform,
+    ) {
+        let dx = p1.0 - p0.0;
+        let dy = p1.1 - p0.1;
+        let len = (dx * dx + dy * dy).sqrt().max(1e-6);
+        let (nx, ny) = (-dy / len, dx / len);
+
+        const OUTER: f32 = 1.5;
+        const HALF: f32 = 0.5;
+        const FEATHER: f32 = 1.0;
+
+        let (ox, oy) = (nx * OUTER, ny * OUTER);
+        let params = |d: f32| [d, 0.0, HALF, FEATHER];
+
+        let v0 = Vertex {
+            position: clip.to_clip(p0.0 - ox, p0.1 - oy),
+            color: c0,
+            params: params(-OUTER),
+        };
+        let v1 = Vertex {
+            position: clip.to_clip(p0.0 + ox, p0.1 + oy),
+            color: c0,
+            params: params(OUTER),
+        };
+        let v2 = Vertex {
+            position: clip.to_clip(p1.0 - ox, p1.1 - oy),
+            color: c1,
+            params: params(-OUTER),
+        };
+        let v3 = Vertex {
+            position: clip.to_clip(p1.0 + ox, p1.1 + oy),
+            color: c1,
+            params: params(OUTER),
+        };
+
+        verts.extend([v0, v1, v2, v1, v3, v2]);
+    }
+
+    fn build_dot(
+        &self,
+        verts: &mut Vec<Vertex>,
+        cx: f32,
+        cy: f32,
+        color: [f32; 4],
+        clip: &ClipTransform,
+    ) {
+        const R: f32 = 1.5;
+        const FEATHER: f32 = 0.75;
+        let o = R + FEATHER;
+
+        let v = |px, py, ox, oy| Vertex {
+            position: clip.to_clip(px, py),
+            color,
+            params: [ox, oy, R, FEATHER],
+        };
+
+        verts.extend([
+            v(cx - o, cy - o, -o, -o),
+            v(cx - o, cy + o, -o, o),
+            v(cx + o, cy - o, o, -o),
+            v(cx + o, cy - o, o, -o),
+            v(cx - o, cy + o, -o, o),
+            v(cx + o, cy + o, o, o),
+        ]);
+    }
 }
 
 impl Primitive for StereometerPrimitive {
@@ -119,12 +255,9 @@ impl Primitive for StereometerPrimitive {
             storage.store(Pipeline::new(device, format));
         }
 
-        let pipeline = storage
-            .get_mut::<Pipeline>()
-            .expect("pipeline must exist after storage check");
-
+        let pipeline = storage.get_mut::<Pipeline>().unwrap();
         let vertices = self.build_vertices(viewport);
-        pipeline.prepare_instance(device, queue, self.key(), &vertices);
+        pipeline.prepare(device, queue, self.params.instance_id, &vertices);
     }
 
     fn render(
@@ -137,17 +270,15 @@ impl Primitive for StereometerPrimitive {
         let Some(pipeline) = storage.get::<Pipeline>() else {
             return;
         };
-
-        let Some(instance) = pipeline.instance(self.key()) else {
+        let Some(instance) = pipeline.instances.get(&self.params.instance_id) else {
             return;
         };
-
         if instance.buffer.vertex_count == 0 {
             return;
         }
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Stereometer pass"),
+            label: Some("Stereometer"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 resolve_target: None,
@@ -213,8 +344,6 @@ impl Vertex {
     }
 }
 
-const VERTEX_LABEL: &str = "Stereometer vertex buffer";
-
 #[derive(Debug)]
 struct Pipeline {
     pipeline: wgpu::RenderPipeline,
@@ -232,19 +361,19 @@ impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         let shader = create_shader_module(
             device,
-            "Stereometer shader",
+            "Stereometer",
             include_str!("shaders/stereometer.wgsl"),
         );
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Stereometer pipeline layout"),
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Stereometer"),
             bind_group_layouts: &[],
             push_constant_ranges: &[],
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Stereometer pipeline"),
-            layout: Some(&pipeline_layout),
+            label: Some("Stereometer"),
+            layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
@@ -260,20 +389,11 @@ impl Pipeline {
                 })],
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                ..Default::default()
             },
             depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
+            multisample: wgpu::MultisampleState::default(),
             multiview: None,
         });
 
@@ -284,44 +404,31 @@ impl Pipeline {
         }
     }
 
-    fn prepare_instance(
+    fn prepare(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         key: u64,
         vertices: &[Vertex],
     ) {
-        let required_size = std::mem::size_of_val(vertices) as wgpu::BufferAddress;
         let (frame, threshold) = self.cache.advance();
+        let size = std::mem::size_of_val(vertices) as wgpu::BufferAddress;
 
         let entry = self.instances.entry(key).or_insert_with(|| InstanceRecord {
-            buffer: InstanceBuffer::new(device, VERTEX_LABEL, required_size.max(1)),
+            buffer: InstanceBuffer::new(device, "Stereometer", size.max(1)),
             last_used: frame,
         });
-
         entry.last_used = frame;
 
         if vertices.is_empty() {
             entry.buffer.vertex_count = 0;
-            self.prune(threshold);
-            return;
+        } else {
+            entry.buffer.ensure_capacity(device, "Stereometer", size);
+            entry.buffer.write(queue, vertices);
         }
 
-        entry
-            .buffer
-            .ensure_capacity(device, VERTEX_LABEL, required_size);
-        entry.buffer.write(queue, vertices);
-        self.prune(threshold);
-    }
-
-    fn instance(&self, key: u64) -> Option<&InstanceRecord> {
-        self.instances.get(&key)
-    }
-
-    fn prune(&mut self, threshold: Option<u64>) {
-        if let Some(threshold) = threshold {
-            self.instances
-                .retain(|_, record| record.last_used >= threshold);
+        if let Some(t) = threshold {
+            self.instances.retain(|_, r| r.last_used >= t);
         }
     }
 }

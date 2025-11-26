@@ -6,7 +6,7 @@ use crate::dsp::stereometer::{
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::stereometer::{StereometerParams, StereometerPrimitive};
-use crate::ui::settings::StereometerSettings;
+use crate::ui::settings::{StereometerMode, StereometerSettings};
 use crate::ui::theme;
 use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
@@ -71,9 +71,11 @@ impl StereometerProcessor {
 #[derive(Debug, Clone)]
 pub struct StereometerState {
     snapshot: StereometerSnapshot,
-    style: StereometerStyle,
     display_points: Vec<(f32, f32)>,
+    trace_color: Color,
+    grid_color: Color,
     persistence: f32,
+    mode: StereometerMode,
     instance_id: u64,
 }
 
@@ -81,61 +83,63 @@ impl StereometerState {
     pub fn new() -> Self {
         Self {
             snapshot: StereometerSnapshot::default(),
-            style: StereometerStyle::default(),
             display_points: Vec::new(),
+            trace_color: theme::DEFAULT_STEREOMETER_PALETTE[0],
+            grid_color: theme::DEFAULT_STEREOMETER_PALETTE[1],
             persistence: 0.0,
+            mode: StereometerMode::default(),
             instance_id: next_instance_id(),
         }
     }
 
     pub fn update_view_settings(&mut self, settings: &StereometerSettings) {
         self.persistence = settings.persistence.clamp(0.0, 0.9);
+        self.mode = settings.mode;
     }
 
     pub fn set_palette(&mut self, palette: &[Color]) {
-        self.style.trace_color = palette.first().copied().unwrap_or(theme::accent_primary());
+        self.trace_color = palette
+            .first()
+            .copied()
+            .unwrap_or(theme::DEFAULT_STEREOMETER_PALETTE[0]);
+        self.grid_color = palette
+            .get(1)
+            .copied()
+            .unwrap_or(theme::DEFAULT_STEREOMETER_PALETTE[1]);
     }
 
-    pub fn palette(&self) -> &[Color] {
-        std::slice::from_ref(&self.style.trace_color)
+    pub fn palette(&self) -> [Color; 2] {
+        [self.trace_color, self.grid_color]
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &StereometerSnapshot) {
         if snapshot.xy_points.is_empty() {
-            self.snapshot = snapshot.clone();
             self.display_points.clear();
+            self.snapshot = snapshot.clone();
             return;
         }
 
-        let total_points = snapshot.xy_points.len();
-        if self.display_points.len() != total_points {
-            self.display_points.resize(total_points, (0.0, 0.0));
+        if self.display_points.len() != snapshot.xy_points.len() {
+            self.display_points
+                .resize(snapshot.xy_points.len(), (0.0, 0.0));
         }
 
-        let persistence = self.persistence.clamp(0.0, 0.9);
-        if persistence <= f32::EPSILON {
+        if self.persistence <= f32::EPSILON {
             self.display_points.copy_from_slice(&snapshot.xy_points);
         } else {
-            let fresh = 1.0_f32 - persistence;
-            for (current, incoming) in self
-                .display_points
-                .iter_mut()
-                .zip(snapshot.xy_points.iter())
-            {
-                current.0 = (current.0 * persistence) + (incoming.0 * fresh);
-                current.1 = (current.1 * persistence) + (incoming.1 * fresh);
+            let fresh = 1.0 - self.persistence;
+            for (current, incoming) in self.display_points.iter_mut().zip(&snapshot.xy_points) {
+                current.0 = current.0 * self.persistence + incoming.0 * fresh;
+                current.1 = current.1 * self.persistence + incoming.1 * fresh;
             }
         }
 
-        self.snapshot = snapshot.clone();
-        self.snapshot.xy_points.clear();
-        self.snapshot
-            .xy_points
-            .extend_from_slice(&self.display_points);
+        self.snapshot.xy_points.clone_from(&self.display_points);
+        self.snapshot.correlation = snapshot.correlation;
     }
 
-    pub fn view_settings(&self) -> f32 {
-        self.persistence
+    pub fn view_settings(&self) -> (f32, StereometerMode) {
+        (self.persistence, self.mode)
     }
 
     fn visual_params(&self, bounds: Rectangle) -> Option<StereometerParams> {
@@ -143,36 +147,14 @@ impl StereometerState {
             return None;
         }
 
-        let color = theme::color_to_rgba(self.style.trace_color);
-
         Some(StereometerParams {
             instance_id: self.instance_id,
             bounds,
-            xy_points: self.snapshot.xy_points.clone(),
-            color,
-            line_alpha: self.style.line_alpha,
-            amplitude_scale: self.style.amplitude_scale,
-            stroke_width: self.style.stroke_width,
+            points: self.snapshot.xy_points.clone(),
+            trace_color: theme::color_to_rgba(self.trace_color),
+            grid_color: theme::color_to_rgba(self.grid_color),
+            mode: self.mode,
         })
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct StereometerStyle {
-    pub trace_color: Color,
-    pub line_alpha: f32,
-    pub amplitude_scale: f32,
-    pub stroke_width: f32,
-}
-
-impl Default for StereometerStyle {
-    fn default() -> Self {
-        Self {
-            trace_color: theme::DEFAULT_STEREOMETER_PALETTE[0],
-            line_alpha: 0.92,
-            amplitude_scale: 0.9,
-            stroke_width: 1.0,
-        }
     }
 }
 

@@ -7,7 +7,7 @@ struct VertexInput {
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) color: vec4<f32>,
-    @location(1) params: vec3<f32>,
+    @location(1) params: vec4<f32>,
 };
 
 @vertex
@@ -15,17 +15,15 @@ fn vs_main(input: VertexInput) -> VertexOutput {
     var output: VertexOutput;
     output.position = vec4<f32>(input.position, 0.0, 1.0);
     output.color = input.color;
-    output.params = input.params.xyz;
+    output.params = input.params;
     return output;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
-    let signed_distance = input.params.x;
-    let inner = input.params.y;
-    let feather = max(input.params.z, 1.0e-4);
-    let dist = abs(signed_distance);
-    let coverage = clamp((inner + feather - dist) / feather, 0.0, 1.0);
-    let alpha = input.color.a * coverage;
-    return vec4<f32>(input.color.rgb, alpha);
+    let dist = length(input.params.xy);
+    let radius = input.params.z;
+    let feather = max(input.params.w, 1.0e-4);
+    let coverage = clamp((radius + feather - dist) / feather, 0.0, 1.0);
+    return vec4<f32>(input.color.rgb, input.color.a * coverage);
 }

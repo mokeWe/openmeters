@@ -391,12 +391,32 @@ impl Default for LoudnessSettings {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StereometerMode {
+    Lissajous,
+    #[default]
+    DotCloud,
+}
+
+impl std::fmt::Display for StereometerMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::Lissajous => "Lissajous",
+            Self::DotCloud => "Dot Cloud",
+        };
+        f.write_str(label)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StereometerSettings {
     pub segment_duration: f32,
     pub target_sample_count: usize,
     pub persistence: f32,
+    #[serde(default)]
+    pub mode: StereometerMode,
     #[serde(default)]
     pub palette: Option<PaletteSettings>,
 }
@@ -409,14 +429,11 @@ impl Default for StereometerSettings {
 
 impl StereometerSettings {
     pub fn from_config(config: &StereometerConfig) -> Self {
-        Self::from_config_with_view(config, 0.85)
-    }
-
-    pub fn from_config_with_view(config: &StereometerConfig, persistence: f32) -> Self {
         Self {
             segment_duration: config.segment_duration,
             target_sample_count: config.target_sample_count,
-            persistence,
+            persistence: 0.85,
+            mode: StereometerMode::default(),
             palette: None,
         }
     }
