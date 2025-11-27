@@ -2,7 +2,7 @@
 
 ![preview](screenshots/preview.gif)
 
-OpenMeters is an audio metering program for Linux, written in Rust for PipeWire systems.
+OpenMeters is an audio metering program for Linux written in Rust.
 
 ## roadmap
 
@@ -10,8 +10,13 @@ OpenMeters is an audio metering program for Linux, written in Rust for PipeWire 
 
 Checked features are implemented, unchecked features are planned. If you have ideas for more features, please feel free to open an issue/pull request!
 
+#### general
+
 - [x] Per-application capture
 - [x] Per-device capture
+
+#### visualizations
+
 - [x] **loudness**
   - [x] LUFS (ITU-R BS.1770-5)
     - [x] Short-term
@@ -39,7 +44,7 @@ Checked features are implemented, unchecked features are planned. If you have id
 - [x] **stereometer**
   - [ ] Correlation meter
   - [x] Vectorscope/XY mode
-  - [ ] Dot cloud
+  - [x] 'Dot cloud' (Mid/Side goniometer) mode
 - [x] **waveform**
   - [x] Adjustable colormap
 
@@ -49,7 +54,7 @@ Checked features are implemented, unchecked features are planned. If you have id
 2. Install the required system dependencies. On Arch-based systems, for example, you can run:
 
    ```bash
-   sudo pacman -S pipewire libpipewire 
+   sudo pacman -S pipewire libpipewire
    ```
 
 3. Clone the repository:
@@ -95,12 +100,13 @@ If you encounter a bug that causes OpenMeters to misbehave, you can delete `sett
 
 - **EasyEffects** (<https://github.com/wwmm/easyeffects>) for being a great source of inspiration and for their excellent work in audio processing. Reading through their codebase taught me a lot about PipeWire.
 - **MiniMeters** (<https://minimeters.app/>) for inspiring this entire project and for doing it better than I ever could. If you can, please support their work!
-- **Ardura's Scrolloscope** (<https://github.com/ardura/Scrollscope>) for making a simple oscilloscope complex and open-source.
+- **Ardura's Scrolloscope** (<https://github.com/ardura/Scrollscope>)
 - **Tim Strasser's Oszilloskop** (<https://github.com/timstr/oszilloskop>)
+- **Audacity** (<https://www.audacityteam.org/>)
 
 ### libraries used
 
-- **Iced** (<https://github.com/iced-rs/iced>) for being an excellent GUI toolkit.
-- **RustFFT** (<https://github.com/ejmahler/RustFFT>) for the FFT implementation.
-- **RealFFT** (<https://github.com/HEnquist/realfft>) for the real FFT implementation.
-- **wgpu** (<https://github.com/gfx-rs/wgpu>) for the GPU rendering backend.
+- **Iced** (<https://github.com/iced-rs/iced>)
+- **RustFFT** (<https://github.com/ejmahler/RustFFT>)
+- **RealFFT** (<https://github.com/HEnquist/realfft>)
+- **wgpu** (<https://github.com/gfx-rs/wgpu>)
