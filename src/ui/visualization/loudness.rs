@@ -172,7 +172,7 @@ impl LoudnessMeterProcessor {
 
     pub fn ingest(&mut self, samples: &[f32], format: MeterFormat) -> LoudnessSnapshot {
         if samples.is_empty() {
-            return self.inner.snapshot().clone();
+            return *self.inner.snapshot();
         }
 
         let channels = format.channels.max(1);
@@ -191,7 +191,7 @@ impl LoudnessMeterProcessor {
 
         match self.inner.process_block(&block) {
             ProcessorUpdate::Snapshot(snapshot) => snapshot,
-            ProcessorUpdate::None => self.inner.snapshot().clone(),
+            ProcessorUpdate::None => *self.inner.snapshot(),
         }
     }
 }
@@ -852,11 +852,11 @@ mod tests {
     fn state_aggregates_channels() {
         let mut state = LoudnessMeterState::new();
         state.apply_snapshot(&LoudnessSnapshot {
-            short_term_loudness: vec![-12.0, -6.0],
-            momentary_loudness: vec![-10.0, -5.0],
-            rms_fast_db: vec![-15.0, -9.0],
-            rms_slow_db: vec![-14.0, -8.0],
-            true_peak_db: vec![-1.0, -3.0],
+            short_term_loudness: [-12.0, -6.0],
+            momentary_loudness: [-10.0, -5.0],
+            rms_fast_db: [-15.0, -9.0],
+            rms_slow_db: [-14.0, -8.0],
+            true_peak_db: [-1.0, -3.0],
         });
 
         assert!((state.short_term_average() + 9.0).abs() < f32::EPSILON);
