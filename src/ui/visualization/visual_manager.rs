@@ -21,7 +21,6 @@ use serde::de::{self, Deserializer};
 use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 use std::cell::{Ref, RefCell, RefMut};
-use std::collections::HashMap;
 use std::rc::Rc;
 
 /// Identifiers for visual kinds.
@@ -152,28 +151,28 @@ struct VisualDescriptor {
     build: fn() -> Box<dyn VisualModule>,
 }
 
-struct VisualSlot {
+struct VisualEntry {
     id: VisualId,
     kind: VisualKind,
     enabled: bool,
     metadata: VisualMetadata,
+    module: Box<dyn VisualModule>,
+    cached_content: VisualContent,
 }
 
-impl VisualSlot {
+impl VisualEntry {
     fn new(id: VisualId, descriptor: &VisualDescriptor) -> Self {
+        let module = (descriptor.build)();
+        let cached_content = module.content();
         Self {
             id,
             kind: descriptor.kind,
             enabled: descriptor.default_enabled,
             metadata: descriptor.metadata,
+            module,
+            cached_content,
         }
     }
-}
-
-struct VisualEntry {
-    slot: VisualSlot,
-    module: Box<dyn VisualModule>,
-    cached_content: VisualContent,
 }
 
 // describe all available visuals here
@@ -264,10 +263,6 @@ const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
     },
 ];
 
-const WAVEFORM_PALETTE_SIZE: usize = theme::DEFAULT_WAVEFORM_PALETTE.len();
-const OSCILLOSCOPE_PALETTE_SIZE: usize = theme::DEFAULT_OSCILLOSCOPE_PALETTE.len();
-const STEREOMETER_PALETTE_SIZE: usize = theme::DEFAULT_STEREOMETER_PALETTE.len();
-
 fn build_module<M>() -> Box<dyn VisualModule>
 where
     M: VisualModule + Default + 'static,
@@ -356,7 +351,7 @@ impl VisualModule for OscilloscopeVisual {
             let palette = stored
                 .palette
                 .as_ref()
-                .and_then(|p| p.to_array::<OSCILLOSCOPE_PALETTE_SIZE>())
+                .and_then(|p| p.to_array::<{ theme::DEFAULT_OSCILLOSCOPE_PALETTE.len() }>())
                 .unwrap_or(theme::DEFAULT_OSCILLOSCOPE_PALETTE);
 
             let mut state = self.state.borrow_mut();
@@ -420,7 +415,9 @@ impl VisualModule for WaveformVisual {
             self.ensure_capacity();
 
             let mut state = self.state.borrow_mut();
-            if let Some(palette) = stored.palette_array::<WAVEFORM_PALETTE_SIZE>() {
+            if let Some(palette) =
+                stored.palette_array::<{ theme::DEFAULT_WAVEFORM_PALETTE.len() }>()
+            {
                 state.set_palette(&palette);
             } else {
                 state.set_palette(&theme::DEFAULT_WAVEFORM_PALETTE);
@@ -607,7 +604,7 @@ impl VisualModule for StereometerVisual {
             if let Some(palette) = stored
                 .palette
                 .as_ref()
-                .and_then(|p| p.to_array::<STEREOMETER_PALETTE_SIZE>())
+                .and_then(|p| p.to_array::<{ theme::DEFAULT_STEREOMETER_PALETTE.len() }>())
             {
                 state.set_palette(&palette);
             } else {
@@ -632,7 +629,6 @@ impl VisualModule for StereometerVisual {
 
 pub struct VisualManager {
     entries: Vec<VisualEntry>,
-    id_index: HashMap<VisualId, usize>,
     next_id: u32,
 }
 
@@ -640,7 +636,6 @@ impl VisualManager {
     pub fn new() -> Self {
         let mut manager = Self {
             entries: Vec::new(),
-            id_index: HashMap::new(),
             next_id: 1,
         };
         manager.bootstrap_defaults();
@@ -656,49 +651,38 @@ impl VisualManager {
 
     fn insert_entry(&mut self, descriptor: &VisualDescriptor) {
         let id = VisualId::next(&mut self.next_id);
-        let slot = VisualSlot::new(id, descriptor);
-        let module = (descriptor.build)();
-        let cached_content = module.content();
-
-        let index = self.entries.len();
-        self.id_index.insert(id, index);
-        self.entries.push(VisualEntry {
-            slot,
-            module,
-            cached_content,
-        });
+        self.entries.push(VisualEntry::new(id, descriptor));
     }
 
     fn entry_mut_by_kind(&mut self, kind: VisualKind) -> Option<&mut VisualEntry> {
-        self.entries
-            .iter_mut()
-            .find(|entry| entry.slot.kind == kind)
+        self.entries.iter_mut().find(|entry| entry.kind == kind)
     }
 
     fn entry_by_kind(&self, kind: VisualKind) -> Option<&VisualEntry> {
-        self.entries.iter().find(|entry| entry.slot.kind == kind)
+        self.entries.iter().find(|entry| entry.kind == kind)
     }
 
     pub fn snapshot(&self) -> VisualSnapshot {
-        let mut slots = Vec::with_capacity(self.entries.len());
-        for entry in &self.entries {
-            slots.push(VisualSlotSnapshot {
-                id: entry.slot.id,
-                kind: entry.slot.kind,
-                enabled: entry.slot.enabled,
-                metadata: entry.slot.metadata,
-                content: entry.cached_content.clone(),
-            });
+        VisualSnapshot {
+            slots: self
+                .entries
+                .iter()
+                .map(|entry| VisualSlotSnapshot {
+                    id: entry.id,
+                    kind: entry.kind,
+                    enabled: entry.enabled,
+                    metadata: entry.metadata,
+                    content: entry.cached_content.clone(),
+                })
+                .collect(),
         }
-
-        VisualSnapshot { slots }
     }
 
     pub fn module_settings(&self, kind: VisualKind) -> Option<ModuleSettings> {
         self.entry_by_kind(kind).map(|entry| {
             let mut snapshot = entry.module.export_settings().unwrap_or_default();
             if snapshot.enabled.is_none() {
-                snapshot.enabled = Some(entry.slot.enabled);
+                snapshot.enabled = Some(entry.enabled);
             }
             snapshot
         })
@@ -711,7 +695,7 @@ impl VisualManager {
     ) -> bool {
         if let Some(entry) = self.entry_mut_by_kind(kind) {
             if let Some(enabled) = module_settings.enabled {
-                entry.slot.enabled = enabled;
+                entry.enabled = enabled;
             }
             entry.module.apply_settings(module_settings);
             entry.cached_content = entry.module.content();
@@ -723,17 +707,17 @@ impl VisualManager {
 
     pub fn set_enabled_by_kind(&mut self, kind: VisualKind, enabled: bool) {
         if let Some(entry) = self.entry_mut_by_kind(kind)
-            && entry.slot.enabled != enabled
+            && entry.enabled != enabled
         {
-            entry.slot.enabled = enabled;
+            entry.enabled = enabled;
         }
     }
 
     pub fn apply_visual_settings(&mut self, settings: &VisualSettings) {
         for entry in &mut self.entries {
-            if let Some(module_settings) = settings.modules.get(&entry.slot.kind) {
+            if let Some(module_settings) = settings.modules.get(&entry.kind) {
                 if let Some(enabled) = module_settings.enabled {
-                    entry.slot.enabled = enabled;
+                    entry.enabled = enabled;
                 }
                 entry.module.apply_settings(module_settings);
                 entry.cached_content = entry.module.content();
@@ -744,7 +728,7 @@ impl VisualManager {
             let mut ordered_ids = Vec::with_capacity(settings.order.len());
             for kind in &settings.order {
                 if let Some(entry) = self.entry_by_kind(*kind) {
-                    ordered_ids.push(entry.slot.id);
+                    ordered_ids.push(entry.id);
                 }
             }
 
@@ -760,20 +744,13 @@ impl VisualManager {
                 break;
             }
 
-            let Some(current_index) = self.id_index.get(id).copied() else {
+            let Some(current_index) = self.entries.iter().position(|e| e.id == *id) else {
                 continue;
             };
 
-            if current_index == position {
-                continue;
+            if current_index != position {
+                self.entries.swap(position, current_index);
             }
-
-            self.entries.swap(position, current_index);
-
-            let left_id = self.entries[position].slot.id;
-            let right_id = self.entries[current_index].slot.id;
-            self.id_index.insert(left_id, position);
-            self.id_index.insert(right_id, current_index);
         }
     }
 
@@ -784,7 +761,7 @@ impl VisualManager {
 
         let format = meter_tap::current_format();
         for entry in &mut self.entries {
-            if entry.slot.enabled {
+            if entry.enabled {
                 entry.module.ingest(samples, format);
                 entry.cached_content = entry.module.content();
             }
