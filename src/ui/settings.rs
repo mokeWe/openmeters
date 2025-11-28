@@ -5,6 +5,7 @@ use crate::dsp::spectrogram::{FrequencyScale, SpectrogramConfig, WindowKind};
 use crate::dsp::spectrum::SpectrumConfig;
 use crate::dsp::stereometer::StereometerConfig;
 use crate::dsp::waveform::{DownsampleStrategy, WaveformConfig};
+use crate::ui::app::config::CaptureMode;
 use crate::ui::theme;
 use crate::ui::visualization::loudness::MeterMode;
 use crate::ui::visualization::visual_manager::VisualKind;
@@ -32,6 +33,8 @@ pub struct UiSettings {
     pub background_color: Option<ColorSetting>,
     #[serde(default)]
     pub decorations: bool,
+    #[serde(default)]
+    pub capture_mode: CaptureMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -596,6 +599,10 @@ impl SettingsManager {
 
     pub fn set_decorations(&mut self, enabled: bool) {
         self.data.decorations = enabled;
+    }
+
+    pub fn set_capture_mode(&mut self, mode: CaptureMode) {
+        self.data.capture_mode = mode;
     }
 
     pub fn save(&self) -> io::Result<()> {

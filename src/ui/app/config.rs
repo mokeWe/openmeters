@@ -90,12 +90,15 @@ impl ConfigPage {
         visual_manager: VisualManagerHandle,
         settings: SettingsHandle,
     ) -> Self {
-        let current_bg = settings
-            .borrow()
+        let settings_ref = settings.borrow();
+        let current_bg = settings_ref
             .settings()
             .background_color
             .map(|c| c.to_color())
             .unwrap_or(theme::BG_BASE);
+        let capture_mode = settings_ref.settings().capture_mode;
+        drop(settings_ref);
+
         let defaults = [theme::BG_BASE];
         let bg_palette = PaletteEditor::new(&[current_bg], &defaults);
 
@@ -109,7 +112,7 @@ impl ConfigPage {
             hardware_sink: HardwareSinkCache::new(),
             registry_ready: false,
             applications_expanded: false,
-            capture_mode: CaptureMode::Applications,
+            capture_mode,
             device_choices: Vec::new(),
             selected_device: DeviceSelection::Default,
             bg_palette,
@@ -165,6 +168,7 @@ impl ConfigPage {
                 if self.capture_mode != mode {
                     self.capture_mode = mode;
                     self.dispatch_capture_state();
+                    self.settings.update(|s| s.set_capture_mode(mode));
                 }
             }
             ConfigMessage::CaptureDeviceChanged(selection) => {
