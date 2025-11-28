@@ -28,13 +28,9 @@ use std::time::Duration;
 use tracing::{debug, error, info, warn};
 
 const REGISTRY_THREAD_NAME: &str = "openmeters-pw-registry";
-
-/// Metadata key instructing PipeWire where to route a node by object serial.
 const TARGET_OBJECT_KEY: &str = "target.object";
-/// Metadata key instructing PipeWire where to route a node by numeric node id.
 const TARGET_NODE_KEY: &str = "target.node";
 
-/// A single port-to-port link specification.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LinkSpec {
     pub output_node: u32,
@@ -43,12 +39,9 @@ pub struct LinkSpec {
     pub input_port: u32,
 }
 
-/// Command sent to the registry thread to perform actions.
 #[derive(Debug, Clone)]
 pub enum RegistryCommand {
-    /// Set the desired audio links. Links not in this set will be removed.
     SetLinks(Vec<LinkSpec>),
-    /// Route a node to a target using metadata properties.
     RouteNode {
         subject: u32,
         target_object: String,
@@ -89,23 +82,16 @@ pub fn spawn_registry() -> Result<AudioRegistryHandle> {
     }
 }
 
-/// Shared handle that exposes snapshots and subscriptions to the PipeWire registry.
-///
-/// Cloning the handle is cheap and safe across threads. Each clone can obtain a
-/// point-in-time snapshot or subscribe to live updates without coordinating with
-/// other subscribers.
 #[derive(Clone)]
 pub struct AudioRegistryHandle {
     runtime: RegistryRuntime,
 }
 
 impl AudioRegistryHandle {
-    /// Clone a point-in-time view of all known nodes, devices, and defaults.
     pub fn snapshot(&self) -> RegistrySnapshot {
         self.runtime.snapshot()
     }
 
-    /// Subscribe to ongoing registry snapshots; the iterator yields the initial state first.
     pub fn subscribe(&self) -> RegistryUpdates {
         let mut updates = self.runtime.subscribe();
         if updates.initial.is_none() {
@@ -114,20 +100,14 @@ impl AudioRegistryHandle {
         updates
     }
 
-    /// Send a command to the registry thread for execution.
-    ///
-    /// Commands are processed asynchronously by the registry thread. This method
-    /// returns immediately after enqueueing the command.
     pub fn send_command(&self, command: RegistryCommand) -> bool {
         self.runtime.send_command(command)
     }
 
-    /// Convenience method to set the desired audio links.
     pub fn set_links(&self, links: Vec<LinkSpec>) -> bool {
         self.send_command(RegistryCommand::SetLinks(links))
     }
 
-    /// Convenience method to route a node to a specific target.
     pub fn route_node(&self, application: &NodeInfo, sink: &NodeInfo) -> bool {
         let metadata =
             format_target_metadata(sink.object_serial(), sink.id, sink.display_name().as_str());
@@ -139,18 +119,12 @@ impl AudioRegistryHandle {
     }
 }
 
-/// Iterator that produces live snapshots of the PipeWire registry.
-///
-/// The first item yielded is always the current snapshot at the time the
-/// subscription was created. Subsequent items represent incremental changes
-/// observed by the registry worker thread.
 pub struct RegistryUpdates {
     initial: Option<RegistrySnapshot>,
     receiver: mpsc::Receiver<RegistrySnapshot>,
 }
 
 impl RegistryUpdates {
-    /// Block until the next snapshot is available; the first call returns the initial snapshot.
     pub fn recv(&mut self) -> Option<RegistrySnapshot> {
         if let Some(snapshot) = self.initial.take() {
             return Some(snapshot);
@@ -158,10 +132,6 @@ impl RegistryUpdates {
         self.receiver.recv().ok()
     }
 
-    /// Attempt to receive a snapshot within the provided timeout.
-    ///
-    /// Returns `Ok(Some(snapshot))` when an update arrives, `Ok(None)` on timeout,
-    /// and propagates `RecvTimeoutError::Disconnected` when the channel is closed.
     pub fn recv_timeout(
         &mut self,
         timeout: Duration,
@@ -186,11 +156,6 @@ impl Iterator for RegistryUpdates {
     }
 }
 
-/// Collection of registry state cloned for thread-safe consumption.
-///
-/// `RegistrySnapshot` is intentionally copy-on-write friendly: the background
-/// thread owns the canonical state, while readers receive cheap clones that can
-/// be sent across threads without additional locking.
 #[derive(Clone, Debug, Default)]
 pub struct RegistrySnapshot {
     pub serial: u64,
@@ -199,7 +164,6 @@ pub struct RegistrySnapshot {
     pub defaults: MetadataDefaults,
 }
 
-/// Human-friendly summary of a PipeWire target, including the resolved node label.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TargetDescription {
     pub display: String,
@@ -207,7 +171,6 @@ pub struct TargetDescription {
 }
 
 impl RegistrySnapshot {
-    /// Produce a human-readable description of a default target, including the raw metadata value.
     pub fn describe_default_target(&self, target: Option<&DefaultTarget>) -> TargetDescription {
         let raw = target.and_then(|t| t.name.as_deref()).unwrap_or("(none)");
 
@@ -222,11 +185,6 @@ impl RegistrySnapshot {
         }
     }
 
-    /// Attempt to resolve a metadata default to a known node in the snapshot.
-    ///
-    /// Resolution prefers an explicit node ID advertised with the metadata, and
-    /// falls back to case-insensitive name matching to cover daemons that only
-    /// publish target names.
     pub fn resolve_default_target<'a>(&'a self, target: &DefaultTarget) -> Option<&'a NodeInfo> {
         target
             .node_id
@@ -239,16 +197,10 @@ impl RegistrySnapshot {
             })
     }
 
-    /// Locate a node by comparing its name and description (case-insensitive) to `label`.
     pub fn find_node_by_label<'a>(&'a self, label: &str) -> Option<&'a NodeInfo> {
         self.nodes.iter().find(|node| node.matches_label(label))
     }
 
-    /// Iterate over application nodes that should be routed to the supplied sink.
-    ///
-    /// Candidates exclude the sink itself and focus on application-owned output
-    /// nodes with audio media classes, mirroring the logic the router needs when
-    /// issuing metadata overrides.
     pub fn route_candidates<'a>(
         &'a self,
         sink: &'a NodeInfo,
@@ -259,7 +211,6 @@ impl RegistrySnapshot {
     }
 }
 
-/// PipeWire node information extracted from registry announcements.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NodeInfo {
     pub id: u32,
@@ -275,7 +226,6 @@ pub struct NodeInfo {
 }
 
 impl NodeInfo {
-    /// Construct a `NodeInfo` from a PipeWire registry global announcement.
     pub fn from_global(global: &GlobalObject<&DictRef>) -> Self {
         let props = dict_to_map(global.props.as_ref().copied());
 
@@ -309,7 +259,6 @@ impl NodeInfo {
         }
     }
 
-    /// Best-effort display name favouring explicit node names over descriptions.
     pub fn display_name(&self) -> String {
         self.name
             .clone()
@@ -317,17 +266,14 @@ impl NodeInfo {
             .unwrap_or_else(|| format!("node#{}", self.id))
     }
 
-    /// Return the application name associated with this node, if present.
     pub fn app_name(&self) -> Option<&str> {
         self.properties.get(*pw::keys::APP_NAME).map(String::as_str)
     }
 
-    /// Retrieve the PipeWire object serial for this node, when advertised.
     pub fn object_serial(&self) -> Option<&str> {
         self.properties.get("object.serial").map(String::as_str)
     }
 
-    /// Evaluate whether the node label or description matches a given string ignoring ASCII case.
     pub fn matches_label(&self, label: &str) -> bool {
         self.name
             .as_deref()
@@ -338,11 +284,6 @@ impl NodeInfo {
                 .is_some_and(|value| value.eq_ignore_ascii_case(label))
     }
 
-    /// Determine whether this node should be routed to the provided sink.
-    ///
-    /// The policy mirrors WirePlumber defaults: we only target audio output
-    /// nodes owned by user applications, keeping system devices and input nodes
-    /// untouched.
     pub fn should_route_to(&self, sink: &Self) -> bool {
         self.id != sink.id && self.is_audio_application_output()
     }
@@ -357,7 +298,6 @@ impl NodeInfo {
             && self.app_name().is_some()
     }
 
-    /// Get output ports suitable for loopback (prefer monitors, fall back to regular outputs).
     pub fn output_ports_for_loopback(&self) -> Vec<GraphPort> {
         self.ports_for_loopback(
             |p| p.direction == PortDirection::Output && p.is_monitor,
@@ -365,7 +305,6 @@ impl NodeInfo {
         )
     }
 
-    /// Get input ports suitable for loopback (prefer non-monitors, fall back to any inputs).
     pub fn input_ports_for_loopback(&self) -> Vec<GraphPort> {
         self.ports_for_loopback(
             |p| p.direction == PortDirection::Input && !p.is_monitor,
@@ -397,7 +336,6 @@ impl NodeInfo {
     }
 }
 
-/// Default targets as reported by PipeWire metadata.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MetadataDefaults {
     pub audio_sink: Option<DefaultTarget>,
@@ -409,12 +347,11 @@ struct RegistryState {
     serial: u64,
     nodes: HashMap<u32, NodeInfo>,
     device_count: usize,
-    port_index: HashMap<u32, (u32, u32)>, // global_id -> (node_id, port_id)
+    port_index: HashMap<u32, (u32, u32)>,
     metadata_defaults: MetadataDefaults,
 }
 
 impl RegistryState {
-    /// Capture the current registry view into a snapshot suitable for sharing.
     fn snapshot(&self) -> RegistrySnapshot {
         let mut nodes: Vec<_> = self.nodes.values().cloned().collect();
         nodes.sort_by_key(|node| node.id);
@@ -427,7 +364,6 @@ impl RegistryState {
         }
     }
 
-    /// Insert or update a node, returning whether the state changed.
     fn upsert_node(&mut self, info: NodeInfo) -> bool {
         let needs_update = !matches!(
             self.nodes.get(&info.id),
@@ -443,7 +379,6 @@ impl RegistryState {
         needs_update
     }
 
-    /// Remove a node by ID, returning `true` when the registry view changed.
     fn remove_node(&mut self, id: u32) -> bool {
         if let Some(info) = self.nodes.remove(&id) {
             let fallback = info.name.or(info.description);
@@ -458,13 +393,11 @@ impl RegistryState {
         }
     }
 
-    /// Increment device count for a newly announced device.
     fn add_device(&mut self) {
         self.device_count += 1;
         self.bump_serial();
     }
 
-    /// Insert or update a port, attaching it to its parent node.
     fn upsert_port(&mut self, port: GraphPort) -> bool {
         let node_id = port.node_id;
         let port_id = port.port_id;
@@ -499,7 +432,6 @@ impl RegistryState {
         changed
     }
 
-    /// Remove a port by its global ID.
     fn remove_port(&mut self, global_id: u32) -> bool {
         let Some((node_id, port_id)) = self.port_index.remove(&global_id) else {
             return false;
@@ -514,7 +446,6 @@ impl RegistryState {
         }
     }
 
-    /// Apply a metadata change to the cached defaults map.
     fn apply_metadata_property(
         &mut self,
         metadata_id: u32,
@@ -539,7 +470,6 @@ impl RegistryState {
         changed
     }
 
-    /// Drop all cached properties coming from a metadata object that vanished.
     fn clear_metadata_defaults(&mut self, metadata_id: u32) -> bool {
         if self.metadata_defaults.clear_metadata(metadata_id) {
             self.reconcile_defaults();
@@ -560,7 +490,6 @@ impl RegistryState {
 }
 
 impl MetadataDefaults {
-    /// Update defaults based on a metadata property, tracking whether state changed.
     fn apply_update(
         &mut self,
         metadata_id: u32,
@@ -599,8 +528,6 @@ impl MetadataDefaults {
         }
     }
 
-    /// Ensure metadata targets point at live nodes when possible.
-    /// Ensure metadata targets point at live nodes when possible.
     fn reconcile_with_nodes(&mut self, nodes: &HashMap<u32, NodeInfo>) {
         for target in [&mut self.audio_sink, &mut self.audio_source]
             .into_iter()
@@ -633,7 +560,6 @@ impl MetadataDefaults {
         changed
     }
 
-    /// Clear any defaults resolved to the removed node and optionally backfill names.
     fn clear_node(&mut self, node_id: u32, fallback_name: Option<String>) -> bool {
         let mut changed = false;
         for slot in [&mut self.audio_sink, &mut self.audio_source] {
@@ -738,11 +664,9 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
         .get_registry_rc()
         .context("failed to obtain PipeWire registry")?;
 
-    // Set up command channel for link/routing operations
     let (command_tx, command_rx) = mpsc::channel::<RegistryCommand>();
     runtime.set_command_sender(command_tx);
 
-    // State for managing links and routing metadata
     let mut link_state = LinkState::new(core.clone());
     let routing_metadata: Rc<RefCell<Option<Metadata>>> = Rc::new(RefCell::new(None));
 
@@ -778,12 +702,10 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
 
     info!("[registry] PipeWire registry thread running");
 
-    // Main loop with command processing
     let loop_ref = mainloop.loop_();
     let mut commands_disconnected = false;
 
     loop {
-        // Process pending commands
         if !commands_disconnected {
             loop {
                 match command_rx.try_recv() {
@@ -799,7 +721,6 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
             }
         }
 
-        // Run the PipeWire main loop for a short iteration
         if loop_ref.iterate(Duration::from_millis(50)) < 0 {
             break;
         }
@@ -807,14 +728,12 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
 
     info!("[registry] PipeWire registry loop exited");
 
-    // Drop resources tied to the loop before returning.
     drop(registry);
     drop(context);
 
     Ok(())
 }
 
-/// State for managing audio links within the registry thread.
 struct LinkState {
     core: pw::core::CoreRc,
     active_links: FxHashMap<LinkSpec, pw::link::Link>,
@@ -831,7 +750,6 @@ impl LinkState {
     fn apply_links(&mut self, desired: Vec<LinkSpec>) {
         let desired_set: FxHashSet<LinkSpec> = desired.iter().copied().collect();
 
-        // Remove links that are no longer desired
         self.active_links.retain(|spec, _| {
             let keep = desired_set.contains(spec);
             if !keep {
@@ -843,7 +761,6 @@ impl LinkState {
             keep
         });
 
-        // Create new links
         for spec in desired {
             if self.active_links.contains_key(&spec) {
                 continue;
@@ -924,8 +841,6 @@ fn handle_global_added(
     metadata_bindings: &Rc<RefCell<HashMap<u32, MetadataBinding>>>,
     routing_metadata: &Rc<RefCell<Option<Metadata>>>,
 ) {
-    // Each global represents a PipeWire object entering the graph. We bind and
-    // mirror only the objects we care about (nodes, devices, ports, metadata).
     match global.type_ {
         ObjectType::Node => {
             let info = NodeInfo::from_global(global);
@@ -960,8 +875,6 @@ fn handle_global_removed(
     runtime: &RegistryRuntime,
     metadata_bindings: &Rc<RefCell<HashMap<u32, MetadataBinding>>>,
 ) {
-    // Removal events arrive for any global object. Try ports, then nodes,
-    // devices, and finally metadata proxies that we previously bound.
     if runtime.mutate(|state| state.remove_port(id)) {
         return;
     }
@@ -975,7 +888,6 @@ fn handle_global_removed(
     }
 }
 
-/// Metadata objects are probed in this preference order when multiple exist.
 const PREFERRED_METADATA_NAMES: &[&str] = &["settings", "default"];
 
 fn process_metadata_added(
@@ -1001,7 +913,6 @@ fn process_metadata_added(
         }
     };
 
-    // Check if this is a preferred metadata for routing
     let is_preferred = metadata_name
         .as_deref()
         .map(|candidate| {
@@ -1011,7 +922,6 @@ fn process_metadata_added(
         })
         .unwrap_or(false);
 
-    // Store as routing metadata if preferred, or if we don't have one yet
     {
         let mut routing_ref = routing_metadata.borrow_mut();
         if (is_preferred || routing_ref.is_none())
@@ -1058,8 +968,6 @@ fn handle_metadata_property(
     type_hint: Option<&str>,
     value: Option<&str>,
 ) {
-    // Any change to default sink/source metadata must be reflected in the
-    // cached defaults and broadcast to subscribers.
     runtime
         .mutate(|state| state.apply_metadata_property(metadata_id, subject, key, type_hint, value));
 }
