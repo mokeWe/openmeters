@@ -195,7 +195,7 @@ impl Iterator for RegistryUpdates {
 pub struct RegistrySnapshot {
     pub serial: u64,
     pub nodes: Vec<NodeInfo>,
-    pub devices: Vec<DeviceInfo>,
+    pub device_count: usize,
     pub defaults: MetadataDefaults,
 }
 
@@ -397,35 +397,6 @@ impl NodeInfo {
     }
 }
 
-/// PipeWire device information extracted from registry announcements.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct DeviceInfo {
-    pub id: u32,
-    pub name: Option<String>,
-    pub description: Option<String>,
-    pub properties: HashMap<String, String>,
-}
-
-impl DeviceInfo {
-    /// Construct a `DeviceInfo` from a PipeWire registry global announcement.
-    pub fn from_global(global: &GlobalObject<&DictRef>) -> Self {
-        let props = dict_to_map(global.props.as_ref().copied());
-        let name = props.get("device.name").cloned();
-        let description = props
-            .get(*pw::keys::DEVICE_DESCRIPTION)
-            .cloned()
-            .or_else(|| props.get("device.product.name").cloned())
-            .or_else(|| name.clone());
-
-        DeviceInfo {
-            id: global.id,
-            name,
-            description,
-            properties: props,
-        }
-    }
-}
-
 /// Default targets as reported by PipeWire metadata.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MetadataDefaults {
@@ -437,7 +408,7 @@ pub struct MetadataDefaults {
 struct RegistryState {
     serial: u64,
     nodes: HashMap<u32, NodeInfo>,
-    devices: HashMap<u32, DeviceInfo>,
+    device_count: usize,
     port_index: HashMap<u32, (u32, u32)>, // global_id -> (node_id, port_id)
     metadata_defaults: MetadataDefaults,
 }
@@ -447,13 +418,11 @@ impl RegistryState {
     fn snapshot(&self) -> RegistrySnapshot {
         let mut nodes: Vec<_> = self.nodes.values().cloned().collect();
         nodes.sort_by_key(|node| node.id);
-        let mut devices: Vec<_> = self.devices.values().cloned().collect();
-        devices.sort_by_key(|device| device.id);
 
         RegistrySnapshot {
             serial: self.serial,
             nodes,
-            devices,
+            device_count: self.device_count,
             defaults: self.metadata_defaults.clone(),
         }
     }
@@ -489,29 +458,10 @@ impl RegistryState {
         }
     }
 
-    /// Insert or update a device description.
-    fn upsert_device(&mut self, info: DeviceInfo) -> bool {
-        let needs_update = !matches!(
-            self.devices.get(&info.id),
-            Some(existing) if existing == &info
-        );
-
-        if needs_update {
-            self.devices.insert(info.id, info);
-            self.bump_serial();
-        }
-
-        needs_update
-    }
-
-    /// Remove a device by ID.
-    fn remove_device(&mut self, id: u32) -> bool {
-        if self.devices.remove(&id).is_some() {
-            self.bump_serial();
-            true
-        } else {
-            false
-        }
+    /// Increment device count for a newly announced device.
+    fn add_device(&mut self) {
+        self.device_count += 1;
+        self.bump_serial();
     }
 
     /// Insert or update a port, attaching it to its parent node.
@@ -982,8 +932,10 @@ fn handle_global_added(
             runtime.mutate(move |state| state.upsert_node(info));
         }
         ObjectType::Device => {
-            let info = DeviceInfo::from_global(global);
-            runtime.mutate(move |state| state.upsert_device(info));
+            runtime.mutate(|state| {
+                state.add_device();
+                true
+            });
         }
         ObjectType::Port => {
             if let Some(port) = GraphPort::from_global(global) {
@@ -1015,10 +967,6 @@ fn handle_global_removed(
     }
 
     if runtime.mutate(|state| state.remove_node(id)) {
-        return;
-    }
-
-    if runtime.mutate(|state| state.remove_device(id)) {
         return;
     }
 
