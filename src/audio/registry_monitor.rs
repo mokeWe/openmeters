@@ -1,4 +1,4 @@
-use crate::audio::{VIRTUAL_SINK_NAME, pw_loopback, pw_registry, pw_router};
+use crate::audio::{VIRTUAL_SINK_NAME, pw_registry};
 use crate::ui::RoutingCommand;
 use crate::ui::app::config::{CaptureMode, DeviceSelection};
 use crate::util::log;
@@ -6,27 +6,23 @@ use crate::util::pipewire::pair_ports_by_channel;
 use async_channel::Sender;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
-const ROUTER_RECOVERY_DELAY: Duration = Duration::from_millis(500);
-const ROUTER_RETRY_DELAY: Duration = Duration::from_secs(5);
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
-const ROUTE_RETRY_INTERVAL: Duration = Duration::from_millis(350);
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
 pub fn init_registry_monitor(
     command_rx: mpsc::Receiver<RoutingCommand>,
     snapshot_tx: Sender<pw_registry::RegistrySnapshot>,
 ) -> Option<pw_registry::AudioRegistryHandle> {
     let handle = pw_registry::spawn_registry()
-        .inspect_err(|err| error!("[registry] failed to start PipeWire registry: {err:?}"))
+        .inspect_err(|err| tracing::error!("[registry] failed to start PipeWire registry: {err:?}"))
         .ok()?;
 
     let handle_for_thread = handle.clone();
     std::thread::Builder::new()
         .name("openmeters-registry-monitor".into())
         .spawn(move || run_monitor_loop(handle_for_thread, command_rx, snapshot_tx))
-        .inspect_err(|err| error!("[registry] failed to spawn monitor thread: {err}"))
+        .inspect_err(|err| tracing::error!("[registry] failed to spawn monitor thread: {err}"))
         .ok()?;
 
     Some(handle)
@@ -38,11 +34,7 @@ fn run_monitor_loop(
     snapshot_tx: Sender<pw_registry::RegistrySnapshot>,
 ) {
     let mut updates = handle.subscribe();
-    let router = pw_router::Router::new()
-        .inspect_err(|err| error!("[router] failed to initialise PipeWire router: {err:?}"))
-        .ok();
-
-    let mut routing = RoutingManager::new(router, command_rx);
+    let mut routing = RoutingManager::new(handle, command_rx);
 
     loop {
         if routing.apply_pending_commands() {
@@ -61,7 +53,7 @@ fn run_monitor_loop(
                     break;
                 }
             }
-            Ok(None) | Err(mpsc::RecvTimeoutError::Timeout) => routing.handle_idle(),
+            Ok(None) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
@@ -70,17 +62,15 @@ fn run_monitor_loop(
 }
 
 struct RoutingManager {
-    router: Option<pw_router::Router>,
+    handle: pw_registry::AudioRegistryHandle,
     commands: mpsc::Receiver<RoutingCommand>,
     disabled_nodes: FxHashSet<u32>,
-    routed_nodes: FxHashMap<u32, RouteState>,
+    routed_nodes: RoutedNodes,
     capture_mode: CaptureMode,
     device_target: DeviceSelection,
     snapshot: Option<pw_registry::RegistrySnapshot>,
     cached_target: Option<(u32, String)>,
-    router_retry_after: Option<Instant>,
-    router_epoch: u64,
-    current_links: Vec<pw_loopback::LinkSpec>,
+    current_links: Vec<pw_registry::LinkSpec>,
     sink_missing_warned: bool,
     device_missing_warned: bool,
 }
@@ -91,52 +81,17 @@ enum RouteTarget {
     Hardware(u32),
 }
 
-#[derive(Debug, Clone)]
-struct RouteState {
-    target: RouteTarget,
-    last_attempt: Option<Instant>,
-    failures: u32,
-    epoch: u64,
-}
-
-impl RouteState {
-    fn new(target: RouteTarget) -> Self {
-        Self {
-            target,
-            last_attempt: None,
-            failures: 0,
-            epoch: 0,
-        }
-    }
-
-    fn mark_success(&mut self, target: RouteTarget, now: Instant, epoch: u64) {
-        self.target = target;
-        self.last_attempt = Some(now);
-        self.failures = 0;
-        self.epoch = epoch;
-    }
-
-    fn mark_failure(&mut self, target: RouteTarget, now: Instant) {
-        self.target = target;
-        self.last_attempt = Some(now);
-        self.failures = self.failures.saturating_add(1);
-    }
-
-    fn should_retry(&self, desired: RouteTarget, now: Instant, epoch: u64) -> bool {
-        self.target != desired
-            || self.epoch < epoch
-            || (self.failures > 0
-                && self
-                    .last_attempt
-                    .is_none_or(|last| now.duration_since(last) >= ROUTE_RETRY_INTERVAL))
-    }
-}
+/// Tracks the last successfully routed target for a node.
+/// Re-routing only occurs when the desired target changes.
+type RoutedNodes = FxHashMap<u32, RouteTarget>;
 
 impl RoutingManager {
-    fn new(router: Option<pw_router::Router>, commands: mpsc::Receiver<RoutingCommand>) -> Self {
+    fn new(
+        handle: pw_registry::AudioRegistryHandle,
+        commands: mpsc::Receiver<RoutingCommand>,
+    ) -> Self {
         Self {
-            router_epoch: router.is_some().into(),
-            router,
+            handle,
             commands,
             disabled_nodes: FxHashSet::default(),
             routed_nodes: FxHashMap::default(),
@@ -144,7 +99,6 @@ impl RoutingManager {
             device_target: DeviceSelection::Default,
             snapshot: None,
             cached_target: None,
-            router_retry_after: None,
             current_links: Vec::new(),
             sink_missing_warned: false,
             device_missing_warned: false,
@@ -241,104 +195,25 @@ impl RoutingManager {
         target: &pw_registry::NodeInfo,
         desired: RouteTarget,
     ) {
-        let now = Instant::now();
-        let should_route = self
-            .routed_nodes
-            .get(&node.id)
-            .is_none_or(|state| state.should_retry(desired, now, self.router_epoch));
-
-        if !should_route {
+        // Only route if this is a new node or the target has changed
+        if self.routed_nodes.get(&node.id) == Some(&desired) {
             return;
         }
 
-        let Some(router) = self.ensure_router() else {
-            return;
-        };
-
-        let result = router.route_application_to_sink(node, target);
-        let state = self
-            .routed_nodes
-            .entry(node.id)
-            .or_insert_with(|| RouteState::new(desired));
-
-        match result {
-            Ok(()) => {
-                state.mark_success(desired, now, self.router_epoch);
-                let action = if matches!(desired, RouteTarget::Virtual(_)) {
-                    "routed"
-                } else {
-                    "restored"
-                };
-                info!(
-                    "[router] {action} '{}' #{} -> '{}' #{}",
-                    node.display_name(),
-                    node.id,
-                    target.display_name(),
-                    target.id
-                );
-            }
-            Err(err) => {
-                error!(
-                    "[router] route failed '{}' #{}: {err:?}",
-                    node.display_name(),
-                    node.id
-                );
-                state.mark_failure(desired, now);
-                self.router = None;
-                self.router_retry_after = Some(now + ROUTER_RECOVERY_DELAY);
-            }
-        }
-    }
-
-    fn ensure_router(&mut self) -> Option<&pw_router::Router> {
-        if self.router.as_ref().is_some_and(|r| r.is_healthy()) {
-            return self.router.as_ref();
-        }
-
-        if self.router.is_some() {
-            warn!("[router] detected stale metadata proxy; scheduling reconnection");
-            self.router = None;
-            self.router_retry_after = Some(Instant::now() + ROUTER_RECOVERY_DELAY);
-        }
-
-        let now = Instant::now();
-        if self.router_retry_after.is_some_and(|t| now < t) {
-            return None;
-        }
-
-        match pw_router::Router::new() {
-            Ok(router) => {
-                info!("[router] reinitialised PipeWire router connection");
-                self.router = Some(router);
-                self.router_retry_after = None;
-                self.router_epoch = self.router_epoch.wrapping_add(1).max(1);
-            }
-            Err(err) => {
-                error!("[router] failed to reinitialise router: {err:?}");
-                self.router_retry_after = Some(now + ROUTER_RETRY_DELAY);
-            }
-        }
-
-        self.router.as_ref()
-    }
-
-    fn handle_idle(&mut self) {
-        if self.router.is_none() {
-            self.ensure_router();
-        }
-
-        let now = Instant::now();
-        if !self
-            .routed_nodes
-            .values()
-            .any(|s| s.should_retry(s.target, now, self.router_epoch))
-        {
-            return;
-        }
-
-        if let Some(snapshot) = self.snapshot.take() {
-            self.apply_snapshot(&snapshot, false);
-            self.snapshot = Some(snapshot);
+        if self.handle.route_node(node, target) {
+            let action = if matches!(desired, RouteTarget::Virtual(_)) {
+                "routed"
+            } else {
+                "restored"
+            };
+            info!(
+                "[router] {action} '{}' #{} -> '{}' #{}",
+                node.display_name(),
+                node.id,
+                target.display_name(),
+                target.id
+            );
+            self.routed_nodes.insert(node.id, desired);
         }
     }
 
@@ -370,7 +245,7 @@ impl RoutingManager {
     fn compute_desired_links(
         &mut self,
         snapshot: &pw_registry::RegistrySnapshot,
-    ) -> Vec<pw_loopback::LinkSpec> {
+    ) -> Vec<pw_registry::LinkSpec> {
         let Some(openmeters_sink) = snapshot.find_node_by_label(VIRTUAL_SINK_NAME) else {
             return Vec::new();
         };
@@ -440,7 +315,7 @@ impl RoutingManager {
         let pairs = pair_ports_by_channel(source_ports, target_ports);
         pairs
             .into_iter()
-            .map(|(out_port, in_port)| pw_loopback::LinkSpec {
+            .map(|(out_port, in_port)| pw_registry::LinkSpec {
                 output_node: source_node.id,
                 output_port: out_port.port_id,
                 input_node: target_node.id,
@@ -473,8 +348,8 @@ impl RoutingManager {
         None
     }
 
-    fn ensure_links(&mut self, desired: Vec<pw_loopback::LinkSpec>) {
-        if self.current_links != desired && pw_loopback::set_links(desired.clone()) {
+    fn ensure_links(&mut self, desired: Vec<pw_registry::LinkSpec>) {
+        if self.current_links != desired && self.handle.set_links(desired.clone()) {
             self.current_links = desired;
         }
     }

@@ -1,9 +1,14 @@
 //! PipeWire registry observer service.
+//!
+//! This module provides a unified PipeWire connection that:
+//! - Observes the graph (nodes, devices, ports, metadata)
+//! - Creates and manages audio links between ports
+//! - Sets routing metadata on application nodes
 
 use crate::util::dict_to_map;
 use crate::util::pipewire::{
     DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KEY, GraphPort, PortDirection,
-    derive_node_direction, parse_metadata_name,
+    create_passive_audio_link, derive_node_direction, format_target_metadata, parse_metadata_name,
 };
 pub use crate::util::pipewire::{DefaultTarget, NodeDirection};
 use anyhow::{Context, Result};
@@ -13,15 +18,43 @@ use pw::metadata::{Metadata, MetadataListener};
 use pw::registry::{GlobalObject, RegistryRc};
 use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 const REGISTRY_THREAD_NAME: &str = "openmeters-pw-registry";
+
+/// Metadata key instructing PipeWire where to route a node by object serial.
+const TARGET_OBJECT_KEY: &str = "target.object";
+/// Metadata key instructing PipeWire where to route a node by numeric node id.
+const TARGET_NODE_KEY: &str = "target.node";
+
+/// A single port-to-port link specification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LinkSpec {
+    pub output_node: u32,
+    pub output_port: u32,
+    pub input_node: u32,
+    pub input_port: u32,
+}
+
+/// Command sent to the registry thread to perform actions.
+#[derive(Debug, Clone)]
+pub enum RegistryCommand {
+    /// Set the desired audio links. Links not in this set will be removed.
+    SetLinks(Vec<LinkSpec>),
+    /// Route a node to a target using metadata properties.
+    RouteNode {
+        subject: u32,
+        target_object: String,
+        target_node: String,
+    },
+}
 
 static RUNTIME: OnceLock<RegistryRuntime> = OnceLock::new();
 pub fn spawn_registry() -> Result<AudioRegistryHandle> {
@@ -79,6 +112,30 @@ impl AudioRegistryHandle {
             updates.initial = Some(self.snapshot());
         }
         updates
+    }
+
+    /// Send a command to the registry thread for execution.
+    ///
+    /// Commands are processed asynchronously by the registry thread. This method
+    /// returns immediately after enqueueing the command.
+    pub fn send_command(&self, command: RegistryCommand) -> bool {
+        self.runtime.send_command(command)
+    }
+
+    /// Convenience method to set the desired audio links.
+    pub fn set_links(&self, links: Vec<LinkSpec>) -> bool {
+        self.send_command(RegistryCommand::SetLinks(links))
+    }
+
+    /// Convenience method to route a node to a specific target.
+    pub fn route_node(&self, application: &NodeInfo, sink: &NodeInfo) -> bool {
+        let metadata =
+            format_target_metadata(sink.object_serial(), sink.id, sink.display_name().as_str());
+        self.send_command(RegistryCommand::RouteNode {
+            subject: application.id,
+            target_object: metadata.target_object,
+            target_node: metadata.target_node,
+        })
     }
 }
 
@@ -647,11 +704,30 @@ impl MetadataDefaults {
 struct RegistryRuntime {
     state: Arc<RwLock<RegistryState>>,
     watchers: Arc<RwLock<Vec<mpsc::Sender<RegistrySnapshot>>>>,
+    commands: Arc<RwLock<Option<mpsc::Sender<RegistryCommand>>>>,
 }
 
 impl RegistryRuntime {
     fn new() -> Self {
         Self::default()
+    }
+
+    fn set_command_sender(&self, sender: mpsc::Sender<RegistryCommand>) {
+        *self.commands.write() = Some(sender);
+    }
+
+    fn send_command(&self, command: RegistryCommand) -> bool {
+        if let Some(sender) = self.commands.read().as_ref() {
+            if sender.send(command).is_err() {
+                warn!("[registry] failed to send command; channel closed");
+                false
+            } else {
+                true
+            }
+        } else {
+            warn!("[registry] command channel not initialised");
+            false
+        }
     }
 
     fn snapshot(&self) -> RegistrySnapshot {
@@ -712,6 +788,14 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
         .get_registry_rc()
         .context("failed to obtain PipeWire registry")?;
 
+    // Set up command channel for link/routing operations
+    let (command_tx, command_rx) = mpsc::channel::<RegistryCommand>();
+    runtime.set_command_sender(command_tx);
+
+    // State for managing links and routing metadata
+    let mut link_state = LinkState::new(core.clone());
+    let routing_metadata: Rc<RefCell<Option<Metadata>>> = Rc::new(RefCell::new(None));
+
     let metadata_bindings: Rc<RefCell<HashMap<u32, MetadataBinding>>> =
         Rc::new(RefCell::new(HashMap::new()));
 
@@ -720,6 +804,7 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
     let metadata_for_removed = Rc::clone(&metadata_bindings);
     let runtime_for_added = runtime.clone();
     let runtime_for_removed = runtime.clone();
+    let routing_metadata_for_added = Rc::clone(&routing_metadata);
 
     let _registry_listener = registry
         .add_listener_local()
@@ -729,6 +814,7 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
                 global,
                 &runtime_for_added,
                 &metadata_for_added,
+                &routing_metadata_for_added,
             );
         })
         .global_remove(move |id| {
@@ -741,7 +827,34 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
     }
 
     info!("[registry] PipeWire registry thread running");
-    mainloop.run();
+
+    // Main loop with command processing
+    let loop_ref = mainloop.loop_();
+    let mut commands_disconnected = false;
+
+    loop {
+        // Process pending commands
+        if !commands_disconnected {
+            loop {
+                match command_rx.try_recv() {
+                    Ok(command) => {
+                        handle_command(command, &mut link_state, &routing_metadata, &mainloop);
+                    }
+                    Err(mpsc::TryRecvError::Empty) => break,
+                    Err(mpsc::TryRecvError::Disconnected) => {
+                        commands_disconnected = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // Run the PipeWire main loop for a short iteration
+        if loop_ref.iterate(Duration::from_millis(50)) < 0 {
+            break;
+        }
+    }
+
     info!("[registry] PipeWire registry loop exited");
 
     // Drop resources tied to the loop before returning.
@@ -751,11 +864,115 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
     Ok(())
 }
 
+/// State for managing audio links within the registry thread.
+struct LinkState {
+    core: pw::core::CoreRc,
+    active_links: FxHashMap<LinkSpec, pw::link::Link>,
+}
+
+impl LinkState {
+    fn new(core: pw::core::CoreRc) -> Self {
+        Self {
+            core,
+            active_links: FxHashMap::default(),
+        }
+    }
+
+    fn apply_links(&mut self, desired: Vec<LinkSpec>) {
+        let desired_set: FxHashSet<LinkSpec> = desired.iter().copied().collect();
+
+        // Remove links that are no longer desired
+        self.active_links.retain(|spec, _| {
+            let keep = desired_set.contains(spec);
+            if !keep {
+                debug!(
+                    "[registry] removed link {}:{} -> {}:{}",
+                    spec.output_node, spec.output_port, spec.input_node, spec.input_port
+                );
+            }
+            keep
+        });
+
+        // Create new links
+        for spec in desired {
+            if self.active_links.contains_key(&spec) {
+                continue;
+            }
+
+            match create_passive_audio_link(
+                &self.core,
+                spec.output_node,
+                spec.output_port,
+                spec.input_node,
+                spec.input_port,
+            ) {
+                Ok(link) => {
+                    debug!(
+                        "[registry] linked {}:{} -> {}:{}",
+                        spec.output_node, spec.output_port, spec.input_node, spec.input_port
+                    );
+                    self.active_links.insert(spec, link);
+                }
+                Err(err) => {
+                    error!(
+                        "[registry] link failed {}:{} -> {}:{}: {err}",
+                        spec.output_node, spec.output_port, spec.input_node, spec.input_port
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn handle_command(
+    command: RegistryCommand,
+    link_state: &mut LinkState,
+    routing_metadata: &Rc<RefCell<Option<Metadata>>>,
+    mainloop: &pw::main_loop::MainLoopRc,
+) {
+    match command {
+        RegistryCommand::SetLinks(desired) => {
+            link_state.apply_links(desired);
+        }
+        RegistryCommand::RouteNode {
+            subject,
+            target_object,
+            target_node,
+        } => {
+            if let Some(metadata) = routing_metadata.borrow().as_ref() {
+                let loop_ref = mainloop.loop_();
+
+                metadata.set_property(
+                    subject,
+                    TARGET_OBJECT_KEY,
+                    Some("Spa:Id"),
+                    Some(&target_object),
+                );
+                loop_ref.iterate(Duration::from_millis(10));
+
+                metadata.set_property(subject, TARGET_NODE_KEY, Some("Spa:Id"), Some(&target_node));
+                loop_ref.iterate(Duration::from_millis(10));
+
+                debug!(
+                    "[registry] routed node {} -> object={}, node={}",
+                    subject, target_object, target_node
+                );
+            } else {
+                warn!(
+                    "[registry] cannot route node {}; no metadata bound",
+                    subject
+                );
+            }
+        }
+    }
+}
+
 fn handle_global_added(
     registry: &RegistryRc,
     global: &GlobalObject<&DictRef>,
     runtime: &RegistryRuntime,
     metadata_bindings: &Rc<RefCell<HashMap<u32, MetadataBinding>>>,
+    routing_metadata: &Rc<RefCell<Option<Metadata>>>,
 ) {
     // Each global represents a PipeWire object entering the graph. We bind and
     // mirror only the objects we care about (nodes, devices, ports, metadata).
@@ -774,7 +991,13 @@ fn handle_global_added(
             }
         }
         ObjectType::Metadata => {
-            process_metadata_added(registry, global, runtime, metadata_bindings);
+            process_metadata_added(
+                registry,
+                global,
+                runtime,
+                metadata_bindings,
+                routing_metadata,
+            );
         }
         _ => {}
     }
@@ -804,16 +1027,23 @@ fn handle_global_removed(
     }
 }
 
+/// Metadata objects are probed in this preference order when multiple exist.
+const PREFERRED_METADATA_NAMES: &[&str] = &["settings", "default"];
+
 fn process_metadata_added(
     registry: &RegistryRc,
     global: &GlobalObject<&DictRef>,
     runtime: &RegistryRuntime,
     metadata_bindings: &Rc<RefCell<HashMap<u32, MetadataBinding>>>,
+    routing_metadata: &Rc<RefCell<Option<Metadata>>>,
 ) {
     let metadata_id = global.id;
     if metadata_bindings.borrow().contains_key(&metadata_id) {
         return;
     }
+
+    let props = dict_to_map(global.props.as_ref().copied());
+    let metadata_name = props.get("metadata.name").cloned();
 
     let metadata = match registry.bind::<Metadata, _>(global) {
         Ok(metadata) => metadata,
@@ -822,6 +1052,30 @@ fn process_metadata_added(
             return;
         }
     };
+
+    // Check if this is a preferred metadata for routing
+    let is_preferred = metadata_name
+        .as_deref()
+        .map(|candidate| {
+            PREFERRED_METADATA_NAMES
+                .iter()
+                .any(|preferred| preferred.eq_ignore_ascii_case(candidate))
+        })
+        .unwrap_or(false);
+
+    // Store as routing metadata if preferred, or if we don't have one yet
+    {
+        let mut routing_ref = routing_metadata.borrow_mut();
+        if (is_preferred || routing_ref.is_none())
+            && let Ok(routing_copy) = registry.bind::<Metadata, _>(global)
+        {
+            *routing_ref = Some(routing_copy);
+            info!(
+                "[registry] using metadata '{}' for routing",
+                metadata_name.as_deref().unwrap_or("unnamed")
+            );
+        }
+    }
 
     let runtime_for_listener = runtime.clone();
     let listener = metadata

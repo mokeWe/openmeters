@@ -2,7 +2,7 @@ mod audio;
 mod dsp;
 mod ui;
 mod util;
-use audio::{pw_loopback, pw_registry, pw_virtual_sink, registry_monitor};
+use audio::{pw_registry, pw_virtual_sink, registry_monitor};
 use std::sync::{Arc, mpsc};
 use ui::{RoutingCommand, UiConfig};
 use util::telemetry;
@@ -26,7 +26,6 @@ fn main() {
     let _registry_handle = registry_monitor::init_registry_monitor(routing_rx, snapshot_tx.clone());
 
     pw_virtual_sink::run();
-    pw_loopback::run();
 
     let audio_stream = audio::meter_tap::audio_sample_stream();
 
