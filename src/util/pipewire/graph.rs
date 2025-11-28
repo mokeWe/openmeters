@@ -5,57 +5,6 @@ use pw::spa::utils::dict::DictRef;
 use std::collections::{HashMap, VecDeque};
 use tracing::warn;
 
-/// Descriptor for a PipeWire node present in the graph.
-#[derive(Clone, Debug)]
-pub struct GraphNode {
-    id: u32,
-    name: Option<String>,
-    description: Option<String>,
-}
-
-impl GraphNode {
-    pub fn from_global(global: &GlobalObject<&DictRef>) -> Option<Self> {
-        let props = dict_to_map(global.props.as_ref().copied());
-        Some(Self::from_props(global.id, &props))
-    }
-
-    #[inline]
-    pub fn id(&self) -> u32 {
-        self.id
-    }
-
-    pub fn from_props(id: u32, props: &HashMap<String, String>) -> Self {
-        let name = props.get(*pw::keys::NODE_NAME).cloned();
-        let description = props
-            .get(*pw::keys::NODE_DESCRIPTION)
-            .cloned()
-            .or_else(|| props.get("media.name").cloned())
-            .or_else(|| name.clone());
-
-        Self {
-            id,
-            name,
-            description,
-        }
-    }
-
-    pub fn name(&self) -> Option<&str> {
-        self.name.as_deref()
-    }
-
-    pub fn description(&self) -> Option<&str> {
-        self.description.as_deref()
-    }
-
-    pub fn matches_name(&self, candidate: &str) -> bool {
-        self.name.as_deref() == Some(candidate) || self.description.as_deref() == Some(candidate)
-    }
-
-    pub fn has_name(&self, needle: &str) -> bool {
-        self.name.as_deref() == Some(needle)
-    }
-}
-
 /// Direction of a PipeWire port.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PortDirection {
@@ -75,7 +24,7 @@ impl PortDirection {
 }
 
 /// Representation of a port exposed by a PipeWire node.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct GraphPort {
     pub global_id: u32,
     pub port_id: u32,

@@ -2,11 +2,12 @@ use crate::audio::{VIRTUAL_SINK_NAME, pw_loopback, pw_registry, pw_router};
 use crate::ui::RoutingCommand;
 use crate::ui::app::config::{CaptureMode, DeviceSelection};
 use crate::util::log;
+use crate::util::pipewire::pair_ports_by_channel;
 use async_channel::Sender;
 use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 const ROUTER_RECOVERY_DELAY: Duration = Duration::from_millis(500);
 const ROUTER_RETRY_DELAY: Duration = Duration::from_secs(5);
@@ -79,7 +80,7 @@ struct RoutingManager {
     cached_target: Option<(u32, String)>,
     router_retry_after: Option<Instant>,
     router_epoch: u64,
-    loopback_mode: Option<pw_loopback::LoopbackMode>,
+    current_links: Vec<pw_loopback::LinkSpec>,
     sink_missing_warned: bool,
     device_missing_warned: bool,
 }
@@ -144,7 +145,7 @@ impl RoutingManager {
             snapshot: None,
             cached_target: None,
             router_retry_after: None,
-            loopback_mode: None,
+            current_links: Vec::new(),
             sink_missing_warned: false,
             device_missing_warned: false,
         }
@@ -204,8 +205,9 @@ impl RoutingManager {
     fn apply_snapshot(&mut self, snapshot: &pw_registry::RegistrySnapshot, log_sink_missing: bool) {
         self.cleanup_stale_nodes(snapshot);
 
-        let desired_loopback = self.compute_loopback_mode(snapshot);
-        self.ensure_loopback_mode(desired_loopback);
+        // Compute and apply desired links
+        let desired_links = self.compute_desired_links(snapshot);
+        self.ensure_links(desired_links);
 
         let Some(sink) = snapshot.find_node_by_label(VIRTUAL_SINK_NAME) else {
             if log_sink_missing && !self.sink_missing_warned {
@@ -365,39 +367,115 @@ impl RoutingManager {
         None
     }
 
-    fn compute_loopback_mode(
+    fn compute_desired_links(
         &mut self,
         snapshot: &pw_registry::RegistrySnapshot,
-    ) -> pw_loopback::LoopbackMode {
-        use pw_loopback::{DeviceCaptureTarget, LoopbackMode};
+    ) -> Vec<pw_loopback::LinkSpec> {
+        let Some(openmeters_sink) = snapshot.find_node_by_label(VIRTUAL_SINK_NAME) else {
+            return Vec::new();
+        };
 
-        match (self.capture_mode, self.device_target) {
+        // Determine source and target nodes based on capture mode
+        let (source_node, target_node) = match (self.capture_mode, self.device_target) {
             (CaptureMode::Applications, _) => {
+                // Forward: openmeters.sink -> default hardware sink
                 self.device_missing_warned = false;
-                LoopbackMode::ForwardToDefaultSink
+                let Some(hardware_sink) = self.resolve_default_sink_node(snapshot) else {
+                    return Vec::new();
+                };
+                (openmeters_sink, hardware_sink)
             }
             (CaptureMode::Device, DeviceSelection::Default) => {
+                // Capture from default: default hardware sink -> openmeters.sink
                 self.device_missing_warned = false;
-                LoopbackMode::CaptureFromDevice(DeviceCaptureTarget::Default)
+                let Some(hardware_sink) = self.resolve_default_sink_node(snapshot) else {
+                    return Vec::new();
+                };
+                (hardware_sink, openmeters_sink)
             }
             (CaptureMode::Device, DeviceSelection::Node(id)) => {
-                if snapshot.nodes.iter().any(|n| n.id == id) {
-                    self.device_missing_warned = false;
-                    LoopbackMode::CaptureFromDevice(DeviceCaptureTarget::Node(id))
-                } else {
-                    if !self.device_missing_warned {
-                        warn!("[router] capture node #{id} unavailable; using default");
-                        self.device_missing_warned = true;
+                // Capture from specific node
+                let source = snapshot.nodes.iter().find(|n| n.id == id);
+                match source {
+                    Some(node) => {
+                        self.device_missing_warned = false;
+                        (node, openmeters_sink)
                     }
-                    LoopbackMode::CaptureFromDevice(DeviceCaptureTarget::Default)
+                    None => {
+                        if !self.device_missing_warned {
+                            warn!("[router] capture node #{id} unavailable; using default");
+                            self.device_missing_warned = true;
+                        }
+                        let Some(hardware_sink) = self.resolve_default_sink_node(snapshot) else {
+                            return Vec::new();
+                        };
+                        (hardware_sink, openmeters_sink)
+                    }
                 }
             }
+        };
+
+        // Compute port pairs
+        let source_ports = source_node.output_ports_for_loopback();
+        let target_ports = target_node.input_ports_for_loopback();
+
+        if source_ports.is_empty() {
+            debug!(
+                "[loopback] no output ports on source node #{} ({})",
+                source_node.id,
+                source_node.display_name()
+            );
+            return Vec::new();
         }
+
+        if target_ports.is_empty() {
+            debug!(
+                "[loopback] no input ports on target node #{} ({})",
+                target_node.id,
+                target_node.display_name()
+            );
+            return Vec::new();
+        }
+
+        let pairs = pair_ports_by_channel(source_ports, target_ports);
+        pairs
+            .into_iter()
+            .map(|(out_port, in_port)| pw_loopback::LinkSpec {
+                output_node: source_node.id,
+                output_port: out_port.port_id,
+                input_node: target_node.id,
+                input_port: in_port.port_id,
+            })
+            .collect()
     }
 
-    fn ensure_loopback_mode(&mut self, desired: pw_loopback::LoopbackMode) {
-        if self.loopback_mode != Some(desired) && pw_loopback::set_mode(desired) {
-            self.loopback_mode = Some(desired);
+    fn resolve_default_sink_node<'a>(
+        &mut self,
+        snapshot: &'a pw_registry::RegistrySnapshot,
+    ) -> Option<&'a pw_registry::NodeInfo> {
+        // Try to resolve from metadata defaults
+        if let Some(target) = snapshot.defaults.audio_sink.as_ref()
+            && let Some(node) = snapshot.resolve_default_target(target)
+        {
+            return Some(node);
+        }
+
+        // Fall back to cached target
+        if let Some((id, label)) = &self.cached_target
+            && let Some(node) = snapshot
+                .nodes
+                .iter()
+                .find(|n| n.id == *id || n.matches_label(label))
+        {
+            return Some(node);
+        }
+
+        None
+    }
+
+    fn ensure_links(&mut self, desired: Vec<pw_loopback::LinkSpec>) {
+        if self.current_links != desired && pw_loopback::set_links(desired.clone()) {
+            self.current_links = desired;
         }
     }
 

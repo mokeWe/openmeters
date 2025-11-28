@@ -2,8 +2,8 @@
 
 use crate::util::dict_to_map;
 use crate::util::pipewire::{
-    DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KEY, GraphNode, derive_node_direction,
-    parse_metadata_name,
+    DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KEY, GraphPort, PortDirection,
+    derive_node_direction, parse_metadata_name,
 };
 pub use crate::util::pipewire::{DefaultTarget, NodeDirection};
 use anyhow::{Context, Result};
@@ -214,6 +214,7 @@ pub struct NodeInfo {
     pub is_virtual: bool,
     pub parent_device: Option<u32>,
     pub properties: HashMap<String, String>,
+    pub ports: Vec<GraphPort>,
 }
 
 impl NodeInfo {
@@ -221,9 +222,12 @@ impl NodeInfo {
     pub fn from_global(global: &GlobalObject<&DictRef>) -> Self {
         let props = dict_to_map(global.props.as_ref().copied());
 
-        let summary = GraphNode::from_props(global.id, &props);
-        let name = summary.name().map(|value| value.to_string());
-        let description = summary.description().map(|value| value.to_string());
+        let name = props.get(*pw::keys::NODE_NAME).cloned();
+        let description = props
+            .get(*pw::keys::NODE_DESCRIPTION)
+            .cloned()
+            .or_else(|| props.get("media.name").cloned())
+            .or_else(|| name.clone());
 
         let media_class = props.get(*pw::keys::MEDIA_CLASS).cloned();
         let media_role = props.get(*pw::keys::MEDIA_ROLE).cloned();
@@ -244,6 +248,7 @@ impl NodeInfo {
             is_virtual,
             parent_device,
             properties: props,
+            ports: Vec::new(),
         }
     }
 
@@ -294,6 +299,45 @@ impl NodeInfo {
                 .unwrap_or(false)
             && self.app_name().is_some()
     }
+
+    /// Get output ports suitable for loopback (prefer monitors, fall back to regular outputs).
+    pub fn output_ports_for_loopback(&self) -> Vec<GraphPort> {
+        self.ports_for_loopback(
+            |p| p.direction == PortDirection::Output && p.is_monitor,
+            |p| p.direction == PortDirection::Output,
+        )
+    }
+
+    /// Get input ports suitable for loopback (prefer non-monitors, fall back to any inputs).
+    pub fn input_ports_for_loopback(&self) -> Vec<GraphPort> {
+        self.ports_for_loopback(
+            |p| p.direction == PortDirection::Input && !p.is_monitor,
+            |p| p.direction == PortDirection::Input,
+        )
+    }
+
+    fn ports_for_loopback<F, G>(&self, primary: F, secondary: G) -> Vec<GraphPort>
+    where
+        F: Fn(&GraphPort) -> bool,
+        G: Fn(&GraphPort) -> bool,
+    {
+        let primary_ports: Vec<_> = self.ports.iter().filter(|p| primary(p)).cloned().collect();
+        if !primary_ports.is_empty() {
+            return primary_ports;
+        }
+
+        let secondary_ports: Vec<_> = self
+            .ports
+            .iter()
+            .filter(|p| secondary(p))
+            .cloned()
+            .collect();
+        if !secondary_ports.is_empty() {
+            return secondary_ports;
+        }
+
+        self.ports.clone()
+    }
 }
 
 /// PipeWire device information extracted from registry announcements.
@@ -337,6 +381,7 @@ struct RegistryState {
     serial: u64,
     nodes: HashMap<u32, NodeInfo>,
     devices: HashMap<u32, DeviceInfo>,
+    port_index: HashMap<u32, (u32, u32)>, // global_id -> (node_id, port_id)
     metadata_defaults: MetadataDefaults,
 }
 
@@ -405,6 +450,56 @@ impl RegistryState {
     /// Remove a device by ID.
     fn remove_device(&mut self, id: u32) -> bool {
         if self.devices.remove(&id).is_some() {
+            self.bump_serial();
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Insert or update a port, attaching it to its parent node.
+    fn upsert_port(&mut self, port: GraphPort) -> bool {
+        let node_id = port.node_id;
+        let port_id = port.port_id;
+        let global_id = port.global_id;
+
+        let Some(node) = self.nodes.get_mut(&node_id) else {
+            return false;
+        };
+
+        let existing_idx = node.ports.iter().position(|p| p.port_id == port_id);
+
+        let changed = match existing_idx {
+            Some(idx) => {
+                if node.ports[idx] != port {
+                    node.ports[idx] = port;
+                    true
+                } else {
+                    false
+                }
+            }
+            None => {
+                node.ports.push(port);
+                true
+            }
+        };
+
+        if changed {
+            self.port_index.insert(global_id, (node_id, port_id));
+            self.bump_serial();
+        }
+
+        changed
+    }
+
+    /// Remove a port by its global ID.
+    fn remove_port(&mut self, global_id: u32) -> bool {
+        let Some((node_id, port_id)) = self.port_index.remove(&global_id) else {
+            return false;
+        };
+
+        if let Some(node) = self.nodes.get_mut(&node_id) {
+            node.ports.retain(|p| p.port_id != port_id);
             self.bump_serial();
             true
         } else {
@@ -663,7 +758,7 @@ fn handle_global_added(
     metadata_bindings: &Rc<RefCell<HashMap<u32, MetadataBinding>>>,
 ) {
     // Each global represents a PipeWire object entering the graph. We bind and
-    // mirror only the objects we care about (nodes, devices, metadata).
+    // mirror only the objects we care about (nodes, devices, ports, metadata).
     match global.type_ {
         ObjectType::Node => {
             let info = NodeInfo::from_global(global);
@@ -672,6 +767,11 @@ fn handle_global_added(
         ObjectType::Device => {
             let info = DeviceInfo::from_global(global);
             runtime.mutate(move |state| state.upsert_device(info));
+        }
+        ObjectType::Port => {
+            if let Some(port) = GraphPort::from_global(global) {
+                runtime.mutate(move |state| state.upsert_port(port));
+            }
         }
         ObjectType::Metadata => {
             process_metadata_added(registry, global, runtime, metadata_bindings);
@@ -685,8 +785,12 @@ fn handle_global_removed(
     runtime: &RegistryRuntime,
     metadata_bindings: &Rc<RefCell<HashMap<u32, MetadataBinding>>>,
 ) {
-    // Removal events arrive for any global object. Try nodes, then devices, and
-    // finally metadata proxies that we previously bound.
+    // Removal events arrive for any global object. Try ports, then nodes,
+    // devices, and finally metadata proxies that we previously bound.
+    if runtime.mutate(|state| state.remove_port(id)) {
+        return;
+    }
+
     if runtime.mutate(|state| state.remove_node(id)) {
         return;
     }

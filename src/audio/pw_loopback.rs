@@ -1,48 +1,39 @@
-//! PipeWire loopback management.
+//! PipeWire link management.
+//!
+//! This module manages audio links between PipeWire nodes. It receives explicit
+//! link requests from the registry monitor and maintains the active links.
 
-mod state;
-
-use crate::util::pipewire::{DEFAULT_AUDIO_SINK_KEY, GraphNode, GraphPort};
+use crate::util::pipewire::create_passive_audio_link;
 use anyhow::{Context, Result};
 use pipewire as pw;
-use pw::metadata::{Metadata, MetadataListener};
-use pw::registry::{GlobalObject, RegistryRc};
-use pw::spa::utils::dict::DictRef;
-use pw::types::ObjectType;
-use state::LoopbackState;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::sync::{OnceLock, mpsc};
 use std::thread;
 use std::time::Duration;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 const LOOPBACK_THREAD_NAME: &str = "openmeters-pw-loopback";
-const OPENMETERS_SINK_NAME: &str = "openmeters.sink";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LoopbackMode {
-    #[default]
-    ForwardToDefaultSink,
-    CaptureFromDevice(DeviceCaptureTarget),
+/// A single port-to-port link specification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct LinkSpec {
+    pub output_node: u32,
+    pub output_port: u32,
+    pub input_node: u32,
+    pub input_port: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DeviceCaptureTarget {
-    #[default]
-    Default,
-    Node(u32),
-}
-
-enum LoopbackCommand {
-    SetMode(LoopbackMode),
+/// Command sent to the link manager thread.
+#[derive(Debug, Clone)]
+enum LinkCommand {
+    /// Set the desired links. Any links not in this set will be removed.
+    SetLinks(Vec<LinkSpec>),
 }
 
 static LOOPBACK_THREAD: OnceLock<thread::JoinHandle<()>> = OnceLock::new();
-static LOOPBACK_COMMAND: OnceLock<mpsc::Sender<LoopbackCommand>> = OnceLock::new();
+static LOOPBACK_COMMAND: OnceLock<mpsc::Sender<LinkCommand>> = OnceLock::new();
 
-/// Start the loopback controller in a background thread if not already running.
+/// Start the link manager in a background thread if not already running.
 pub fn run() {
     if LOOPBACK_THREAD.get().is_some() {
         return;
@@ -53,13 +44,13 @@ pub fn run() {
     match thread::Builder::new()
         .name(LOOPBACK_THREAD_NAME.into())
         .spawn(move || {
-            if let Err(err) = run_loopback(command_rx) {
+            if let Err(err) = run_link_manager(command_rx) {
                 error!("[loopback] stopped: {err:?}");
             }
         }) {
         Ok(handle) => {
             if LOOPBACK_COMMAND.set(command_tx).is_err() {
-                warn!("[loopback] loopback command channel already initialised");
+                warn!("[loopback] link command channel already initialised");
             }
             let _ = LOOPBACK_THREAD.set(handle);
         }
@@ -67,23 +58,29 @@ pub fn run() {
     }
 }
 
-pub fn set_mode(mode: LoopbackMode) -> bool {
+/// Send a link command to the manager thread.
+fn send_command(command: LinkCommand) -> bool {
     run();
 
     if let Some(sender) = LOOPBACK_COMMAND.get() {
-        if sender.send(LoopbackCommand::SetMode(mode)).is_err() {
-            warn!("[loopback] failed to dispatch mode change command");
+        if sender.send(command).is_err() {
+            warn!("[loopback] failed to dispatch link command");
             false
         } else {
             true
         }
     } else {
-        warn!("[loopback] loopback thread not initialised; mode request dropped");
+        warn!("[loopback] link manager thread not initialised");
         false
     }
 }
 
-fn run_loopback(command_rx: mpsc::Receiver<LoopbackCommand>) -> Result<()> {
+/// Convenience: set the desired links.
+pub fn set_links(links: Vec<LinkSpec>) -> bool {
+    send_command(LinkCommand::SetLinks(links))
+}
+
+fn run_link_manager(command_rx: mpsc::Receiver<LinkCommand>) -> Result<()> {
     pw::init();
 
     let mainloop =
@@ -93,25 +90,10 @@ fn run_loopback(command_rx: mpsc::Receiver<LoopbackCommand>) -> Result<()> {
     let core = context
         .connect_rc(None)
         .context("failed to connect to PipeWire core")?;
-    let registry = core
-        .get_registry_rc()
-        .context("failed to obtain PipeWire registry")?;
 
-    let runtime = LoopbackRuntime::new(core.clone(), registry.clone());
-    let runtime_for_added = runtime.clone();
-    let runtime_for_removed = runtime.clone();
+    let mut state = LinkManagerState::new(core);
 
-    let _registry_listener = registry
-        .add_listener_local()
-        .global(move |global| {
-            runtime_for_added.handle_global_added(global);
-        })
-        .global_remove(move |id| {
-            runtime_for_removed.handle_global_removed(id);
-        })
-        .register();
-
-    info!("[loopback] PipeWire loopback thread running");
+    info!("[loopback] PipeWire link manager running");
     let loop_ref = mainloop.loop_();
     let mut commands_disconnected = false;
 
@@ -119,7 +101,7 @@ fn run_loopback(command_rx: mpsc::Receiver<LoopbackCommand>) -> Result<()> {
         if !commands_disconnected {
             loop {
                 match command_rx.try_recv() {
-                    Ok(command) => runtime.handle_command(command),
+                    Ok(command) => state.handle_command(command),
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
                         commands_disconnected = true;
@@ -133,107 +115,72 @@ fn run_loopback(command_rx: mpsc::Receiver<LoopbackCommand>) -> Result<()> {
             break;
         }
     }
-    info!("[loopback] PipeWire loopback loop exited");
 
+    info!("[loopback] PipeWire link manager exited");
     Ok(())
 }
 
-#[derive(Clone)]
-struct LoopbackRuntime {
-    registry: RegistryRc,
-    state: Rc<RefCell<LoopbackState>>,
-    metadata_bindings: Rc<RefCell<HashMap<u32, (Metadata, MetadataListener)>>>,
+struct LinkManagerState {
+    core: pw::core::CoreRc,
+    active_links: FxHashMap<LinkSpec, pw::link::Link>,
 }
 
-impl LoopbackRuntime {
-    fn new(core: pw::core::CoreRc, registry: RegistryRc) -> Self {
+impl LinkManagerState {
+    fn new(core: pw::core::CoreRc) -> Self {
         Self {
-            registry,
-            state: Rc::new(RefCell::new(LoopbackState::new(core))),
-            metadata_bindings: Rc::new(RefCell::new(HashMap::new())),
+            core,
+            active_links: FxHashMap::default(),
         }
     }
 
-    fn handle_global_added(&self, global: &GlobalObject<&DictRef>) {
-        match global.type_ {
-            ObjectType::Node => {
-                if let Some(node) = GraphNode::from_global(global) {
-                    self.state.borrow_mut().upsert_node(node);
-                }
-            }
-            ObjectType::Port => {
-                if let Some(port) = GraphPort::from_global(global) {
-                    self.state.borrow_mut().upsert_port(port);
-                }
-            }
-            ObjectType::Metadata => {
-                self.process_metadata_added(global);
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_global_removed(&self, id: u32) {
-        let res = {
-            let mut state = self.state.borrow_mut();
-            state.remove_port_by_global(id) || state.remove_node(id)
-        };
-        if res {
-            return;
-        }
-
-        if self.metadata_bindings.borrow_mut().remove(&id).is_some() {
-            self.state.borrow_mut().clear_metadata(id);
-        }
-    }
-
-    fn process_metadata_added(&self, global: &GlobalObject<&DictRef>) {
-        let metadata_id = global.id;
-        let mut bindings = self.metadata_bindings.borrow_mut();
-        if bindings.contains_key(&metadata_id) {
-            return;
-        }
-
-        let metadata = match self.registry.bind::<Metadata, _>(global) {
-            Ok(metadata) => metadata,
-            Err(err) => {
-                error!("[loopback] failed to bind metadata {metadata_id}: {err}");
-                return;
-            }
-        };
-
-        let runtime = self.clone();
-        let metadata_listener = metadata
-            .add_listener_local()
-            .property(move |subject, key, type_hint, value| {
-                runtime.handle_metadata_property(metadata_id, subject, key, type_hint, value);
-                0
-            })
-            .register();
-
-        bindings.insert(metadata_id, (metadata, metadata_listener));
-    }
-
-    fn handle_metadata_property(
-        &self,
-        metadata_id: u32,
-        subject: u32,
-        key: Option<&str>,
-        type_hint: Option<&str>,
-        value: Option<&str>,
-    ) {
-        if key != Some(DEFAULT_AUDIO_SINK_KEY) {
-            return;
-        }
-
-        self.state
-            .borrow_mut()
-            .update_default_sink(metadata_id, subject, type_hint, value);
-    }
-
-    fn handle_command(&self, command: LoopbackCommand) {
+    fn handle_command(&mut self, command: LinkCommand) {
         match command {
-            LoopbackCommand::SetMode(mode) => self.state.borrow_mut().set_mode(mode),
+            LinkCommand::SetLinks(desired) => self.apply_links(desired),
+        }
+    }
+
+    fn apply_links(&mut self, desired: Vec<LinkSpec>) {
+        let desired_set: FxHashSet<LinkSpec> = desired.iter().copied().collect();
+
+        // Remove links that are no longer desired
+        self.active_links.retain(|spec, _| {
+            let keep = desired_set.contains(spec);
+            if !keep {
+                debug!(
+                    "[loopback] removed link {}:{} -> {}:{}",
+                    spec.output_node, spec.output_port, spec.input_node, spec.input_port
+                );
+            }
+            keep
+        });
+
+        // Create new links
+        for spec in desired {
+            if self.active_links.contains_key(&spec) {
+                continue;
+            }
+
+            match create_passive_audio_link(
+                &self.core,
+                spec.output_node,
+                spec.output_port,
+                spec.input_node,
+                spec.input_port,
+            ) {
+                Ok(link) => {
+                    debug!(
+                        "[loopback] linked {}:{} -> {}:{}",
+                        spec.output_node, spec.output_port, spec.input_node, spec.input_port
+                    );
+                    self.active_links.insert(spec, link);
+                }
+                Err(err) => {
+                    error!(
+                        "[loopback] link failed {}:{} -> {}:{}: {err}",
+                        spec.output_node, spec.output_port, spec.input_node, spec.input_port
+                    );
+                }
+            }
         }
     }
 }

@@ -49,11 +49,6 @@ impl DefaultTarget {
 
         changed
     }
-
-    /// Reset the stored metadata to its default, empty state.
-    pub fn clear(&mut self) {
-        *self = Default::default();
-    }
 }
 
 /// Parse a PipeWire metadata value representing a default device target name.
