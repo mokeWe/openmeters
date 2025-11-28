@@ -592,6 +592,10 @@ impl RegistryRuntime {
         *self.commands.write() = Some(sender);
     }
 
+    fn clear_command_sender(&self) {
+        *self.commands.write() = None;
+    }
+
     fn send_command(&self, command: RegistryCommand) -> bool {
         if let Some(sender) = self.commands.read().as_ref() {
             if sender.send(command).is_err() {
@@ -704,6 +708,8 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
 
     let loop_ref = mainloop.loop_();
     let mut commands_disconnected = false;
+    let mut consecutive_errors = 0u32;
+    const MAX_CONSECUTIVE_ERRORS: u32 = 10;
 
     loop {
         if !commands_disconnected {
@@ -721,11 +727,39 @@ fn registry_thread_main(runtime: RegistryRuntime) -> Result<()> {
             }
         }
 
-        if loop_ref.iterate(Duration::from_millis(50)) < 0 {
+        let result = loop_ref.iterate(Duration::from_millis(50));
+        if result >= 0 {
+            if consecutive_errors > 0 {
+                info!(
+                    "[registry] PipeWire loop recovered after {} error(s)",
+                    consecutive_errors
+                );
+                consecutive_errors = 0;
+            }
+            continue;
+        }
+
+        consecutive_errors += 1;
+        if consecutive_errors == 1 {
+            warn!(
+                "[registry] PipeWire loop iteration failed (errno={}); retrying",
+                -result
+            );
+        }
+        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS {
+            error!(
+                "[registry] PipeWire loop failed {} consecutive times; exiting",
+                consecutive_errors
+            );
             break;
         }
+        // Back off exponentially up to ~800ms to avoid spinning
+        let backoff = Duration::from_millis(50 * (1 << consecutive_errors.min(4)));
+        thread::sleep(backoff);
     }
 
+    // Clear the command sender so callers know the thread has exited
+    runtime.clear_command_sender();
     info!("[registry] PipeWire registry loop exited");
 
     drop(registry);
