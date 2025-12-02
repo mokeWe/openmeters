@@ -1177,13 +1177,18 @@ impl SpectrogramProcessor {
         let samples = &mut self.reassignment.sample_cache;
         samples.clear();
 
-        for k in 0..reassignment_bin_limit {
+        for (k, ((&base, &cross), ((&time_cross, &bin_norm_k), &energy_scale_k))) in spectrum
+            .iter()
+            .zip(derivative_spectrum.iter())
+            .zip(
+                time_weighted_spectrum
+                    .iter()
+                    .zip(bin_norm.iter())
+                    .zip(energy_scale.iter()),
+            )
+            .enumerate()
+        {
             let k_f32 = k as f32;
-            let base = spectrum[k];
-            let cross = derivative_spectrum[k];
-            let time_cross = time_weighted_spectrum[k];
-            let bin_norm_k = bin_norm[k];
-            let energy_scale_k = energy_scale[k];
 
             let power = base.re * base.re + base.im * base.im;
             let display_power = power * bin_norm_k;
@@ -1192,8 +1197,10 @@ impl SpectrogramProcessor {
                 continue;
             }
 
+            let inv_power = 1.0 / power;
+
             // Instantaneous frequency: delta_w = -Im{X_Dh * X*} / |X|^2
-            let delta_omega = -(cross.im * base.re - cross.re * base.im) / power;
+            let delta_omega = -(cross.im * base.re - cross.re * base.im) * inv_power;
             if !delta_omega.is_finite() {
                 continue;
             }
@@ -1209,8 +1216,12 @@ impl SpectrogramProcessor {
             }
 
             // Group delay: delta_t = Re{X_Th * X*} / |X|^2
-            let delta_tau = (time_cross.re * base.re + time_cross.im * base.im) / power;
-            let group_delay_samples = if delta_tau.is_finite() { delta_tau } else { 0.0 };
+            let delta_tau = (time_cross.re * base.re + time_cross.im * base.im) * inv_power;
+            let group_delay_samples = if delta_tau.is_finite() {
+                delta_tau
+            } else {
+                0.0
+            };
 
             let freq_position = (freq_hz * inv_bin_hz).min(max_index);
             let lower = freq_position as usize;
@@ -1244,24 +1255,23 @@ impl SpectrogramProcessor {
             }
         }
 
-        for k in 0..reassignment_bin_limit {
-            let energy_power = reassigned_power[k];
-            let energy_scale_k = energy_scale[k];
-            let bin_norm_k = bin_norm[k];
-
+        for (((&energy_power, &energy_scale_k), &bin_norm_k), magnitude) in reassigned_power
+            .iter()
+            .zip(energy_scale.iter())
+            .zip(bin_norm.iter())
+            .zip(self.magnitude_buffer[..reassignment_bin_limit].iter_mut())
+        {
             let normalized = if energy_scale_k > f32::EPSILON {
                 energy_power * bin_norm_k / energy_scale_k
             } else {
                 0.0
             };
 
-            let db = if normalized > POWER_EPSILON {
+            *magnitude = if normalized > POWER_EPSILON {
                 (normalized.ln() * LN_TO_DB).max(DB_FLOOR)
             } else {
                 DB_FLOOR
             };
-
-            self.magnitude_buffer[k] = db;
         }
 
         if synchro_active {
@@ -2329,7 +2339,10 @@ mod tests {
         let hann = WindowKind::Hann.coefficients(1024);
         let derivative = compute_derivative_window(WindowKind::Hann, &hann);
         let derivative_sum: f32 = derivative.iter().sum();
-        assert!(derivative_sum.abs() < 0.01, "derivative window sum should be ~0");
+        assert!(
+            derivative_sum.abs() < 0.01,
+            "derivative window sum should be ~0"
+        );
 
         // Test time-weighted window properties
         let time_weighted = compute_time_weighted_window(&hann);
@@ -2339,7 +2352,10 @@ mod tests {
         // Odd size: center should be zero
         let odd_window = WindowKind::Hann.coefficients(1023);
         let odd_tw = compute_time_weighted_window(&odd_window);
-        assert!(odd_tw[511].abs() < 1e-10, "center of odd time-weighted window should be 0");
+        assert!(
+            odd_tw[511].abs() < 1e-10,
+            "center of odd time-weighted window should be 0"
+        );
 
         // Test reassignment with off-bin sinusoid
         let bin_hz = config.sample_rate / config.fft_size as f32;
@@ -2371,7 +2387,11 @@ mod tests {
 
         // Frequency should be accurate to < 1 Hz
         let freq_error = (peak.frequency_hz - true_freq).abs();
-        assert!(freq_error < 1.0, "frequency error {} Hz too large", freq_error);
+        assert!(
+            freq_error < 1.0,
+            "frequency error {} Hz too large",
+            freq_error
+        );
 
         // Group delay should be small for centered sinusoid
         assert!(
