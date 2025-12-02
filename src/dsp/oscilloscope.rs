@@ -1,7 +1,7 @@
 //! Oscilloscope/triggered waveform DSP implementation.
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
-use crate::util::audio::{lerp, DEFAULT_SAMPLE_RATE};
+use crate::util::audio::{DEFAULT_SAMPLE_RATE, lerp};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use wide::f32x4;
