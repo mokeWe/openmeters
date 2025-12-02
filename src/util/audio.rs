@@ -10,23 +10,30 @@ pub use batcher::SampleBatcher;
 /// Default sample rate (Hz) used throughout the audio pipeline.
 pub const DEFAULT_SAMPLE_RATE: f32 = 48_000.0;
 
+// decibel conversion constants/utils
+
+/// Floor value (dB) below which magnitudes are clamped.
+pub const DB_FLOOR: f32 = -140.0;
+
+/// Minimum power value to avoid log(0) in dB conversions.
+const POWER_EPSILON: f32 = 1.0e-20;
+
+/// Natural log to decibel conversion factor: 10 / ln(10) ≈ 4.342944819.
+const LN_TO_DB: f32 = 4.342_944_8;
+
+/// Convert power (magnitude squared) to decibels.
+#[inline(always)]
+pub fn power_to_db(power: f32) -> f32 {
+    if power > POWER_EPSILON {
+        (power.ln() * LN_TO_DB).max(DB_FLOOR)
+    } else {
+        DB_FLOOR
+    }
+}
+
 #[inline(always)]
 pub fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
-}
-
-#[inline]
-pub fn interpolate_linear(samples: &[f32], position: f32) -> f32 {
-    let idx = position as usize;
-    let frac = position - idx as f32;
-
-    if frac > f32::EPSILON && idx + 1 < samples.len() {
-        let curr = samples[idx];
-        let next = samples[idx + 1];
-        lerp(curr, next, frac)
-    } else {
-        samples[idx.min(samples.len() - 1)]
-    }
 }
 
 pub fn bytes_per_sample(format: spa::param::audio::AudioFormat) -> Option<usize> {
@@ -172,6 +179,39 @@ pub fn remove_dc(buffer: &mut [f32]) {
     }
 }
 
+/// Convert dB to linear power: 10^(db/10).
+#[inline(always)]
+pub fn db_to_power(db: f32) -> f32 {
+    const DB_TO_LOG2: f32 = 0.1 * core::f32::consts::LOG2_10;
+    (db * DB_TO_LOG2).exp2()
+}
+
+/// Convert frequency in Hz to mel scale.
+#[inline(always)]
+pub fn hz_to_mel(hz: f32) -> f32 {
+    2595.0 * (1.0 + hz / 700.0).log10()
+}
+
+/// Convert mel scale to frequency in Hz.
+#[inline(always)]
+pub fn mel_to_hz(mel: f32) -> f32 {
+    700.0 * (10.0f32.powf(mel / 2595.0) - 1.0)
+}
+
+/// Copy from VecDeque to a contiguous slice, handling wraparound.
+#[inline]
+pub fn copy_from_deque(dst: &mut [f32], src: &std::collections::VecDeque<f32>) {
+    let len = dst.len().min(src.len());
+    let (head, tail) = src.as_slices();
+    if head.len() >= len {
+        dst[..len].copy_from_slice(&head[..len]);
+    } else {
+        let split = head.len();
+        dst[..split].copy_from_slice(head);
+        dst[split..len].copy_from_slice(&tail[..len - split]);
+    }
+}
+
 pub fn compute_fft_bin_normalization(window: &[f32], fft_size: usize) -> Vec<f32> {
     let bins = fft_size / 2 + 1;
     if bins == 0 {
@@ -195,20 +235,6 @@ pub fn compute_fft_bin_normalization(window: &[f32], fft_size: usize) -> Vec<f32
         norms[bins - 1] = dc_scale;
     }
     norms
-}
-
-pub fn frequency_bins(sample_rate: f32, fft_size: usize) -> Vec<f32> {
-    if fft_size == 0 {
-        return Vec::new();
-    }
-
-    let bins = fft_size / 2 + 1;
-    let bin_hz = if sample_rate > 0.0 {
-        sample_rate / fft_size as f32
-    } else {
-        0.0
-    };
-    (0..bins).map(|i| i as f32 * bin_hz).collect()
 }
 
 #[cfg(test)]

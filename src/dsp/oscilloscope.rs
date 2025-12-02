@@ -1,10 +1,23 @@
 //! Oscilloscope/triggered waveform DSP implementation.
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
-use crate::util::audio::{DEFAULT_SAMPLE_RATE, interpolate_linear};
+use crate::util::audio::{lerp, DEFAULT_SAMPLE_RATE};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use wide::f32x4;
+
+/// Linear interpolation between samples at a fractional position.
+#[inline]
+fn interpolate_linear(samples: &[f32], position: f32) -> f32 {
+    let idx = position as usize;
+    let frac = position - idx as f32;
+
+    if frac > f32::EPSILON && idx + 1 < samples.len() {
+        lerp(samples[idx], samples[idx + 1], frac)
+    } else {
+        samples[idx.min(samples.len() - 1)]
+    }
+}
 
 const PITCH_MIN_HZ: f32 = 10.0;
 const PITCH_MAX_HZ: f32 = 10000.0;
@@ -613,6 +626,12 @@ mod tests {
         AudioBlock::new(samples, channels, sample_rate, Instant::now())
     }
 
+    fn sine_samples(freq: f32, rate: f32, frames: usize) -> Vec<f32> {
+        (0..frames)
+            .map(|n| (std::f32::consts::TAU * freq * n as f32 / rate).sin())
+            .collect()
+    }
+
     #[test]
     fn produces_downsampled_snapshot_when_buffer_ready() {
         let config = OscilloscopeConfig {
@@ -621,26 +640,22 @@ mod tests {
             ..Default::default()
         };
         let mut processor = OscilloscopeProcessor::new(config);
+        let frames = (config.sample_rate * config.segment_duration).round() as usize;
+        let samples: Vec<f32> = (0..frames)
+            .flat_map(|f| {
+                let s = (f as f32 / frames as f32 * std::f32::consts::TAU).sin();
+                [s, -s]
+            })
+            .collect();
 
-        let frames = (config.sample_rate * config.segment_duration)
-            .round()
-            .max(1.0) as usize;
-        let mut samples = Vec::with_capacity(frames * 2);
-        for frame in 0..frames {
-            let t = frame as f32 / frames as f32;
-            let sample = (t * std::f32::consts::TAU).sin();
-            samples.push(sample);
-            samples.push(-sample);
-        }
-
-        match processor.process_block(&make_block(&samples, 2, DEFAULT_SAMPLE_RATE)) {
-            ProcessorUpdate::Snapshot(snapshot) => {
-                assert_eq!(snapshot.channels, 2);
-                assert!(snapshot.samples_per_channel > 0);
-                assert!(snapshot.samples_per_channel <= 4096);
-                assert_eq!(snapshot.samples.len(), snapshot.samples_per_channel * 2);
-            }
-            ProcessorUpdate::None => panic!("expected snapshot"),
+        if let ProcessorUpdate::Snapshot(s) =
+            processor.process_block(&make_block(&samples, 2, DEFAULT_SAMPLE_RATE))
+        {
+            assert_eq!(s.channels, 2);
+            assert!(s.samples_per_channel > 0 && s.samples_per_channel <= 4096);
+            assert_eq!(s.samples.len(), s.samples_per_channel * 2);
+        } else {
+            panic!("expected snapshot");
         }
     }
 
@@ -649,56 +664,39 @@ mod tests {
         let mut processor = OscilloscopeProcessor::new(OscilloscopeConfig {
             segment_duration: 0.1,
             trigger_mode: TriggerMode::Stable { num_cycles: 2 },
-            sample_rate: DEFAULT_SAMPLE_RATE,
+            ..Default::default()
         });
-
-        let frequency = 440.0;
-        let duration = 0.15;
-        let total_samples = (DEFAULT_SAMPLE_RATE * duration) as usize;
-        let mut samples = Vec::with_capacity(total_samples * 2);
-
-        for i in 0..total_samples {
-            let t = i as f32 / DEFAULT_SAMPLE_RATE;
-            let sample = (t * frequency * std::f32::consts::TAU).sin();
-            samples.push(sample);
-            samples.push(sample);
-        }
-
-        match processor.process_block(&make_block(&samples, 2, DEFAULT_SAMPLE_RATE)) {
-            ProcessorUpdate::Snapshot(snapshot) => {
-                assert_eq!(snapshot.channels, 2);
-                assert!(snapshot.samples_per_channel > 0);
-                assert!(!snapshot.samples.is_empty());
-            }
-            ProcessorUpdate::None => panic!("expected snapshot"),
+        let samples: Vec<f32> = sine_samples(
+            440.0,
+            DEFAULT_SAMPLE_RATE,
+            (DEFAULT_SAMPLE_RATE * 0.15) as usize,
+        )
+        .into_iter()
+        .flat_map(|s| [s, s])
+        .collect();
+        if let ProcessorUpdate::Snapshot(s) =
+            processor.process_block(&make_block(&samples, 2, DEFAULT_SAMPLE_RATE))
+        {
+            assert_eq!(s.channels, 2);
+            assert!(s.samples_per_channel > 0 && !s.samples.is_empty());
+        } else {
+            panic!("expected snapshot");
         }
     }
 
     #[test]
     fn high_frequency_pitch_detection() {
         let mut detector = PitchDetector::new();
-        let sample_rate = 48_000.0;
-        // yeah this is a lofty goal. pitch detection is fucking expensive.
-        // still made it work
-        let frequency = 12_000.0;
-        let duration = 0.05;
-        let total_samples = (sample_rate * duration) as usize;
-        let mut samples = Vec::with_capacity(total_samples);
-
-        for i in 0..total_samples {
-            let t = i as f32 / sample_rate;
-            let sample = (t * frequency * std::f32::consts::TAU).sin();
-            samples.push(sample);
-        }
-
-        let detected = detector.detect_pitch(&samples, sample_rate);
-        assert!(detected.is_some(), "Failed to detect 12kHz pitch");
-        let detected_freq = detected.unwrap();
+        let (rate, freq) = (48_000.0, 12_000.0);
+        let samples = sine_samples(freq, rate, (rate * 0.05) as usize);
+        let detected = detector
+            .detect_pitch(&samples, rate)
+            .expect("pitch detection failed");
         assert!(
-            (detected_freq - frequency).abs() < frequency * 0.05,
-            "Detected frequency {} is too far from expected {}",
-            detected_freq,
-            frequency
+            (detected - freq).abs() < freq * 0.05,
+            "Detected {} too far from {}",
+            detected,
+            freq
         );
     }
 }

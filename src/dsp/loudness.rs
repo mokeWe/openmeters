@@ -68,7 +68,7 @@ fn mean_square_to_lufs(mean_square: f64, floor: f32) -> f32 {
 }
 
 #[inline]
-fn linear_to_db(linear: f32, floor: f32) -> f32 {
+fn linear_to_db_with_floor(linear: f32, floor: f32) -> f32 {
     if linear <= f32::EPSILON {
         floor
     } else {
@@ -375,7 +375,8 @@ impl AudioProcessor for LoudnessProcessor {
         }
 
         for (i, ch) in self.channels.iter_mut().enumerate() {
-            self.snapshot.true_peak_db[i] = linear_to_db(ch.true_peak.take_peak(), floor);
+            self.snapshot.true_peak_db[i] =
+                linear_to_db_with_floor(ch.true_peak.take_peak(), floor);
         }
 
         let combined_short_term_loudness = mean_square_to_lufs(combined_short_term, floor);

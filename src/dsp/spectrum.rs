@@ -2,18 +2,28 @@
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::dsp::spectrogram::{FrequencyScale, WindowKind};
-use crate::util::audio::DEFAULT_SAMPLE_RATE;
+use crate::util::audio::{DB_FLOOR, DEFAULT_SAMPLE_RATE, power_to_db};
 use realfft::{RealFftPlanner, RealToComplex};
 use rustfft::num_complex::Complex32;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::fmt;
 use std::sync::Arc;
-use std::time::Instant;
 
-const LOG_FACTOR: f32 = 10.0 * core::f32::consts::LOG10_E;
-const POWER_EPSILON: f32 = 1.0e-20;
-const DB_FLOOR: f32 = -140.0;
+/// Compute frequency bin centers for FFT output.
+fn frequency_bins(sample_rate: f32, fft_size: usize) -> Vec<f32> {
+    if fft_size == 0 {
+        return Vec::new();
+    }
+    let bins = fft_size / 2 + 1;
+    let bin_hz = if sample_rate > 0.0 {
+        sample_rate / fft_size as f32
+    } else {
+        0.0
+    };
+    (0..bins).map(|i| i as f32 * bin_hz).collect()
+}
+use std::time::Instant;
 
 pub const MIN_SPECTRUM_FFT_SIZE: usize = 128;
 pub const DEFAULT_SPECTRUM_HOP_DIVISOR: usize = 4;
@@ -202,8 +212,7 @@ impl SpectrumProcessor {
         self.bin_normalization =
             crate::util::audio::compute_fft_bin_normalization(&self.window, fft_size);
         let bins = fft_size / 2 + 1;
-        self.snapshot.frequency_bins =
-            crate::util::audio::frequency_bins(self.config.sample_rate, fft_size);
+        self.snapshot.frequency_bins = frequency_bins(self.config.sample_rate, fft_size);
         self.snapshot.magnitudes_db = vec![DB_FLOOR; bins];
         self.snapshot.magnitudes_unweighted_db = vec![DB_FLOOR; bins];
         self.snapshot.peak_frequency_hz = None;
@@ -239,14 +248,10 @@ impl SpectrumProcessor {
         let mut produced = false;
 
         while self.pcm_buffer.len() >= fft_size {
-            for (sample, target) in self
-                .pcm_buffer
-                .iter()
-                .take(fft_size)
-                .zip(self.real_buffer.iter_mut())
-            {
-                *target = *sample;
-            }
+            crate::util::audio::copy_from_deque(
+                &mut self.real_buffer[..fft_size],
+                &self.pcm_buffer,
+            );
 
             crate::util::audio::remove_dc(&mut self.real_buffer);
             crate::util::audio::apply_window(&mut self.real_buffer, &self.window);
@@ -273,14 +278,12 @@ impl SpectrumProcessor {
                 .take(bins)
                 .enumerate()
             {
-                let power = (complex.norm_sqr() * *norm).max(POWER_EPSILON);
-                let raw_magnitude = (power.ln() * LOG_FACTOR).max(DB_FLOOR);
+                let raw_magnitude = power_to_db(complex.norm_sqr() * *norm);
                 self.scratch_unweighted[idx] = raw_magnitude;
                 let weight = self.a_weighting_db.get(idx).copied().unwrap_or_else(|| {
                     a_weight(*self.snapshot.frequency_bins.get(idx).unwrap_or(&0.0))
                 });
-                let weighted = (raw_magnitude + weight).max(DB_FLOOR);
-                self.scratch_magnitudes[idx] = weighted;
+                self.scratch_magnitudes[idx] = (raw_magnitude + weight).max(DB_FLOOR);
             }
 
             let peak_index = averaging_update(

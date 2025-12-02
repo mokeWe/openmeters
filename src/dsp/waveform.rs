@@ -648,150 +648,97 @@ mod tests {
         AudioBlock::new(samples, channels, sample_rate, Instant::now())
     }
 
-    fn nominal_frames_per_column(config: &WaveformConfig) -> f32 {
-        config.sample_rate.max(1.0) / config.scroll_speed.max(MIN_SCROLL_SPEED)
+    fn frames_per_column(config: &WaveformConfig) -> usize {
+        (config.sample_rate.max(1.0) / config.scroll_speed.max(MIN_SCROLL_SPEED)).ceil() as usize
+    }
+
+    fn sine_samples(freq: f32, rate: f32, frames: usize) -> Vec<f32> {
+        (0..frames)
+            .map(|n| (2.0 * PI * freq * n as f32 / rate).sin())
+            .collect()
+    }
+
+    fn unwrap_snapshot(update: ProcessorUpdate<WaveformSnapshot>) -> WaveformSnapshot {
+        match update {
+            ProcessorUpdate::Snapshot(s) => s,
+            ProcessorUpdate::None => panic!("expected snapshot"),
+        }
     }
 
     #[test]
     fn downsampling_produces_min_max_pairs() {
         let mut processor = WaveformProcessor::new(WaveformConfig {
-            sample_rate: DEFAULT_SAMPLE_RATE,
             scroll_speed: 120.0,
             downsample: DownsampleStrategy::MinMax,
-            max_columns: DEFAULT_COLUMN_CAPACITY,
+            ..Default::default()
         });
-
-        let channels = 1;
-        let frames_per_column = nominal_frames_per_column(&processor.config).ceil() as usize;
-        let mut samples = Vec::new();
-        for i in 0..frames_per_column {
-            let value = if i % 2 == 0 { 0.5 } else { -0.25 };
-            samples.push(value);
-        }
-
-        let block = make_block(&samples, channels, processor.config.sample_rate);
-        let snapshot = match processor.process_block(&block) {
-            ProcessorUpdate::Snapshot(snapshot) => snapshot,
-            ProcessorUpdate::None => panic!("expected snapshot"),
-        };
-
-        assert_eq!(snapshot.columns, 1);
-        assert_eq!(snapshot.min_values.len(), 1);
-        assert_eq!(snapshot.max_values.len(), 1);
-
-        let min_value = snapshot.min_values[0];
-        let max_value = snapshot.max_values[0];
-        assert!(max_value > 0.49, "expected to preserve positive peaks");
-        assert!(min_value < -0.24, "expected to preserve negative troughs");
-        assert!((max_value - 0.5).abs() < 1e-3);
-        assert!((min_value + 0.25).abs() < 1e-3);
+        let fpc = frames_per_column(&processor.config);
+        let samples: Vec<f32> = (0..fpc)
+            .map(|i| if i % 2 == 0 { 0.5 } else { -0.25 })
+            .collect();
+        let s = unwrap_snapshot(processor.process_block(&make_block(
+            &samples,
+            1,
+            processor.config.sample_rate,
+        )));
+        assert_eq!(s.columns, 1);
+        assert!((s.max_values[0] - 0.5).abs() < 1e-3 && (s.min_values[0] + 0.25).abs() < 1e-3);
     }
 
     #[test]
     fn average_downsampling_produces_envelope() {
         let mut processor = WaveformProcessor::new(WaveformConfig {
-            sample_rate: DEFAULT_SAMPLE_RATE,
             scroll_speed: MIN_SCROLL_SPEED,
             downsample: DownsampleStrategy::Average,
-            max_columns: DEFAULT_COLUMN_CAPACITY,
+            ..Default::default()
         });
-
-        let channels = 1;
-        let frames_per_column = nominal_frames_per_column(&processor.config).ceil() as usize;
-        let mut samples = Vec::with_capacity(frames_per_column);
-        for i in 0..frames_per_column {
-            let value = if i % 2 == 0 { 0.6 } else { -0.2 };
-            samples.push(value);
-        }
-
-        let block = make_block(&samples, channels, processor.config.sample_rate);
-        let snapshot = match processor.process_block(&block) {
-            ProcessorUpdate::Snapshot(snapshot) => snapshot,
-            ProcessorUpdate::None => panic!("expected snapshot"),
-        };
-
-        assert_eq!(snapshot.columns, 1);
-        assert_eq!(snapshot.min_values.len(), 1);
-        assert_eq!(snapshot.max_values.len(), 1);
-
-        let max_value = snapshot.max_values[0];
-        let min_value = snapshot.min_values[0];
-        assert!((max_value - 0.6).abs() < 1e-3);
-        assert!((min_value + 0.2).abs() < 1e-3);
+        let fpc = frames_per_column(&processor.config);
+        let samples: Vec<f32> = (0..fpc)
+            .map(|i| if i % 2 == 0 { 0.6 } else { -0.2 })
+            .collect();
+        let s = unwrap_snapshot(processor.process_block(&make_block(
+            &samples,
+            1,
+            processor.config.sample_rate,
+        )));
+        assert_eq!(s.columns, 1);
+        assert!((s.max_values[0] - 0.6).abs() < 1e-3 && (s.min_values[0] + 0.2).abs() < 1e-3);
     }
 
     #[test]
     fn estimates_frequency_for_sine_wave() {
-        let frequency_hz = 440.0;
         let mut processor = WaveformProcessor::new(WaveformConfig {
             sample_rate: 48_000.0,
             scroll_speed: 200.0,
-            downsample: DownsampleStrategy::MinMax,
-            max_columns: DEFAULT_COLUMN_CAPACITY,
+            ..Default::default()
         });
-
-        let channels = 1;
-        let frames_per_column = nominal_frames_per_column(&processor.config).ceil() as usize;
-        let total_frames = frames_per_column * 8;
-        let mut samples = Vec::with_capacity(total_frames);
-        for n in 0..total_frames {
-            let t = n as f32 / processor.config.sample_rate;
-            samples.push((2.0 * PI * frequency_hz * t).sin());
-        }
-
-        let block = make_block(&samples, channels, processor.config.sample_rate);
-        let snapshot = match processor.process_block(&block) {
-            ProcessorUpdate::Snapshot(snapshot) => snapshot,
-            ProcessorUpdate::None => panic!("expected snapshot"),
-        };
-
-        let last_frequency = snapshot
-            .frequency_normalized
-            .last()
-            .copied()
-            .unwrap_or_default();
-        assert!(
-            (last_frequency - 0.44).abs() < 0.02,
-            "expected normalized frequency near 0.44, got {}",
-            last_frequency
-        );
+        let fpc = frames_per_column(&processor.config);
+        let samples = sine_samples(440.0, processor.config.sample_rate, fpc * 8);
+        let s = unwrap_snapshot(processor.process_block(&make_block(
+            &samples,
+            1,
+            processor.config.sample_rate,
+        )));
+        let last = s.frequency_normalized.last().copied().unwrap_or_default();
+        assert!((last - 0.44).abs() < 0.02, "expected ~0.44, got {}", last);
     }
 
     #[test]
     fn frequency_estimate_remains_stable_at_high_scroll() {
-        let frequency_hz = 220.0;
         let mut processor = WaveformProcessor::new(WaveformConfig {
             sample_rate: 48_000.0,
             scroll_speed: 400.0,
-            downsample: DownsampleStrategy::MinMax,
-            max_columns: DEFAULT_COLUMN_CAPACITY,
+            ..Default::default()
         });
-
-        let channels = 1;
-        let frames_per_column = nominal_frames_per_column(&processor.config).ceil() as usize;
-        let total_frames = frames_per_column * 8;
-        let mut samples = Vec::with_capacity(total_frames);
-        for n in 0..total_frames {
-            let t = n as f32 / processor.config.sample_rate;
-            samples.push((2.0 * PI * frequency_hz * t).sin());
-        }
-
-        let block = make_block(&samples, channels, processor.config.sample_rate);
-        let snapshot = match processor.process_block(&block) {
-            ProcessorUpdate::Snapshot(snapshot) => snapshot,
-            ProcessorUpdate::None => panic!("expected snapshot"),
-        };
-
-        let last_frequency = snapshot
-            .frequency_normalized
-            .last()
-            .copied()
-            .unwrap_or_default();
-        assert!(
-            last_frequency > 0.3 && last_frequency < 0.5,
-            "expected reasonable normalized frequency, got {}",
-            last_frequency
-        );
+        let fpc = frames_per_column(&processor.config);
+        let samples = sine_samples(220.0, processor.config.sample_rate, fpc * 8);
+        let s = unwrap_snapshot(processor.process_block(&make_block(
+            &samples,
+            1,
+            processor.config.sample_rate,
+        )));
+        let last = s.frequency_normalized.last().copied().unwrap_or_default();
+        assert!(last > 0.3 && last < 0.5, "expected 0.3..0.5, got {}", last);
     }
 
     #[test]
@@ -799,28 +746,18 @@ mod tests {
         let mut processor = WaveformProcessor::new(WaveformConfig {
             sample_rate: 48_000.0,
             scroll_speed: 100.0,
-            downsample: DownsampleStrategy::MinMax,
-            max_columns: DEFAULT_COLUMN_CAPACITY,
+            ..Default::default()
         });
-
-        let channels = 2;
-        let frames_per_column = nominal_frames_per_column(&processor.config).ceil() as usize;
-        let total_frames = frames_per_column * 5;
-        let mut samples = Vec::with_capacity(total_frames * channels);
-        for _n in 0..total_frames {
-            samples.push(0.1);
-            samples.push(-0.1);
-        }
-
-        let block = make_block(&samples, channels, processor.config.sample_rate);
-        let snapshot = match processor.process_block(&block) {
-            ProcessorUpdate::Snapshot(snapshot) => snapshot,
-            ProcessorUpdate::None => panic!("expected snapshot"),
-        };
-
-        assert_eq!(snapshot.channels, channels);
-        assert!(snapshot.columns >= 4, "should produce multiple columns");
-        assert_eq!(snapshot.min_values.len(), snapshot.columns * channels);
-        assert_eq!(snapshot.max_values.len(), snapshot.columns * channels);
+        let fpc = frames_per_column(&processor.config);
+        let samples: Vec<f32> = (0..fpc * 5 * 2)
+            .map(|i| if i % 2 == 0 { 0.1 } else { -0.1 })
+            .collect();
+        let s = unwrap_snapshot(processor.process_block(&make_block(
+            &samples,
+            2,
+            processor.config.sample_rate,
+        )));
+        assert_eq!(s.channels, 2);
+        assert!(s.columns >= 4 && s.min_values.len() == s.columns * 2);
     }
 }
