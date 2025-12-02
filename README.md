@@ -60,7 +60,7 @@ Checked features are implemented, unchecked features are planned. If you have id
 3. Clone the repository:
 
    ```bash
-   git clone https://github.com/mokeWe/openmeters/
+   git clone https://github.com/httpsworldview/openmeters/
    cd openmeters
    ```
 
