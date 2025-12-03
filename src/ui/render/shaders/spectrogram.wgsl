@@ -89,16 +89,7 @@ fn bilateral_weight(delta: f32, inv_sigma: f32, spatial_scale: f32) -> f32 {
     return spatial_scale * exp(- ratio * ratio);
 }
 
-fn accumulate(
-    enabled: bool,
-    logical: u32,
-    row: u32,
-    params: MagnitudeParams,
-    inv_sigma: f32,
-    spatial_scale: f32,
-    center: f32,
-    accum: vec3<f32>,
-) -> vec3<f32> {
+fn accumulate(enabled: bool, logical: u32, row: u32, params: MagnitudeParams, inv_sigma: f32, spatial_scale: f32, center: f32, accum: vec3<f32>,) -> vec3<f32> {
     if !enabled {
         return accum;
     }
