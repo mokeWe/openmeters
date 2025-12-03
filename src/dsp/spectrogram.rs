@@ -1,4 +1,6 @@
 //! spectrogram DSP. reassignment! (Auger-Flandrin 1995).
+//! 1. C. Auger and L. Flandrin, "Improving the readability of time-frequency and
+//!    time-scale representations by the reassignment method", IEEE Trans. SP, vol. 43, no. 5, May 1995.
 //! 2. K. Kodera, R. Gendrin & C. de Villedary, "Analysis of time-varying signals
 //!    with small BT values", IEEE Trans. ASSP, vol. 26, no. 1, pp. 64-76, Feb 1978.
 //!
