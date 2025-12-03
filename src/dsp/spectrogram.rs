@@ -1207,8 +1207,7 @@ impl SpectrogramProcessor {
                 continue;
             }
 
-            // δτ = Re{X_Th · X*} / |X|²
-            let delta_tau = (time_cross.re * base.re + time_cross.im * base.im) * inv_power;
+            let delta_tau = -(time_cross.re * base.re + time_cross.im * base.im) * inv_power;
             let group_delay_samples = if delta_tau.is_finite() {
                 delta_tau
             } else {
