@@ -29,13 +29,7 @@ const FREQUENCY_SCALE_OPTIONS: [FrequencyScale; 3] = [
 // Slider ranges: min, max, step
 const HISTORY_RANGE: SliderRange = SliderRange::new(120.0, 960.0, 30.0);
 const REASSIGNMENT_FLOOR_RANGE: SliderRange = SliderRange::new(-120.0, -30.0, 1.0);
-const TEMPORAL_SMOOTHING_RANGE: SliderRange = SliderRange::new(0.0, 0.99, 0.01);
 const SYNCHRO_BINS_RANGE: SliderRange = SliderRange::new(64.0, 4096.0, 64.0);
-const TEMPORAL_MAX_HZ_RANGE: SliderRange = SliderRange::new(0.0, 4000.0, 1.0);
-const TEMPORAL_BLEND_HZ_RANGE: SliderRange = SliderRange::new(0.0, 4000.0, 1.0);
-const FREQUENCY_SMOOTHING_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 1.0);
-const FREQUENCY_MAX_HZ_RANGE: SliderRange = SliderRange::new(0.0, 4000.0, 1.0);
-const FREQUENCY_BLEND_HZ_RANGE: SliderRange = SliderRange::new(0.0, 4000.0, 1.0);
 const PLANCK_BESSEL_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
 const PLANCK_BESSEL_BETA_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 0.25);
 const SECTION_PADDING: f32 = 12.0;
@@ -187,14 +181,6 @@ impl SpectrogramSettingsPane {
             |value| SettingsMessage::Spectrogram(Message::ReassignmentFloor(value)),
         );
 
-        let temporal_smoothing = labeled_slider(
-            "Temporal smoothing",
-            self.config.temporal_smoothing,
-            format!("{:.2}", self.config.temporal_smoothing),
-            TEMPORAL_SMOOTHING_RANGE,
-            |value| SettingsMessage::Spectrogram(Message::TemporalSmoothing(value)),
-        );
-
         let synchro_bins = labeled_slider(
             "Synchrosqueezing bins",
             self.config.synchrosqueezing_bin_count as f32,
@@ -203,67 +189,8 @@ impl SpectrogramSettingsPane {
             |value| SettingsMessage::Spectrogram(Message::SynchroBinCount(value)),
         );
 
-        let temporal_smoothing_max = labeled_slider(
-            "Temporal smoothing max",
-            self.config.temporal_smoothing_max_hz,
-            format!("{:.0} Hz", self.config.temporal_smoothing_max_hz),
-            TEMPORAL_MAX_HZ_RANGE,
-            |value| SettingsMessage::Spectrogram(Message::TemporalSmoothingMaxHz(value)),
-        );
-
-        let temporal_smoothing_blend = labeled_slider(
-            "Temporal smoothing blend",
-            self.config.temporal_smoothing_blend_hz,
-            format!("{:.0} Hz", self.config.temporal_smoothing_blend_hz),
-            TEMPORAL_BLEND_HZ_RANGE,
-            |value| SettingsMessage::Spectrogram(Message::TemporalSmoothingBlendHz(value)),
-        );
-
-        let frequency_smoothing = labeled_slider(
-            "Frequency smoothing",
-            self.config.frequency_smoothing_radius as f32,
-            format!("{} bins", self.config.frequency_smoothing_radius),
-            FREQUENCY_SMOOTHING_RANGE,
-            |value| SettingsMessage::Spectrogram(Message::FrequencySmoothing(value)),
-        );
-
-        let frequency_smoothing_max = labeled_slider(
-            "Frequency smoothing max",
-            self.config.frequency_smoothing_max_hz,
-            format!("{:.0} Hz", self.config.frequency_smoothing_max_hz),
-            FREQUENCY_MAX_HZ_RANGE,
-            |value| SettingsMessage::Spectrogram(Message::FrequencySmoothingMaxHz(value)),
-        );
-
-        let frequency_smoothing_blend = labeled_slider(
-            "Frequency smoothing blend",
-            self.config.frequency_smoothing_blend_hz,
-            format!("{:.0} Hz", self.config.frequency_smoothing_blend_hz),
-            FREQUENCY_BLEND_HZ_RANGE,
-            |value| SettingsMessage::Spectrogram(Message::FrequencySmoothingBlendHz(value)),
-        );
-
         let reassignment_block = column![reassignment_floor].spacing(CONTROL_SPACING);
         let synchro_block = column![synchro_bins].spacing(CONTROL_SPACING);
-
-        let smoothing_columns = row![
-            column![
-                temporal_smoothing,
-                temporal_smoothing_max,
-                temporal_smoothing_blend
-            ]
-            .spacing(CONTROL_SPACING)
-            .width(Length::FillPortion(1)),
-            column![
-                frequency_smoothing,
-                frequency_smoothing_max,
-                frequency_smoothing_blend,
-            ]
-            .spacing(CONTROL_SPACING)
-            .width(Length::FillPortion(1)),
-        ]
-        .spacing(ROW_SPACING)
-        .width(Length::Fill);
 
         let mut advanced_content = column![
             toggler(self.config.use_reassignment)
@@ -288,7 +215,7 @@ impl SpectrogramSettingsPane {
             );
 
             if self.config.use_synchrosqueezing {
-                advanced_content = advanced_content.push(synchro_block).push(smoothing_columns);
+                advanced_content = advanced_content.push(synchro_block);
             }
         }
 
@@ -323,12 +250,6 @@ pub enum Message {
     ZeroPadding(usize),
     UseSynchrosqueezing(bool),
     SynchroBinCount(f32),
-    TemporalSmoothing(f32),
-    TemporalSmoothingMaxHz(f32),
-    TemporalSmoothingBlendHz(f32),
-    FrequencySmoothing(f32),
-    FrequencySmoothingMaxHz(f32),
-    FrequencySmoothingBlendHz(f32),
     Palette(PaletteEvent),
 }
 
@@ -519,54 +440,6 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                         &mut self.config.synchrosqueezing_bin_count,
                         *value,
                         SYNCHRO_BINS_RANGE,
-                    );
-            }
-            Message::TemporalSmoothing(value) => {
-                changed |= self.config.use_synchrosqueezing
-                    && update_f32_range(
-                        &mut self.config.temporal_smoothing,
-                        *value,
-                        TEMPORAL_SMOOTHING_RANGE,
-                    );
-            }
-            Message::TemporalSmoothingMaxHz(value) => {
-                changed |= self.config.use_synchrosqueezing
-                    && update_f32_range(
-                        &mut self.config.temporal_smoothing_max_hz,
-                        *value,
-                        TEMPORAL_MAX_HZ_RANGE,
-                    );
-            }
-            Message::TemporalSmoothingBlendHz(value) => {
-                changed |= self.config.use_synchrosqueezing
-                    && update_f32_range(
-                        &mut self.config.temporal_smoothing_blend_hz,
-                        *value,
-                        TEMPORAL_BLEND_HZ_RANGE,
-                    );
-            }
-            Message::FrequencySmoothing(value) => {
-                changed |= self.config.use_synchrosqueezing
-                    && update_usize_from_f32(
-                        &mut self.config.frequency_smoothing_radius,
-                        *value,
-                        FREQUENCY_SMOOTHING_RANGE,
-                    );
-            }
-            Message::FrequencySmoothingMaxHz(value) => {
-                changed |= self.config.use_synchrosqueezing
-                    && update_f32_range(
-                        &mut self.config.frequency_smoothing_max_hz,
-                        *value,
-                        FREQUENCY_MAX_HZ_RANGE,
-                    );
-            }
-            Message::FrequencySmoothingBlendHz(value) => {
-                changed |= self.config.use_synchrosqueezing
-                    && update_f32_range(
-                        &mut self.config.frequency_smoothing_blend_hz,
-                        *value,
-                        FREQUENCY_BLEND_HZ_RANGE,
                     );
             }
             Message::Palette(event) => {

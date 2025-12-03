@@ -462,12 +462,6 @@ pub struct SpectrogramSettings {
     pub use_synchrosqueezing: bool,
     pub synchrosqueezing_bin_count: usize,
     pub synchrosqueezing_min_hz: f32,
-    pub temporal_smoothing: f32,
-    pub temporal_smoothing_max_hz: f32,
-    pub temporal_smoothing_blend_hz: f32,
-    pub frequency_smoothing_radius: usize,
-    pub frequency_smoothing_max_hz: f32,
-    pub frequency_smoothing_blend_hz: f32,
     #[serde(default)]
     pub palette: Option<PaletteSettings>,
 }
@@ -493,12 +487,6 @@ impl SpectrogramSettings {
             use_synchrosqueezing: config.use_synchrosqueezing,
             synchrosqueezing_bin_count: config.synchrosqueezing_bin_count,
             synchrosqueezing_min_hz: config.synchrosqueezing_min_hz,
-            temporal_smoothing: config.temporal_smoothing,
-            temporal_smoothing_max_hz: config.temporal_smoothing_max_hz,
-            temporal_smoothing_blend_hz: config.temporal_smoothing_blend_hz,
-            frequency_smoothing_radius: config.frequency_smoothing_radius,
-            frequency_smoothing_max_hz: config.frequency_smoothing_max_hz,
-            frequency_smoothing_blend_hz: config.frequency_smoothing_blend_hz,
             palette: None,
         }
     }
@@ -516,12 +504,6 @@ impl SpectrogramSettings {
         config.use_synchrosqueezing = self.use_synchrosqueezing;
         config.synchrosqueezing_bin_count = self.synchrosqueezing_bin_count.max(1);
         config.synchrosqueezing_min_hz = self.synchrosqueezing_min_hz.max(1.0);
-        config.temporal_smoothing = self.temporal_smoothing.clamp(0.0, 0.9999);
-        config.temporal_smoothing_max_hz = self.temporal_smoothing_max_hz.max(0.0);
-        config.temporal_smoothing_blend_hz = self.temporal_smoothing_blend_hz.max(0.0);
-        config.frequency_smoothing_radius = self.frequency_smoothing_radius;
-        config.frequency_smoothing_max_hz = self.frequency_smoothing_max_hz.max(0.0);
-        config.frequency_smoothing_blend_hz = self.frequency_smoothing_blend_hz.max(0.0);
     }
 
     pub fn to_config(&self) -> SpectrogramConfig {
