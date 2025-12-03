@@ -162,7 +162,8 @@ impl WindowKind {
                 for (n, value) in window.iter_mut().enumerate() {
                     let phase = (n as f32) * scale;
                     let c1 = phase.cos();
-                    let c2 = c1.mul_add(c1, c1).mul_add(2.0, -1.0);
+                    // cos(2θ) = 2cos²(θ) - 1
+                    let c2 = (2.0 * c1).mul_add(c1, -1.0);
                     *value = a2.mul_add(c2, a1.mul_add(c1, a0));
                 }
             }
@@ -367,12 +368,16 @@ fn modified_bessel_i1(x: f64) -> f64 {
                     + y2 * (0.150_849_34
                         + y2 * (0.026_587_33 + y2 * (0.003_015_32 + y2 * 0.000_324_11))))))
     } else {
+        // Abramowitz & Stegun 9.8.4: asymptotic expansion for I₁(x)
         let y = 3.75 / ax;
         let poly = 0.398_942_28
             + y * (-0.039_880_24
                 + y * (-0.003_620_18
                     + y * (0.001_638_01
-                        + y * (-0.010_315_55 + y * (0.022_829_67 - y * 0.028_953_12)))));
+                        + y * (-0.010_315_55
+                            + y * (0.022_829_67
+                                + y * (-0.028_953_12
+                                    + y * (0.017_876_54 - y * 0.004_200_59)))))));
         let ans = poly * ax.exp() / ax.sqrt();
         if x < 0.0 { -ans } else { ans }
     }
