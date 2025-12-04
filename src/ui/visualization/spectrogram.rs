@@ -121,8 +121,6 @@ impl SpectrogramProcessor {
     }
 }
 
-/// Captures all UI-facing spectrogram state, including cached columns,
-/// palette information, and configuration derived from incoming updates.
 #[derive(Debug, Clone)]
 pub struct SpectrogramState {
     buffer: RefCell<SpectrogramBuffer>,
@@ -135,7 +133,7 @@ pub struct SpectrogramState {
     sample_rate: f32,
     frequency_scale: FrequencyScale,
     history_length: usize,
-    synchro_bins_hz: Option<Arc<[f32]>>,
+    display_bins_hz: Option<Arc<[f32]>>,
     instance_id: u64,
 }
 
@@ -157,7 +155,7 @@ impl SpectrogramState {
             sample_rate: default_cfg.sample_rate,
             frequency_scale: default_cfg.frequency_scale,
             history_length: default_cfg.history_length,
-            synchro_bins_hz: None,
+            display_bins_hz: None,
             instance_id: next_instance_id(),
         }
     }
@@ -198,11 +196,12 @@ impl SpectrogramState {
             self.history.clear();
         }
 
-        let (use_synchro, synchro_bins) =
-            Self::compute_synchro_state(&update.new_columns, &update.synchro_bins_hz);
-        let incoming_height = Self::pending_height(&update.new_columns, use_synchro);
+        let display_bins =
+            Self::validate_display_bins(&update.new_columns, &update.display_bins_hz);
+        let has_display_bins = display_bins.is_some();
 
-        let existing_height = Self::history_height(&self.history, use_synchro);
+        let incoming_height = Self::pending_height(&update.new_columns);
+        let existing_height = Self::history_height(&self.history);
         if incoming_height
             .zip(existing_height)
             .is_some_and(|(incoming, existing)| incoming != existing)
@@ -216,21 +215,17 @@ impl SpectrogramState {
             update.history_length,
         );
 
-        self.synchro_bins_hz = match (use_synchro, synchro_bins) {
-            (true, Some(bins)) => Some(bins),
-            _ => None,
-        };
+        self.display_bins_hz = display_bins;
+        let display_bins = self.display_bins_hz.as_deref();
 
-        let synchro_bins = self.synchro_bins_hz.as_deref();
-
-        let desired_height = Self::history_height(&self.history, use_synchro)
+        let desired_height = Self::history_height(&self.history)
             .map(|len| len as u32)
             .unwrap_or(0);
 
         let mut buffer = self.buffer.borrow_mut();
 
         if !needs_rebuild {
-            needs_rebuild = buffer.requires_rebuild(update, use_synchro, desired_height);
+            needs_rebuild = buffer.requires_rebuild(update, has_display_bins, desired_height);
         }
 
         buffer.clear_pending();
@@ -244,15 +239,19 @@ impl SpectrogramState {
                     sample_rate: update.sample_rate,
                     fft_size: update.fft_size,
                     frequency_scale: update.frequency_scale,
-                    use_synchro,
-                    synchro_bins_hz: synchro_bins,
+                    has_display_bins,
+                    display_bins_hz: display_bins,
                 },
             );
         } else if !update.new_columns.is_empty() {
-            buffer.append_columns(&update.new_columns, &self.style, use_synchro, synchro_bins);
+            buffer.append_columns(
+                &update.new_columns,
+                &self.style,
+                has_display_bins,
+                display_bins,
+            );
         }
 
-        // Update cached state (after dropping buffer borrow)
         drop(buffer);
 
         self.history_length = update.history_length;
@@ -296,48 +295,36 @@ impl SpectrogramState {
         (cache.palette, cache.background)
     }
 
-    fn compute_synchro_state(
+    fn validate_display_bins(
         columns: &[SpectrogramColumn],
         bins: &Option<Arc<[f32]>>,
-    ) -> (bool, Option<Arc<[f32]>>) {
-        let bins = match bins.as_ref() {
-            Some(b) if !b.is_empty() => b,
-            _ => return (false, None),
-        };
-
-        let compatible = columns.iter().all(|col| {
-            col.synchro_magnitudes_db
-                .as_ref()
-                .is_some_and(|v| v.len() == bins.len())
-        });
-
-        if compatible {
-            (true, Some(Arc::clone(bins)))
-        } else {
-            (false, None)
-        }
+    ) -> Option<Arc<[f32]>> {
+        let bins = bins.as_ref().filter(|b| !b.is_empty())?;
+        let compatible = columns
+            .iter()
+            .all(|col| col.magnitudes_db.len() == bins.len());
+        compatible.then(|| Arc::clone(bins))
     }
 
-    fn column_height(column: &SpectrogramColumn, use_synchro: bool) -> Option<usize> {
-        SpectrogramBuffer::column_values(column, use_synchro)
-            .map(|values| values.len().min(MAX_TEXTURE_BINS))
+    fn column_height(column: &SpectrogramColumn) -> usize {
+        column.magnitudes_db.len().min(MAX_TEXTURE_BINS)
     }
 
     fn first_height(
         columns: impl IntoIterator<Item = impl std::borrow::Borrow<SpectrogramColumn>>,
-        use_synchro: bool,
     ) -> Option<usize> {
         columns
             .into_iter()
-            .find_map(|col| Self::column_height(col.borrow(), use_synchro))
+            .map(|col| Self::column_height(col.borrow()))
+            .find(|&h| h > 0)
     }
 
-    fn history_height(history: &VecDeque<SpectrogramColumn>, use_synchro: bool) -> Option<usize> {
-        Self::first_height(history, use_synchro)
+    fn history_height(history: &VecDeque<SpectrogramColumn>) -> Option<usize> {
+        Self::first_height(history)
     }
 
-    fn pending_height(columns: &[SpectrogramColumn], use_synchro: bool) -> Option<usize> {
-        Self::first_height(columns, use_synchro)
+    fn pending_height(columns: &[SpectrogramColumn]) -> Option<usize> {
+        Self::first_height(columns)
     }
 
     fn push_history(
@@ -393,7 +380,7 @@ struct SpectrogramBuffer {
     row_lower_bins: Arc<Vec<usize>>,
     row_upper_bins: Arc<Vec<usize>>,
     row_interp_weights: Arc<Vec<f32>>,
-    using_synchro: bool,
+    has_display_bins: bool,
     grid_bin_frequencies: Arc<Vec<f32>>,
     update_buffer_pool: ColumnBufferPool,
 }
@@ -404,8 +391,8 @@ struct RebuildContext<'a> {
     sample_rate: f32,
     fft_size: usize,
     frequency_scale: FrequencyScale,
-    use_synchro: bool,
-    synchro_bins_hz: Option<&'a [f32]>,
+    has_display_bins: bool,
+    display_bins_hz: Option<&'a [f32]>,
 }
 
 impl SpectrogramBuffer {
@@ -425,7 +412,7 @@ impl SpectrogramBuffer {
             row_lower_bins: Arc::new(Vec::new()),
             row_upper_bins: Arc::new(Vec::new()),
             row_interp_weights: Arc::new(Vec::new()),
-            using_synchro: false,
+            has_display_bins: false,
             grid_bin_frequencies: Arc::new(Vec::new()),
             update_buffer_pool: ColumnBufferPool::new(),
         }
@@ -445,22 +432,15 @@ impl SpectrogramBuffer {
 
     #[cfg(test)]
     fn using_synchro(&self) -> bool {
-        self.using_synchro
+        self.has_display_bins
     }
 
     fn has_dimensions(&self) -> bool {
         self.capacity != 0 && self.height != 0
     }
 
-    fn column_values(column: &SpectrogramColumn, use_synchro: bool) -> Option<&[f32]> {
-        if use_synchro {
-            column
-                .synchro_magnitudes_db
-                .as_ref()
-                .map(|values| values.as_ref())
-        } else {
-            Some(column.magnitudes_db.as_ref())
-        }
+    fn column_values(column: &SpectrogramColumn) -> &[f32] {
+        &column.magnitudes_db
     }
 
     fn latest_column(&self) -> u32 {
@@ -501,14 +481,14 @@ impl SpectrogramBuffer {
     fn requires_rebuild(
         &self,
         update: &SpectrogramUpdate,
-        use_synchro: bool,
+        has_display_bins: bool,
         desired_height: u32,
     ) -> bool {
         if !self.has_dimensions() {
             return true;
         }
 
-        self.using_synchro != use_synchro
+        self.has_display_bins != has_display_bins
             || (desired_height > 0 && self.texture_height() != desired_height)
             || self.capacity != update.history_length as u32
             || (self.sample_rate - update.sample_rate).abs() > f32::EPSILON
@@ -516,7 +496,6 @@ impl SpectrogramBuffer {
     }
 
     fn mark_dirty(&mut self) {
-        // If palette/style changes, refresh entire buffer if non-empty
         if !self.values.is_empty()
             && (self.pending_base.is_none() || !self.pending_updates.is_empty())
         {
@@ -537,8 +516,8 @@ impl SpectrogramBuffer {
             sample_rate,
             fft_size,
             frequency_scale,
-            use_synchro,
-            synchro_bins_hz,
+            has_display_bins,
+            display_bins_hz,
         } = params;
 
         self.clear_pending();
@@ -551,14 +530,16 @@ impl SpectrogramBuffer {
         };
         self.fft_size = fft_size.max(1);
         self.frequency_scale = frequency_scale;
-        self.using_synchro = use_synchro;
+        self.has_display_bins = has_display_bins;
 
         self.height = history
             .iter()
-            .find_map(|column| {
-                SpectrogramBuffer::column_values(column, use_synchro)
-                    .map(|values| values.len().min(MAX_TEXTURE_BINS) as u32)
+            .map(|column| {
+                SpectrogramBuffer::column_values(column)
+                    .len()
+                    .min(MAX_TEXTURE_BINS) as u32
             })
+            .find(|&h| h > 0)
             .unwrap_or(0);
 
         if !self.has_dimensions() {
@@ -569,13 +550,13 @@ impl SpectrogramBuffer {
             self.row_lower_bins = Arc::new(Vec::new());
             self.row_upper_bins = Arc::new(Vec::new());
             self.row_interp_weights = Arc::new(Vec::new());
-            self.using_synchro = false;
+            self.has_display_bins = false;
             self.grid_bin_frequencies = Arc::new(Vec::new());
             self.clear_pending();
             return;
         }
 
-        self.sync_grid_frequencies(synchro_bins_hz);
+        self.sync_grid_frequencies(display_bins_hz);
 
         self.values = Vec::with_capacity(self.capacity as usize * self.height as usize);
         self.values
@@ -585,9 +566,7 @@ impl SpectrogramBuffer {
         self.rebuild_row_positions();
 
         for column in history.iter() {
-            let Some(values) = SpectrogramBuffer::column_values(column, use_synchro) else {
-                continue;
-            };
+            let values = SpectrogramBuffer::column_values(column);
             if values.len() < self.height as usize {
                 continue;
             }
@@ -605,20 +584,18 @@ impl SpectrogramBuffer {
         &mut self,
         columns: &[SpectrogramColumn],
         style: &SpectrogramStyle,
-        use_synchro: bool,
-        synchro_bins_hz: Option<&[f32]>,
+        has_display_bins: bool,
+        display_bins_hz: Option<&[f32]>,
     ) {
         if !self.has_dimensions() {
             return;
         }
 
-        self.ensure_row_mapping(use_synchro);
-        self.sync_grid_frequencies(synchro_bins_hz);
+        self.ensure_row_mapping(has_display_bins);
+        self.sync_grid_frequencies(display_bins_hz);
 
         for column in columns {
-            let Some(values) = SpectrogramBuffer::column_values(column, use_synchro) else {
-                continue;
-            };
+            let values = SpectrogramBuffer::column_values(column);
 
             if values.len() < self.height as usize {
                 continue;
@@ -705,8 +682,7 @@ impl SpectrogramBuffer {
         let mut upper_bins = Vec::with_capacity(height);
         let mut weights = Vec::with_capacity(height);
 
-        // Synchrosqueezed bins are already in display order, use identity mapping
-        if self.using_synchro {
+        if self.has_display_bins {
             positions.extend((0..height).map(|i| i as f32));
             lower_bins.extend(0..height);
             upper_bins.extend(0..height);
@@ -769,20 +745,21 @@ impl SpectrogramBuffer {
         dynamic.max(MIN_INCREMENTAL_UPDATES)
     }
 
-    fn ensure_row_mapping(&mut self, use_synchro: bool) {
+    fn ensure_row_mapping(&mut self, has_display_bins: bool) {
         if !self.has_dimensions() {
             return;
         }
 
-        let needs_refresh = self.using_synchro != use_synchro || self.needs_row_sampling_refresh();
+        let needs_refresh =
+            self.has_display_bins != has_display_bins || self.needs_row_sampling_refresh();
         if needs_refresh {
-            self.using_synchro = use_synchro;
+            self.has_display_bins = has_display_bins;
             self.rebuild_row_positions();
         }
     }
 
-    fn sync_grid_frequencies(&mut self, synchro_bins_hz: Option<&[f32]>) {
-        match synchro_bins_hz {
+    fn sync_grid_frequencies(&mut self, display_bins_hz: Option<&[f32]>) {
+        match display_bins_hz {
             Some(freqs) if !freqs.is_empty() => {
                 let limit = self.height.min(freqs.len() as u32) as usize;
                 let mut new_freqs = Vec::with_capacity(limit);
@@ -860,25 +837,20 @@ mod tests {
     fn sample_column_interpolates_between_bins() {
         let column = [0.0_f32, -12.0, -24.0];
 
-        // Test exact bin position
         let exact = column[1];
         assert!((exact + 12.0).abs() < 1e-6);
 
-        // Test interpolation at midpoint
         let midpoint = column[1] + (column[2] - column[1]) * 0.5;
         assert!((midpoint + 18.0).abs() < 1e-6);
     }
 
     #[test]
-    fn synchro_columns_use_log_grid_height() {
+    fn display_format_columns_use_grid_height() {
         let mut state = SpectrogramState::new();
         let column = SpectrogramColumn {
             timestamp: Instant::now(),
-            magnitudes_db: Arc::from(vec![-96.0_f32; 8].into_boxed_slice()),
+            magnitudes_db: Arc::from(vec![-30.0, -25.0, -20.0, -15.0].into_boxed_slice()),
             reassigned: None,
-            synchro_magnitudes_db: Some(Arc::from(
-                vec![-30.0, -25.0, -20.0, -15.0].into_boxed_slice(),
-            )),
         };
 
         let update = SpectrogramUpdate {
@@ -888,7 +860,7 @@ mod tests {
             frequency_scale: FrequencyScale::default(),
             history_length: 4,
             reset: true,
-            synchro_bins_hz: Some(Arc::from(vec![40.0, 80.0, 160.0, 320.0].into_boxed_slice())),
+            display_bins_hz: Some(Arc::from(vec![40.0, 80.0, 160.0, 320.0].into_boxed_slice())),
             new_columns: vec![column],
         };
 
@@ -900,15 +872,12 @@ mod tests {
     }
 
     #[test]
-    fn synchro_columns_place_high_frequencies_on_top() {
+    fn display_format_columns_place_high_frequencies_on_top() {
         let mut state = SpectrogramState::new();
         let column = SpectrogramColumn {
             timestamp: Instant::now(),
-            magnitudes_db: Arc::from(vec![-96.0_f32; 8].into_boxed_slice()),
+            magnitudes_db: Arc::from(vec![-10.0, -20.0, -30.0, -40.0].into_boxed_slice()),
             reassigned: None,
-            synchro_magnitudes_db: Some(Arc::from(
-                vec![-10.0, -20.0, -30.0, -40.0].into_boxed_slice(),
-            )),
         };
 
         let update = SpectrogramUpdate {
@@ -918,7 +887,7 @@ mod tests {
             frequency_scale: FrequencyScale::default(),
             history_length: 4,
             reset: true,
-            synchro_bins_hz: Some(Arc::from(
+            display_bins_hz: Some(Arc::from(
                 vec![10_000.0, 2_500.0, 625.0, 156.25].into_boxed_slice(),
             )),
             new_columns: vec![column],
@@ -953,7 +922,6 @@ mod tests {
             timestamp: Instant::now(),
             magnitudes_db: Arc::from(magnitudes.into_boxed_slice()),
             reassigned: None,
-            synchro_magnitudes_db: None,
         };
 
         let update = SpectrogramUpdate {
@@ -963,7 +931,7 @@ mod tests {
             frequency_scale: FrequencyScale::default(),
             history_length: 8,
             reset: true,
-            synchro_bins_hz: None,
+            display_bins_hz: None,
             new_columns: vec![column],
         };
 
@@ -975,8 +943,6 @@ mod tests {
     }
 }
 
-/// Memoizes palette conversions so we avoid recomputing RGBA values unless
-/// the style or palette actually change.
 #[derive(Debug, Clone)]
 struct PaletteCache {
     palette: [[f32; 4]; PALETTE_STOPS],
@@ -1009,7 +975,6 @@ struct TooltipState {
     cursor: Option<Point>,
 }
 
-/// widget wrapper that renders the spectrogram buffer
 #[derive(Debug)]
 pub struct Spectrogram<'a> {
     state: &'a RefCell<SpectrogramState>,
@@ -1020,7 +985,6 @@ impl<'a> Spectrogram<'a> {
         Self { state }
     }
 
-    /// Calculate the frequency at a given Y position in the bounds.
     fn frequency_at_y(&self, y: f32, bounds: Rectangle) -> Option<f32> {
         if bounds.height <= 0.0 || !bounds.contains(Point::new(bounds.x, y)) {
             return None;
@@ -1029,8 +993,7 @@ impl<'a> Spectrogram<'a> {
         let normalized_y = (y - bounds.y) / bounds.height;
         let state = self.state.borrow();
 
-        // If synchrosqueezed bins are active, directly look up frequency
-        if let Some(bins) = state.synchro_bins_hz.as_deref() {
+        if let Some(bins) = state.display_bins_hz.as_deref() {
             let bin_index = (normalized_y * bins.len() as f32).floor() as usize;
             return bins.get(bin_index).copied();
         }
@@ -1049,7 +1012,6 @@ impl<'a> Spectrogram<'a> {
         (frequency.is_finite() && frequency > 0.0).then_some(frequency)
     }
 
-    /// Draw the frequency tooltip near the cursor.
     fn draw_tooltip(
         &self,
         renderer: &mut iced::Renderer,
@@ -1101,7 +1063,6 @@ impl<'a> Spectrogram<'a> {
 
         let palette = theme.extended_palette();
 
-        // Shadow
         renderer.fill_quad(
             Quad {
                 bounds: Rectangle::new(
@@ -1120,7 +1081,6 @@ impl<'a> Spectrogram<'a> {
             )),
         );
 
-        // Background
         renderer.fill_quad(
             Quad {
                 bounds: tooltip_bounds,
@@ -1130,7 +1090,6 @@ impl<'a> Spectrogram<'a> {
             Background::Color(palette.background.strong.color),
         );
 
-        // Text
         let text_origin = Point::new(
             tooltip_bounds.x + TOOLTIP_PADDING,
             tooltip_bounds.y + TOOLTIP_PADDING,

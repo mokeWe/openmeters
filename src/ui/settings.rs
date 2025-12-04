@@ -459,9 +459,8 @@ pub struct SpectrogramSettings {
     pub reassignment_power_floor_db: f32,
     pub reassignment_low_bin_limit: usize,
     pub zero_padding_factor: usize,
-    pub use_synchrosqueezing: bool,
-    pub synchrosqueezing_bin_count: usize,
-    pub synchrosqueezing_min_hz: f32,
+    pub display_bin_count: usize,
+    pub display_min_hz: f32,
     #[serde(default)]
     pub palette: Option<PaletteSettings>,
 }
@@ -484,9 +483,8 @@ impl SpectrogramSettings {
             reassignment_power_floor_db: config.reassignment_power_floor_db,
             reassignment_low_bin_limit: config.reassignment_low_bin_limit,
             zero_padding_factor: config.zero_padding_factor,
-            use_synchrosqueezing: config.use_synchrosqueezing,
-            synchrosqueezing_bin_count: config.synchrosqueezing_bin_count,
-            synchrosqueezing_min_hz: config.synchrosqueezing_min_hz,
+            display_bin_count: config.display_bin_count,
+            display_min_hz: config.display_min_hz,
             palette: None,
         }
     }
@@ -501,9 +499,8 @@ impl SpectrogramSettings {
         config.reassignment_power_floor_db = self.reassignment_power_floor_db.clamp(-160.0, 0.0);
         config.reassignment_low_bin_limit = self.reassignment_low_bin_limit;
         config.zero_padding_factor = self.zero_padding_factor.max(1);
-        config.use_synchrosqueezing = self.use_synchrosqueezing;
-        config.synchrosqueezing_bin_count = self.synchrosqueezing_bin_count.max(1);
-        config.synchrosqueezing_min_hz = self.synchrosqueezing_min_hz.max(1.0);
+        config.display_bin_count = self.display_bin_count.max(1);
+        config.display_min_hz = self.display_min_hz.max(1.0);
     }
 
     pub fn to_config(&self) -> SpectrogramConfig {

@@ -29,7 +29,7 @@ const FREQUENCY_SCALE_OPTIONS: [FrequencyScale; 3] = [
 // Slider ranges: min, max, step
 const HISTORY_RANGE: SliderRange = SliderRange::new(120.0, 960.0, 30.0);
 const REASSIGNMENT_FLOOR_RANGE: SliderRange = SliderRange::new(-120.0, -30.0, 1.0);
-const SYNCHRO_BINS_RANGE: SliderRange = SliderRange::new(64.0, 4096.0, 64.0);
+const DISPLAY_BINS_RANGE: SliderRange = SliderRange::new(64.0, 4096.0, 64.0);
 const PLANCK_BESSEL_EPSILON_RANGE: SliderRange = SliderRange::new(0.01, 0.5, 0.01);
 const PLANCK_BESSEL_BETA_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 0.25);
 const SECTION_PADDING: f32 = 12.0;
@@ -181,16 +181,16 @@ impl SpectrogramSettingsPane {
             |value| SettingsMessage::Spectrogram(Message::ReassignmentFloor(value)),
         );
 
-        let synchro_bins = labeled_slider(
-            "Synchrosqueezing bins",
-            self.config.synchrosqueezing_bin_count as f32,
-            format!("{} bins", self.config.synchrosqueezing_bin_count),
-            SYNCHRO_BINS_RANGE,
-            |value| SettingsMessage::Spectrogram(Message::SynchroBinCount(value)),
+        let display_bins = labeled_slider(
+            "Display bins",
+            self.config.display_bin_count as f32,
+            format!("{} bins", self.config.display_bin_count),
+            DISPLAY_BINS_RANGE,
+            |value| SettingsMessage::Spectrogram(Message::DisplayBinCount(value)),
         );
 
         let reassignment_block = column![reassignment_floor].spacing(CONTROL_SPACING);
-        let synchro_block = column![synchro_bins].spacing(CONTROL_SPACING);
+        let display_block = column![display_bins].spacing(CONTROL_SPACING);
 
         let mut advanced_content = column![
             toggler(self.config.use_reassignment)
@@ -204,19 +204,9 @@ impl SpectrogramSettingsPane {
         .spacing(CONTROL_SPACING);
 
         if self.config.use_reassignment {
-            advanced_content = advanced_content.push(reassignment_block).push(
-                toggler(self.config.use_synchrosqueezing)
-                    .label("Synchrosqueezed accumulation")
-                    .text_size(TOGGLER_TEXT_SIZE)
-                    .spacing(CONTROL_SPACING - 4.0)
-                    .on_toggle(|value| {
-                        SettingsMessage::Spectrogram(Message::UseSynchrosqueezing(value))
-                    }),
-            );
-
-            if self.config.use_synchrosqueezing {
-                advanced_content = advanced_content.push(synchro_block);
-            }
+            advanced_content = advanced_content
+                .push(reassignment_block)
+                .push(display_block);
         }
 
         section_container("Advanced signal processing", advanced_content)
@@ -248,8 +238,7 @@ pub enum Message {
     UseReassignment(bool),
     ReassignmentFloor(f32),
     ZeroPadding(usize),
-    UseSynchrosqueezing(bool),
-    SynchroBinCount(f32),
+    DisplayBinCount(f32),
     Palette(PaletteEvent),
 }
 
@@ -262,14 +251,10 @@ pub fn create(
         .module_settings(VisualKind::SPECTROGRAM)
         .and_then(|stored| stored.config::<SpectrogramSettings>());
 
-    let mut config = stored_settings
+    let config = stored_settings
         .as_ref()
         .map(|settings| settings.to_config())
         .unwrap_or_default();
-
-    if !config.use_reassignment {
-        config.use_synchrosqueezing = false;
-    }
 
     let palette = stored_settings
         .as_ref()
@@ -411,12 +396,7 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
                 }
             }
             Message::UseReassignment(value) => {
-                if set_if_changed(&mut self.config.use_reassignment, *value) {
-                    if !self.config.use_reassignment {
-                        self.config.use_synchrosqueezing = false;
-                    }
-                    changed = true;
-                }
+                changed |= set_if_changed(&mut self.config.use_reassignment, *value);
             }
             Message::ReassignmentFloor(value) => {
                 changed |= update_f32_range(
@@ -428,18 +408,12 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
             Message::ZeroPadding(value) => {
                 changed |= set_if_changed(&mut self.config.zero_padding_factor, *value);
             }
-            Message::UseSynchrosqueezing(value) => {
-                let desired = *value && self.config.use_reassignment;
-                if set_if_changed(&mut self.config.use_synchrosqueezing, desired) {
-                    changed = true;
-                }
-            }
-            Message::SynchroBinCount(value) => {
-                changed |= self.config.use_synchrosqueezing
+            Message::DisplayBinCount(value) => {
+                changed |= self.config.use_reassignment
                     && update_usize_from_f32(
-                        &mut self.config.synchrosqueezing_bin_count,
+                        &mut self.config.display_bin_count,
                         *value,
-                        SYNCHRO_BINS_RANGE,
+                        DISPLAY_BINS_RANGE,
                     );
             }
             Message::Palette(event) => {
