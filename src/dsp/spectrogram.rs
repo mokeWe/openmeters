@@ -4,6 +4,8 @@
 //! 1. F. Auger and P. Flandrin, "Improving the readability of time-frequency and
 //!    time-scale representations by the reassignment method", IEEE Trans. SP,
 //!    vol. 43, no. 5, pp. 1068-1089, May 1995.
+//!    Note: in our delta calculations the signs are inverted compared to the original
+//!    paper, to match the more common convention.
 //! 2. K. Kodera, R. Gendrin & C. de Villedary, "Analysis of time-varying signals
 //!    with small BT values", IEEE Trans. ASSP, vol. 26, no. 1, pp. 64-76, Feb 1978.
 //! 3. T. Oberlin, S. Meignen, V. Perrier, "Second-order synchrosqueezing transform
@@ -34,7 +36,7 @@ const MAX_REASSIGNMENT_SAMPLES: usize = 8192;
 pub const PLANCK_BESSEL_DEFAULT_EPSILON: f32 = 0.1;
 pub const PLANCK_BESSEL_DEFAULT_BETA: f32 = 5.5;
 
-/// Precomputed Gaussian kernel for 3x3 splatting (sigma=0.45, radius=1).
+/// Precomputed Gaussian kernel for 3x3 splatting (sigma=0.667, radius=1).
 /// Stored as [df][dt] for natural iteration order.
 const GAUSSIAN_KERNEL_3X3: [[f32; 3]; 3] = {
     const CENTER: f32 = 1.0;
