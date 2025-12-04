@@ -251,11 +251,7 @@ impl ConfigPage {
             &format!(" - {} total", self.applications.len())
         };
 
-        let indicator = if self.applications_expanded {
-            "v"
-        } else {
-            ">"
-        };
+        let indicator = if self.applications_expanded { "v" } else { ">" };
         let summary_label = format!("{indicator} Applications{status_suffix}");
 
         let summary_button = button(
