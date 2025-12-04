@@ -18,7 +18,7 @@ pub const DB_FLOOR: f32 = -140.0;
 /// Minimum power value to avoid log(0) in dB conversions.
 const POWER_EPSILON: f32 = 1.0e-20;
 
-/// Natural log to decibel conversion factor: 10 / ln(10) ≈ 4.342944819.
+/// Natural log to decibel conversion factor: 10 / ln(10) ~= 4.342944819.
 const LN_TO_DB: f32 = 4.342_944_8;
 
 /// Convert power (magnitude squared) to decibels.

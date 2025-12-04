@@ -309,7 +309,7 @@ impl UiApp {
         self.settings_window
             .as_ref()
             .filter(|w| w.id == window)
-            .map(|w| format!("{} settings — OpenMeters", w.panel.title()))
+            .map(|w| format!("{} settings - OpenMeters", w.panel.title()))
             .unwrap_or_else(|| "OpenMeters".to_string())
     }
 

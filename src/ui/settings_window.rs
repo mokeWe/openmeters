@@ -46,7 +46,7 @@ impl SettingsWindow {
                     )
                     .on_press(SettingsWindowMessage::WindowDragged)
                     .interaction(iced::mouse::Interaction::Grab),
-                    button(text("×").size(18).line_height(1.0))
+                    button(text("x").size(18).line_height(1.0))
                         .on_press(SettingsWindowMessage::Close)
                         .padding([2, 8])
                         .style(theme::surface_button_style)

@@ -252,9 +252,9 @@ impl ConfigPage {
         };
 
         let indicator = if self.applications_expanded {
-            "▾"
+            "v"
         } else {
-            "▸"
+            ">"
         };
         let summary_label = format!("{indicator} Applications{status_suffix}");
 

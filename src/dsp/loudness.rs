@@ -566,7 +566,7 @@ mod tests {
         let peak = meter.take_peak();
         // Inter-sample peak should be higher than the sample values
         // For alternating +/- 0.7 (Nyquist), the true peak can theoretically
-        // be up to ~1.21× the sample amplitude due to reconstruction
+        // be up to ~1.21x the sample amplitude due to reconstruction
         assert!(
             peak > 0.7,
             "inter-sample peak {peak:.4} should exceed sample amplitude 0.7"
