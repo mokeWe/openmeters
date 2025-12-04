@@ -1594,7 +1594,7 @@ fn planck_taper_derivative(distance: f32, taper_span: f32) -> f32 {
     let exponent = s / d - s / denom;
     let exp_e = exponent.exp();
     let logistic = 1.0 / (exp_e + 1.0);
-    let gradient = s / (d * d) - s / (denom * denom);
+    let gradient = s / (d * d) + s / (denom * denom);
     (logistic * (1.0 - logistic) * gradient) as f32
 }
 
