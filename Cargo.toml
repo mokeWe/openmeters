@@ -31,7 +31,3 @@ ebur128 = "0.1.10"
 
 [profile.dev]
 opt-level = 3
-
-[profile.release]
-lto = "thin"
-codegen-units = 1
