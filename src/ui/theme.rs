@@ -45,9 +45,7 @@ pub const DEFAULT_WAVEFORM_PALETTE: [Color; 5] = [
     Color::from_rgb(0.400, 0.000, 0.800),
 ];
 
-pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 1] = [
-    Color::from_rgb(1.0, 1.0, 1.0),
-];
+pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 1] = [Color::from_rgb(1.0, 1.0, 1.0)];
 
 pub const DEFAULT_STEREOMETER_PALETTE: [Color; 2] = [
     Color::from_rgb(1.0, 1.0, 1.0),

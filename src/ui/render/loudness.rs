@@ -7,209 +7,78 @@ use iced_wgpu::wgpu;
 use std::collections::HashMap;
 
 use crate::ui::render::common::{ClipTransform, SimplePipeline, SimpleVertex, quad_vertices};
-use crate::util::audio::lerp;
 
-const VALUE_SCALE_BASE: &[(f32, f32)] = &[
-    (0.0, 0.0),
-    (0.12, 0.10),
-    (0.25, 0.24),
-    (0.40, 0.42),
-    (0.55, 0.58),
-    (0.70, 0.73),
-    (0.82, 0.86),
-    (0.92, 0.95),
-    (1.0, 1.0),
-];
+const GAP_FRACTION: f32 = 0.1;
+const BAR_WIDTH_SCALE: f32 = 0.6;
+const INNER_GAP_RATIO: f32 = 0.09;
+const GUIDE_LENGTH: f32 = 4.0;
+const GUIDE_THICKNESS: f32 = 1.0;
+const GUIDE_PADDING: f32 = 3.0;
+const THRESHOLD_THICKNESS: f32 = 1.5;
 
-const VALUE_SCALE_EXPONENT: f32 = 1.1;
-
-const INNER_FILL_GAP_RATIO: f32 = 0.09;
-
-/// Describes how a loudness meter should be rendered for a single frame.
+/// A single meter bar with background and fill segments.
 #[derive(Debug, Clone)]
-pub struct VisualParams {
-    pub min_loudness: f32,
-    pub max_loudness: f32,
-    pub channels: Vec<ChannelVisual>,
-    pub channel_gap_fraction: f32,
-    pub channel_width_scale: f32,
-    pub short_term_value: f32,
-    pub value_unit: String,
-    pub guides: Vec<GuideLine>,
+pub struct MeterBar {
+    pub bg_color: [f32; 4],
+    pub fills: Vec<(f32, [f32; 4])>,
+}
+
+/// Parameters for rendering the loudness meter.
+#[derive(Debug, Clone)]
+pub struct RenderParams {
+    pub min_db: f32,
+    pub max_db: f32,
+    pub bars: Vec<MeterBar>,
+    pub guides: Vec<f32>,
+    pub guide_color: [f32; 4],
+    pub threshold_db: Option<f32>,
     pub left_padding: f32,
     pub right_padding: f32,
-    pub guide_padding: f32,
-    pub value_scale_bias: f32,
-    pub vertical_padding: f32,
 }
 
-impl VisualParams {
-    pub fn clamp_ratio(&self, value: f32) -> f32 {
-        if (self.max_loudness - self.min_loudness).abs() <= f32::EPSILON {
+impl RenderParams {
+    /// Convert dB value to 0..1 ratio with visual scaling.
+    pub fn db_to_ratio(&self, db: f32) -> f32 {
+        let range = self.max_db - self.min_db;
+        if range <= f32::EPSILON {
             return 0.0;
         }
-
-        ((value - self.min_loudness) / (self.max_loudness - self.min_loudness)).clamp(0.0, 1.0)
+        let raw = ((db - self.min_db) / range).clamp(0.0, 1.0);
+        raw.powf(0.9)
     }
 
-    fn gap_fraction(&self) -> f32 {
-        self.channel_gap_fraction.clamp(0.0, 0.5)
-    }
-
-    pub fn effective_left_padding(&self, total_width: f32) -> f32 {
-        if total_width <= 0.0 {
-            return 0.0;
-        }
-
-        let max_ratio = 0.45;
-        self.left_padding.min(total_width * max_ratio)
-    }
-
-    pub fn effective_right_padding(&self, total_width: f32, effective_left_padding: f32) -> f32 {
-        if total_width <= 0.0 {
-            return 0.0;
-        }
-
-        let max_ratio = 0.55;
-        let desired = self.right_padding.min(total_width * max_ratio);
-        let remaining_width = (total_width - effective_left_padding).max(0.0);
-        let min_meter_width = 12.0f32;
-        if remaining_width <= min_meter_width {
-            return 0.0;
-        }
-
-        desired.min((remaining_width - min_meter_width).max(0.0))
-    }
-
-    pub fn meter_horizontal_bounds(&self, bounds: &Rectangle) -> Option<(f32, f32)> {
-        self.meter_geometry(bounds)
-            .map(|geometry| (geometry.meter_left, geometry.meter_right))
-    }
-
-    pub fn meter_ratio(&self, value: f32) -> f32 {
-        let raw = self.clamp_ratio(value);
-        if raw <= 0.0 {
-            return 0.0;
-        }
-        if raw >= 1.0 {
-            return 1.0;
-        }
-
-        let shaped = raw.powf(VALUE_SCALE_EXPONENT);
-        let bias = self.value_scale_bias.clamp(0.0, 1.0);
-        let upper_idx = VALUE_SCALE_BASE
-            .partition_point(|&(r, _)| r < shaped)
-            .min(VALUE_SCALE_BASE.len() - 1);
-        let lower_idx = upper_idx.saturating_sub(1);
-        let (r0, v0) = VALUE_SCALE_BASE[lower_idx];
-        let (r1, v1) = VALUE_SCALE_BASE[upper_idx];
-        let span = (r1 - r0).max(f32::EPSILON);
-        let t = ((shaped - r0) / span).clamp(0.0, 1.0);
-        let smooth_t = t * t * (3.0 - 2.0 * t);
-        let target0 = lerp(r0, v0, bias);
-        let target1 = lerp(r1, v1, bias);
-        lerp(target0, target1, smooth_t)
-    }
-
-    pub fn vertical_bounds(&self, bounds: &Rectangle) -> Option<(f32, f32)> {
-        if bounds.height <= 0.0 {
+    /// Get horizontal bounds of the meter area.
+    pub fn meter_bounds(&self, bounds: &Rectangle) -> Option<(f32, f32, f32)> {
+        let bar_count = self.bars.len();
+        if bar_count == 0 {
             return None;
         }
 
-        let padding = self.vertical_padding.max(0.0).min(bounds.height * 0.45);
-        let y0 = bounds.y + padding;
-        let y1 = bounds.y + bounds.height - padding;
-
-        if y1 - y0 <= f32::EPSILON {
-            None
-        } else {
-            Some((y0, y1))
-        }
-    }
-
-    fn meter_geometry(&self, bounds: &Rectangle) -> Option<MeterGeometry> {
-        let channel_count = self.channels.len();
-        if channel_count == 0 {
+        let meter_width = (bounds.width - self.left_padding - self.right_padding).max(0.0);
+        if meter_width <= 0.0 {
             return None;
         }
 
-        let total_width = bounds.width.max(0.0);
-        let effective_left = self.effective_left_padding(total_width);
-        let effective_right = self.effective_right_padding(total_width, effective_left);
-
-        let available_width = (total_width - effective_left - effective_right).max(0.0);
-        if available_width <= f32::EPSILON {
-            return None;
-        }
-
-        let gap = (available_width * self.gap_fraction()).min(available_width);
-        let total_gap = gap * (channel_count.saturating_sub(1) as f32);
-        let bar_area_width = (available_width - total_gap).max(0.0);
-        if bar_area_width <= f32::EPSILON {
-            return None;
-        }
-
-        let channel_count_f = channel_count as f32;
-        let bar_slot_width = (bar_area_width / channel_count_f).max(0.0);
-        let width_scale = self.channel_width_scale.clamp(0.05, 1.0);
-        let bar_width = (bar_slot_width * width_scale).max(0.0);
-        if bar_width <= f32::EPSILON {
-            return None;
-        }
-
+        let gap = meter_width * GAP_FRACTION;
+        let total_gap = gap * (bar_count - 1) as f32;
+        let bar_slot = (meter_width - total_gap) / bar_count as f32;
+        let bar_width = bar_slot * BAR_WIDTH_SCALE;
+        let bar_offset = (bar_slot - bar_width) * 0.5;
         let stride = bar_width + gap;
-        let bar_offset = ((bar_slot_width - bar_width) * 0.5).max(0.0);
-        let meter_left = bounds.x + effective_left + bar_offset;
-        let span = channel_count.saturating_sub(1) as f32;
-        let meter_right = meter_left + span * stride + bar_width;
+        let meter_x = bounds.x + self.left_padding + bar_offset;
 
-        Some(MeterGeometry {
-            meter_left,
-            meter_right,
-            bar_width,
-            stride,
-        })
+        Some((meter_x, bar_width, stride))
     }
 }
 
-#[derive(Debug, Clone, Copy)]
-struct MeterGeometry {
-    meter_left: f32,
-    meter_right: f32,
-    bar_width: f32,
-    stride: f32,
-}
-
-#[derive(Debug, Clone)]
-pub struct ChannelVisual {
-    pub background_color: [f32; 4],
-    pub fills: Vec<FillVisual>,
-}
-
-#[derive(Debug, Clone)]
-pub struct FillVisual {
-    pub value_loudness: f32,
-    pub color: [f32; 4],
-}
-
-#[derive(Debug, Clone)]
-pub struct GuideLine {
-    pub value_loudness: f32,
-    pub color: [f32; 4],
-    pub length: f32,
-    pub thickness: f32,
-    pub label: Option<String>,
-    pub label_width: f32,
-}
-
-/// Custom primitive that draws a loudness meter using the iced_wgpu backend.
+/// Custom primitive that draws a loudness meter.
 #[derive(Debug)]
 pub struct LoudnessMeterPrimitive {
-    pub params: VisualParams,
+    pub params: RenderParams,
 }
 
 impl LoudnessMeterPrimitive {
-    pub fn new(params: VisualParams) -> Self {
+    pub fn new(params: RenderParams) -> Self {
         Self { params }
     }
 
@@ -218,144 +87,81 @@ impl LoudnessMeterPrimitive {
     }
 
     fn build_vertices(&self, bounds: &Rectangle, viewport: &Viewport) -> Vec<SimpleVertex> {
-        let Some(layout) = LayoutContext::new(bounds, viewport, &self.params) else {
+        let clip = ClipTransform::from_viewport(viewport);
+        let Some((meter_x, bar_width, stride)) = self.params.meter_bounds(bounds) else {
             return Vec::new();
         };
 
-        let mut vertices = Vec::with_capacity(layout.estimate_vertex_count(&self.params));
-        layout.push_channel_vertices(&mut vertices, &self.params);
-        layout.push_guide_vertices(&mut vertices, &self.params);
-        vertices
-    }
-}
-
-struct LayoutContext {
-    clip: ClipTransform,
-    x0: f32,
-    x1: f32,
-    y0: f32,
-    y1: f32,
-    height: f32,
-    bar_width: f32,
-    stride: f32,
-}
-
-impl LayoutContext {
-    fn new(bounds: &Rectangle, viewport: &Viewport, params: &VisualParams) -> Option<Self> {
-        let (y0, y1) = params.vertical_bounds(bounds)?;
-        let geometry = params.meter_geometry(bounds)?;
-        let clip = ClipTransform::from_viewport(viewport);
+        let y0 = bounds.y;
+        let y1 = bounds.y + bounds.height;
         let height = y1 - y0;
-        if height <= f32::EPSILON {
-            return None;
+        let bar_count = self.params.bars.len();
+
+        let mut vertices = Vec::with_capacity(bar_count * 18 + self.params.guides.len() * 6 + 12);
+
+        for (i, bar) in self.params.bars.iter().enumerate() {
+            let x0 = meter_x + i as f32 * stride;
+            let x1 = x0 + bar_width;
+
+            vertices.extend(quad_vertices(x0, y0, x1, y1, clip, bar.bg_color));
+            let fill_count = bar.fills.len();
+            if fill_count > 0 {
+                let inner_gap = if fill_count > 1 && bar_width > 2.0 {
+                    (bar_width * INNER_GAP_RATIO).min(bar_width * 0.4).max(0.5)
+                } else {
+                    0.0
+                };
+                let total_inner = inner_gap * (fill_count - 1) as f32;
+                let seg_width = (bar_width - total_inner) / fill_count as f32;
+
+                for (j, &(db, color)) in bar.fills.iter().enumerate() {
+                    let ratio = self.params.db_to_ratio(db);
+                    let fill_y = y1 - height * ratio;
+                    let sx0 = x0 + j as f32 * (seg_width + inner_gap);
+                    let sx1 = if j + 1 == fill_count {
+                        x1
+                    } else {
+                        sx0 + seg_width
+                    };
+                    vertices.extend(quad_vertices(sx0, fill_y, sx1, y1, clip, color));
+                }
+            }
         }
 
-        Some(Self {
-            clip,
-            x0: geometry.meter_left,
-            x1: geometry.meter_right,
-            y0,
-            y1,
-            height,
-            bar_width: geometry.bar_width,
-            stride: geometry.stride,
-        })
-    }
-
-    fn estimate_vertex_count(&self, params: &VisualParams) -> usize {
-        params
-            .channels
-            .iter()
-            .map(|ch| 6 + ch.fills.len() * 6)
-            .sum::<usize>()
-            + params.guides.len() * 6
-    }
-
-    fn bar_span(&self, index: usize) -> (f32, f32) {
-        let offset = index as f32 * self.stride;
-        let bar_x0 = self.x0 + offset;
-        let bar_x1 = (bar_x0 + self.bar_width).min(self.x1);
-        (bar_x0, bar_x1)
-    }
-
-    fn push_channel_vertices(&self, vertices: &mut Vec<SimpleVertex>, params: &VisualParams) {
-        for (index, channel) in params.channels.iter().enumerate() {
-            let (bar_x0, bar_x1) = self.bar_span(index);
+        let guide_anchor = meter_x - GUIDE_PADDING;
+        for &db in &self.params.guides {
+            let ratio = self.params.db_to_ratio(db);
+            let cy = y1 - height * ratio;
+            let half = GUIDE_THICKNESS * 0.5;
             vertices.extend(quad_vertices(
-                bar_x0,
-                self.y0,
-                bar_x1,
-                self.y1,
-                self.clip,
-                channel.background_color,
+                guide_anchor - GUIDE_LENGTH,
+                (cy - half).max(y0),
+                guide_anchor,
+                (cy + half).min(y1),
+                clip,
+                self.params.guide_color,
             ));
+        }
 
-            let fill_count = channel.fills.len();
-            if fill_count == 0 {
-                continue;
-            }
-
-            let bar_width = bar_x1 - bar_x0;
-            if bar_width <= f32::EPSILON {
-                continue;
-            }
-
-            let inner_gap = Self::inner_gap(bar_width, fill_count);
-            let total_gap = inner_gap * fill_count.saturating_sub(1) as f32;
-            let available_width = (bar_width - total_gap).max(0.0);
-            if available_width <= f32::EPSILON {
-                continue;
-            }
-
-            let segment_width = available_width / fill_count as f32;
-
-            for (segment_index, fill) in channel.fills.iter().enumerate() {
-                let fill_ratio = params.meter_ratio(fill.value_loudness);
-                let fill_top = self.y1 - self.height * fill_ratio;
-                let seg_x0 = bar_x0 + segment_index as f32 * (segment_width + inner_gap);
-                let seg_x1 = if segment_index + 1 == fill_count {
-                    bar_x1
-                } else {
-                    seg_x0 + segment_width
-                };
-
+        if let Some(db) = self.params.threshold_db {
+            let ratio = self.params.db_to_ratio(db);
+            let cy = y1 - height * ratio;
+            let half = THRESHOLD_THICKNESS * 0.5;
+            for i in 0..bar_count {
+                let x0 = meter_x + i as f32 * stride;
+                let x1 = x0 + bar_width;
                 vertices.extend(quad_vertices(
-                    seg_x0, fill_top, seg_x1, self.y1, self.clip, fill.color,
+                    x0,
+                    (cy - half).max(y0),
+                    x1,
+                    (cy + half).min(y1),
+                    clip,
+                    self.params.guide_color,
                 ));
             }
         }
-    }
 
-    fn inner_gap(bar_width: f32, fill_count: usize) -> f32 {
-        if fill_count <= 1 || bar_width <= f32::EPSILON {
-            return 0.0;
-        }
-
-        let desired_gap = bar_width * INNER_FILL_GAP_RATIO;
-        let max_gap = bar_width * 0.4;
-        let min_gap = 0.5f32.min(max_gap);
-        desired_gap.clamp(min_gap, max_gap)
-    }
-
-    fn push_guide_vertices(&self, vertices: &mut Vec<SimpleVertex>, params: &VisualParams) {
-        let anchor_x = self.x0 - params.guide_padding;
-        for guide in &params.guides {
-            let ratio = params.clamp_ratio(guide.value_loudness);
-            let center_y = self.y1 - self.height * ratio;
-            let half_thick = guide.thickness * 0.5;
-            let top = (center_y - half_thick).clamp(self.y0, self.y1);
-            let bottom = (center_y + half_thick).clamp(self.y0, self.y1);
-            let line_x0 = anchor_x - guide.length;
-
-            vertices.extend(quad_vertices(
-                line_x0,
-                top,
-                anchor_x,
-                bottom,
-                self.clip,
-                guide.color,
-            ));
-        }
+        vertices
     }
 }
 
@@ -373,18 +179,9 @@ impl Primitive for LoudnessMeterPrimitive {
             storage.store(Pipeline::new(device, format));
         }
 
-        let pipeline = storage
-            .get_mut::<Pipeline>()
-            .expect("pipeline must exist after storage check");
-
+        let pipeline = storage.get_mut::<Pipeline>().expect("pipeline exists");
         let vertices = self.build_vertices(bounds, viewport);
-        pipeline.prepare_instance(
-            device,
-            queue,
-            "Loudness vertex buffer",
-            self.key(),
-            &vertices,
-        );
+        pipeline.prepare_instance(device, queue, "Loudness", self.key(), &vertices);
     }
 
     fn render(
@@ -397,17 +194,15 @@ impl Primitive for LoudnessMeterPrimitive {
         let Some(pipeline) = storage.get::<Pipeline>() else {
             return;
         };
-
         let Some(instance) = pipeline.instance(self.key()) else {
             return;
         };
-
         if instance.vertex_count == 0 {
             return;
         }
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("Loudness pass"),
+            label: Some("Loudness"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                 view: target,
                 resolve_target: None,
@@ -442,15 +237,15 @@ impl Pipeline {
             source: wgpu::ShaderSource::Wgsl(include_str!("shaders/loudness.wgsl").into()),
         });
 
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Loudness pipeline layout"),
+        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Loudness layout"),
             bind_group_layouts: &[],
             push_constant_ranges: &[],
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Loudness meter pipeline"),
-            layout: Some(&pipeline_layout),
+            label: Some("Loudness pipeline"),
+            layout: Some(&layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",
@@ -467,19 +262,12 @@ impl Pipeline {
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: Some(wgpu::Face::Back),
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
+                ..Default::default()
             },
             depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
+            multisample: wgpu::MultisampleState::default(),
             multiview: None,
         });
 

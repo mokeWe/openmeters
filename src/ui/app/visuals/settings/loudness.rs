@@ -3,7 +3,7 @@ use super::widgets::{CONTROL_SPACING, labeled_pick_list};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::ui::settings::{LoudnessSettings, ModuleSettings, PaletteSettings, SettingsHandle};
 use crate::ui::theme;
-use crate::ui::visualization::loudness::{MeterMode, LOUDNESS_PALETTE_SIZE};
+use crate::ui::visualization::loudness::{LOUDNESS_PALETTE_SIZE, MeterMode};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
 use iced::widget::{column, text};

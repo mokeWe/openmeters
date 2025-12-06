@@ -11,7 +11,7 @@ use crate::ui::settings::{
 };
 use crate::ui::theme;
 use crate::ui::visualization::loudness::{
-    LoudnessMeterProcessor, LoudnessMeterState, LOUDNESS_PALETTE_SIZE,
+    LOUDNESS_PALETTE_SIZE, LoudnessMeterProcessor, LoudnessMeterState,
 };
 use crate::ui::visualization::oscilloscope::{OscilloscopeProcessor, OscilloscopeState};
 use crate::ui::visualization::spectrogram::{SpectrogramProcessor, SpectrogramState};
@@ -183,12 +183,12 @@ const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
         kind: VisualKind::LOUDNESS,
         metadata: VisualMetadata {
             display_name: "Loudness Meter",
-            preferred_width: 200.0,
+            preferred_width: 140.0,
             preferred_height: 300.0,
             fill_horizontal: true,
             fill_vertical: true,
-            min_width: 200.0,
-            max_width: 300.0,
+            min_width: 80.0,
+            max_width: 140.0,
         },
         default_enabled: false,
         build: build_module::<LoudnessVisual>,
@@ -312,10 +312,7 @@ impl VisualModule for LoudnessVisual {
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
-        let mut settings = LoudnessSettings::new(
-            self.state.left_mode(),
-            self.state.right_mode(),
-        );
+        let mut settings = LoudnessSettings::new(self.state.left_mode(), self.state.right_mode());
         settings.palette = PaletteSettings::maybe_from_colors(
             self.state.palette(),
             &theme::DEFAULT_LOUDNESS_PALETTE,
