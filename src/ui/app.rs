@@ -6,9 +6,7 @@ pub mod visuals;
 use crate::audio::pw_registry::RegistrySnapshot;
 use crate::ui::channel_subscription::channel_subscription;
 use crate::ui::settings::SettingsHandle;
-use crate::ui::settings_window::{
-    SettingsWindow, SettingsWindowMessage, compute_window_layout, size_changed,
-};
+use crate::ui::settings_window::{DEFAULT_SETTINGS_SIZE, SettingsWindow};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{
     VisualId, VisualKind, VisualManager, VisualManagerHandle, VisualSnapshot,
@@ -107,7 +105,7 @@ enum Message {
     WindowClosed(window::Id),
     WindowResized(window::Id, Size),
     WindowDragged(window::Id),
-    SettingsWindow(window::Id, SettingsWindowMessage),
+    SettingsWindow(window::Id, visuals::SettingsMessage),
 }
 
 impl UiApp {
@@ -192,7 +190,7 @@ impl UiApp {
                 event::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
                     Message::ResizeEnded
                 }
-                _ => Message::CursorMoved(Point::ORIGIN), // Ignored in update
+                _ => Message::CursorMoved(Point::ORIGIN),
             }));
         }
 
@@ -228,38 +226,28 @@ impl UiApp {
         }
     }
 
-    fn open_settings_window(
-        &mut self,
-        title: String,
-        visual_id: VisualId,
-        kind: VisualKind,
-    ) -> Task<Message> {
-        let decorations = self.settings_handle.borrow().settings().decorations;
-        let panel = create_settings_panel(title, visual_id, kind, &self.visual_manager);
-        let (size, _) = compute_window_layout(panel.preferred_size(), decorations);
+    fn open_settings_window(&mut self, visual_id: VisualId, kind: VisualKind) -> Task<Message> {
+        let panel = create_settings_panel(visual_id, kind, &self.visual_manager);
 
         let mut tasks = Vec::new();
 
         if let Some(existing) = self.settings_window.take() {
             if existing.panel.visual_id() == visual_id {
-                self.settings_window = Some(SettingsWindow {
-                    id: existing.id,
-                    panel,
-                });
-                return window::resize(existing.id, size);
+                self.settings_window = Some(SettingsWindow::new(existing.id, panel));
+                return Task::none();
             }
             tasks.push(window::close(existing.id));
         }
 
         let (id, open) = window::open(window::Settings {
-            size,
-            resizable: false,
-            decorations,
+            size: DEFAULT_SETTINGS_SIZE,
+            resizable: true,
+            decorations: true,
             transparent: false,
             ..window::Settings::default()
         });
 
-        self.settings_window = Some(SettingsWindow { id, panel });
+        self.settings_window = Some(SettingsWindow::new(id, panel));
         tasks.push(open.map(|_| Message::WindowOpened));
 
         Task::batch(tasks)
@@ -281,18 +269,15 @@ impl UiApp {
         &mut self,
         snapshot: &VisualSnapshot,
     ) -> Option<Task<Message>> {
-        let settings_window = self.settings_window.as_mut()?;
-
+        let settings_window = self.settings_window.as_ref()?;
         let visual_id = settings_window.panel.visual_id();
 
-        if let Some(slot) = snapshot
+        let still_enabled = snapshot
             .slots
             .iter()
-            .find(|slot| slot.id == visual_id && slot.enabled)
-        {
-            settings_window
-                .panel
-                .set_title(slot.metadata.display_name.to_string());
+            .any(|slot| slot.id == visual_id && slot.enabled);
+
+        if still_enabled {
             None
         } else {
             let id = settings_window.id;
@@ -309,7 +294,14 @@ impl UiApp {
         self.settings_window
             .as_ref()
             .filter(|w| w.id == window)
-            .map(|w| format!("{} settings - OpenMeters", w.panel.title()))
+            .and_then(|w| {
+                let snapshot = self.visual_manager.snapshot();
+                snapshot
+                    .slots
+                    .iter()
+                    .find(|slot| slot.id == w.panel.visual_id())
+                    .map(|slot| format!("{} settings - OpenMeters", slot.metadata.display_name))
+            })
             .unwrap_or_else(|| "OpenMeters".to_string())
     }
 
@@ -462,26 +454,17 @@ impl UiApp {
 
             let snapshot = self.visual_manager.snapshot();
             if let Some(slot) = snapshot.slots.iter().find(|s| s.id == visual_id) {
-                let panel = create_settings_panel(
-                    slot.metadata.display_name.to_string(),
-                    visual_id,
-                    slot.kind,
-                    &self.visual_manager,
-                );
-                let (size, _) = compute_window_layout(panel.preferred_size(), decorations);
+                let panel = create_settings_panel(visual_id, slot.kind, &self.visual_manager);
 
                 let (new_sw_id, open_sw) = window::open(window::Settings {
-                    size,
-                    resizable: false,
-                    decorations,
+                    size: DEFAULT_SETTINGS_SIZE,
+                    resizable: true,
+                    decorations: true,
                     transparent: false,
                     ..window::Settings::default()
                 });
 
-                self.settings_window = Some(SettingsWindow {
-                    id: new_sw_id,
-                    panel,
-                });
+                self.settings_window = Some(SettingsWindow::new(new_sw_id, panel));
 
                 Task::batch([
                     open_sw.map(|_| Message::WindowOpened),
@@ -527,11 +510,9 @@ fn update(app: &mut UiApp, message: Message) -> Task<Message> {
                 Task::batch([task, window_task])
             }
         }
-        Message::Visuals(VisualsMessage::SettingsRequested {
-            title,
-            visual_id,
-            kind,
-        }) => app.open_settings_window(title, visual_id, kind),
+        Message::Visuals(VisualsMessage::SettingsRequested { visual_id, kind }) => {
+            app.open_settings_window(visual_id, kind)
+        }
         Message::Visuals(VisualsMessage::WindowDragRequested) => window::drag(app.main_window_id),
         Message::Visuals(msg) => app.visuals_page.update(msg).map(Message::Visuals),
         Message::ToggleChrome => {
@@ -592,31 +573,15 @@ fn update(app: &mut UiApp, message: Message) -> Task<Message> {
             Task::none()
         }
         Message::WindowDragged(id) => window::drag(id),
-        Message::SettingsWindow(id, SettingsWindowMessage::WindowDragged) => window::drag(id),
-        Message::SettingsWindow(id, SettingsWindowMessage::Close) => {
-            if let Some(window) = app.settings_window.as_ref()
-                && window.id == id
-            {
-                app.settings_window = None;
-                return window::close(id);
-            }
-            Task::none()
-        }
-        Message::SettingsWindow(id, SettingsWindowMessage::Settings(settings_message)) => {
+        Message::SettingsWindow(id, settings_message) => {
             if let Some(window) = app.settings_window.as_mut()
                 && window.id == id
             {
-                let decorations = app.settings_handle.borrow().settings().decorations;
-                let before = compute_window_layout(window.panel.preferred_size(), decorations).0;
                 window.panel.handle_message(
                     &settings_message,
                     &app.visual_manager,
                     &app.settings_handle,
                 );
-                let after = compute_window_layout(window.panel.preferred_size(), decorations).0;
-                if size_changed(before, after) {
-                    return window::resize::<Message>(id, after);
-                }
             }
             Task::none()
         }
@@ -631,9 +596,8 @@ fn view(app: &UiApp, window: window::Id) -> Element<'_, Message> {
         .as_ref()
         .filter(|window_state| window_state.id == window)
     {
-        let decorations = app.settings_handle.borrow().settings().decorations;
         settings_window
-            .view(decorations)
+            .view()
             .map(move |msg| Message::SettingsWindow(window, msg))
     } else {
         container(text(""))

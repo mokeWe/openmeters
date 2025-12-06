@@ -24,7 +24,6 @@ pub enum VisualsMessage {
     PaneDragged(pane_grid::DragEvent),
     PaneContextRequested(Pane),
     SettingsRequested {
-        title: String,
         visual_id: VisualId,
         kind: VisualKind,
     },
@@ -196,7 +195,6 @@ impl VisualsPage {
                     && let Some(pane_state) = panes.get(pane)
                 {
                     return Task::done(VisualsMessage::SettingsRequested {
-                        title: pane_state.metadata.display_name.to_string(),
                         visual_id: pane_state.id,
                         kind: pane_state.kind,
                     });
