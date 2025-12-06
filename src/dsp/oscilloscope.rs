@@ -1,30 +1,25 @@
-//! Oscilloscope/triggered waveform DSP implementation.
-
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
-use crate::util::audio::{DEFAULT_SAMPLE_RATE, lerp};
+use crate::util::audio::DEFAULT_SAMPLE_RATE;
+use realfft::{RealFftPlanner, RealToComplex};
+use rustfft::num_complex::Complex;
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
-use wide::f32x4;
+use std::sync::Arc;
 
-/// Linear interpolation between samples at a fractional position.
-#[inline]
-fn interpolate_linear(samples: &[f32], position: f32) -> f32 {
-    let idx = position as usize;
-    let frac = position - idx as f32;
-
-    if frac > f32::EPSILON && idx + 1 < samples.len() {
-        lerp(samples[idx], samples[idx + 1], frac)
-    } else {
-        samples[idx.min(samples.len() - 1)]
-    }
-}
-
-const PITCH_MIN_HZ: f32 = 10.0;
-const PITCH_MAX_HZ: f32 = 10000.0;
-// lower = more sensitive. 0.15 was chosen practically arbitrarily but works.
+const PITCH_MIN_HZ: f32 = 20.0;
+const PITCH_MAX_HZ: f32 = 8000.0;
 const PITCH_THRESHOLD: f32 = 0.15;
-// Could be lowered, but at the cost of accuracy. Here for future use maybe.
-const PITCH_DOWNSAMPLE_RATE: f32 = 48_000.0;
+const FFT_AUTOCORR_THRESHOLD: usize = 512;
+
+#[inline]
+fn parabolic_refine(y_prev: f32, y_curr: f32, y_next: f32, tau: usize) -> f32 {
+    let denom = y_prev - 2.0 * y_curr + y_next;
+    if denom.abs() < f32::EPSILON {
+        return tau as f32;
+    }
+    let delta = 0.5 * (y_prev - y_next) / denom;
+    (tau as f32 + delta.clamp(-1.0, 1.0)).max(1.0)
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum TriggerMode {
@@ -55,15 +50,28 @@ impl Default for OscilloscopeConfig {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct PitchDetector {
     diff: Vec<f32>,
     cmean: Vec<f32>,
-    downsampled: Vec<f32>,
-    energy: Vec<f32>,
-    left_simd: Vec<f32x4>,
-    left_tail: [f32; 4],
-    left_tail_len: usize,
+    fft_size: usize,
+    fft_forward: Option<Arc<dyn RealToComplex<f32>>>,
+    fft_inverse: Option<Arc<dyn realfft::ComplexToReal<f32>>>,
+    fft_input: Vec<f32>,
+    fft_spectrum: Vec<Complex<f32>>,
+    fft_output: Vec<f32>,
+    fft_scratch: Vec<Complex<f32>>,
+}
+
+impl std::fmt::Debug for PitchDetector {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PitchDetector")
+            .field("diff", &self.diff.len())
+            .field("cmean", &self.cmean.len())
+            .field("fft_size", &self.fft_size)
+            .field("has_fft", &self.fft_forward.is_some())
+            .finish()
+    }
 }
 
 impl PitchDetector {
@@ -71,12 +79,34 @@ impl PitchDetector {
         Self {
             diff: Vec::new(),
             cmean: Vec::new(),
-            downsampled: Vec::new(),
-            energy: Vec::new(),
-            left_simd: Vec::new(),
-            left_tail: [0.0; 4],
-            left_tail_len: 0,
+            fft_size: 0,
+            fft_forward: None,
+            fft_inverse: None,
+            fft_input: Vec::new(),
+            fft_spectrum: Vec::new(),
+            fft_output: Vec::new(),
+            fft_scratch: Vec::new(),
         }
+    }
+
+    fn rebuild_fft(&mut self, size: usize) {
+        if self.fft_size == size && self.fft_forward.is_some() {
+            return;
+        }
+        self.fft_size = size;
+        let mut planner = RealFftPlanner::new();
+        let forward = planner.plan_fft_forward(size);
+        let inverse = planner.plan_fft_inverse(size);
+        self.fft_input = forward.make_input_vec();
+        self.fft_spectrum = forward.make_output_vec();
+        self.fft_output = inverse.make_output_vec();
+        self.fft_scratch = forward.make_scratch_vec();
+        let inv_scratch = inverse.make_scratch_vec();
+        if inv_scratch.len() > self.fft_scratch.len() {
+            self.fft_scratch = inv_scratch;
+        }
+        self.fft_forward = Some(forward);
+        self.fft_inverse = Some(inverse);
     }
 
     fn detect_pitch(&mut self, samples: &[f32], rate: f32) -> Option<f32> {
@@ -84,100 +114,22 @@ impl PitchDetector {
             return None;
         }
 
-        let data = if rate > PITCH_DOWNSAMPLE_RATE * 1.5 {
-            self.downsample(samples, rate, PITCH_DOWNSAMPLE_RATE);
-            &self.downsampled
-        } else {
-            samples
-        };
+        let min_period = (rate / PITCH_MAX_HZ).max(2.0) as usize;
+        let max_period = (rate / PITCH_MIN_HZ).min(samples.len() as f32 / 2.0) as usize;
 
-        let work_rate = if rate > PITCH_DOWNSAMPLE_RATE * 1.5 {
-            PITCH_DOWNSAMPLE_RATE
-        } else {
-            rate
-        };
-
-        let min_period = (work_rate / PITCH_MAX_HZ).max(2.0) as usize;
-        let max_period = (work_rate / PITCH_MIN_HZ).min(data.len() as f32 / 2.0) as usize;
-
-        if max_period <= min_period || data.len() < max_period * 2 {
+        if max_period <= min_period || samples.len() < max_period * 2 {
             return None;
         }
 
         self.diff.resize(max_period, 0.0);
         self.cmean.resize(max_period, 0.0);
-        self.energy.resize(data.len() + 1, 0.0);
 
-        let len = data.len() - max_period;
-        let precise_limit = 256.min(max_period);
-
-        let mut acc = 0.0_f32;
-        self.energy[0] = 0.0;
-        for (i, &s) in data.iter().enumerate() {
-            acc = s.mul_add(s, acc);
-            self.energy[i + 1] = acc;
-        }
-
-        let left_energy = self.energy[len];
-        let left = &data[..len];
-
-        if left.is_empty() {
-            return None;
-        }
-
-        self.left_simd.clear();
-        self.left_tail.fill(0.0);
-        let (chunks, tail) = left.as_chunks::<4>();
-        self.left_simd.reserve(chunks.len());
-        for chunk in chunks {
-            self.left_simd.push(f32x4::new(*chunk));
-        }
-        self.left_tail_len = tail.len();
-        if self.left_tail_len > 0 {
-            self.left_tail[..self.left_tail_len].copy_from_slice(tail);
-        }
-
-        // 1. Precise region (stride = 1)
-        for tau in 0..precise_limit {
-            let right = &data[tau..tau + len];
-            let base = self.energy[tau];
-            let right_energy = self.energy[tau + len] - base;
-            self.diff[tau] = Self::diff_at_tau(
-                &self.left_simd,
-                &self.left_tail[..self.left_tail_len],
-                right,
-                left_energy,
-                right_energy,
-            );
-        }
-
-        // 2. Strided region
-        let stride = ((max_period - precise_limit) / 64).max(1);
-        for tau in (precise_limit..max_period).step_by(stride) {
-            let right = &data[tau..tau + len];
-            let base = self.energy[tau];
-            let right_energy = self.energy[tau + len] - base;
-            self.diff[tau] = Self::diff_at_tau(
-                &self.left_simd,
-                &self.left_tail[..self.left_tail_len],
-                right,
-                left_energy,
-                right_energy,
-            );
-        }
-
-        // 3. Interpolate strided region
-        for tau in precise_limit..max_period {
-            if (tau - precise_limit) % stride != 0 {
-                let prev = precise_limit + ((tau - precise_limit) / stride) * stride;
-                let next = prev + stride;
-                if next < max_period {
-                    let t = (tau - prev) as f32 / stride as f32;
-                    self.diff[tau] = self.diff[prev] * (1.0 - t) + self.diff[next] * t;
-                } else {
-                    self.diff[tau] = self.diff[prev];
-                }
+        if samples.len() >= FFT_AUTOCORR_THRESHOLD {
+            if !self.compute_diff_fft(samples, max_period) {
+                self.compute_diff_direct(samples, max_period);
             }
+        } else {
+            self.compute_diff_direct(samples, max_period);
         }
 
         self.cmean[0] = 1.0;
@@ -191,105 +143,115 @@ impl PitchDetector {
             };
         }
 
+        for tau in min_period..max_period - 1 {
+            if self.cmean[tau] < PITCH_THRESHOLD && self.cmean[tau] < self.cmean[tau + 1] {
+                let refined_tau = if tau > 0 && tau + 1 < max_period {
+                    parabolic_refine(
+                        self.cmean[tau - 1],
+                        self.cmean[tau],
+                        self.cmean[tau + 1],
+                        tau,
+                    )
+                } else {
+                    tau as f32
+                };
+                return Some(rate / refined_tau);
+            }
+        }
+
+        let mut best_tau = min_period;
+        let mut best_val = f32::MAX;
         for tau in min_period..max_period {
-            if self.cmean[tau] < PITCH_THRESHOLD
-                && tau + 1 < max_period
-                && self.cmean[tau] < self.cmean[tau + 1]
-            {
-                let confidence = 1.0 - self.cmean[tau];
-                if confidence > PITCH_THRESHOLD {
-                    return Some(work_rate / tau as f32);
-                }
+            if self.cmean[tau] < best_val {
+                best_val = self.cmean[tau];
+                best_tau = tau;
             }
         }
 
-        None
+        if best_val < 0.5 {
+            let refined_tau = if best_tau > 0 && best_tau + 1 < max_period {
+                parabolic_refine(
+                    self.cmean[best_tau - 1],
+                    self.cmean[best_tau],
+                    self.cmean[best_tau + 1],
+                    best_tau,
+                )
+            } else {
+                best_tau as f32
+            };
+            Some(rate / refined_tau)
+        } else {
+            None
+        }
     }
 
-    #[inline(always)]
-    fn diff_at_tau(
-        left_chunks: &[f32x4],
-        left_tail: &[f32],
-        right: &[f32],
-        left_energy: f32,
-        right_energy: f32,
-    ) -> f32 {
-        let expected_len = left_chunks.len() * 4 + left_tail.len();
-        debug_assert_eq!(expected_len, right.len());
+    fn compute_diff_fft(&mut self, samples: &[f32], max_period: usize) -> bool {
+        let fft_size = (samples.len() * 2).next_power_of_two();
+        self.rebuild_fft(fft_size);
 
-        if expected_len == 0 {
-            return 0.0;
+        let Some(ref forward) = self.fft_forward else {
+            return false;
+        };
+        let Some(ref inverse) = self.fft_inverse else {
+            return false;
+        };
+
+        self.fft_input[..samples.len()].copy_from_slice(samples);
+        self.fft_input[samples.len()..].fill(0.0);
+
+        if forward
+            .process_with_scratch(
+                &mut self.fft_input,
+                &mut self.fft_spectrum,
+                &mut self.fft_scratch,
+            )
+            .is_err()
+        {
+            return false;
         }
 
-        let dot = simd_dot_product(left_chunks, left_tail, right);
-        let diff = left_energy + right_energy - 2.0 * dot;
-        diff.max(0.0)
+        for c in &mut self.fft_spectrum {
+            *c = Complex::new(c.norm_sqr(), 0.0);
+        }
+
+        if inverse
+            .process_with_scratch(
+                &mut self.fft_spectrum,
+                &mut self.fft_output,
+                &mut self.fft_scratch,
+            )
+            .is_err()
+        {
+            return false;
+        }
+
+        let norm = 1.0 / fft_size as f32;
+        let acf_0 = self.fft_output[0] * norm;
+
+        for tau in 0..max_period {
+            let acf_tau = self.fft_output[tau] * norm;
+            self.diff[tau] = 2.0 * (acf_0 - acf_tau);
+        }
+        true
     }
 
-    fn downsample(&mut self, samples: &[f32], src_rate: f32, dst_rate: f32) {
-        let ratio = src_rate / dst_rate;
-        let len = (samples.len() as f32 / ratio) as usize;
+    fn compute_diff_direct(&mut self, samples: &[f32], max_period: usize) {
+        let len = samples.len() - max_period;
+        if len == 0 {
+            return;
+        }
 
-        self.downsampled.clear();
-        self.downsampled.reserve(len);
-
-        for i in 0..len {
-            self.downsampled
-                .push(interpolate_linear(samples, i as f32 * ratio));
+        for tau in 0..max_period {
+            let mut sum = 0.0_f32;
+            for i in 0..len {
+                let delta = samples[i] - samples[i + tau];
+                sum += delta * delta;
+            }
+            self.diff[tau] = sum;
         }
     }
 }
 
-#[inline(always)]
-fn simd_dot_product(left_chunks: &[f32x4], left_tail: &[f32], right: &[f32]) -> f32 {
-    let (right_chunks, right_tail) = right.as_chunks::<4>();
-    debug_assert_eq!(right_chunks.len(), left_chunks.len());
-    debug_assert_eq!(right_tail.len(), left_tail.len());
-
-    let mut left_iter = left_chunks.chunks_exact(4);
-    let mut right_iter = right_chunks.chunks_exact(4);
-
-    let mut acc0 = f32x4::splat(0.0);
-    let mut acc1 = f32x4::splat(0.0);
-    let mut acc2 = f32x4::splat(0.0);
-    let mut acc3 = f32x4::splat(0.0);
-
-    for (left_block, right_block) in left_iter.by_ref().zip(right_iter.by_ref()) {
-        acc0 = left_block[0].mul_add(f32x4::new(right_block[0]), acc0);
-        acc1 = left_block[1].mul_add(f32x4::new(right_block[1]), acc1);
-        acc2 = left_block[2].mul_add(f32x4::new(right_block[2]), acc2);
-        acc3 = left_block[3].mul_add(f32x4::new(right_block[3]), acc3);
-    }
-
-    let mut acc = (acc0 + acc1) + (acc2 + acc3);
-
-    for (left_chunk, right_chunk) in left_iter.remainder().iter().zip(right_iter.remainder()) {
-        acc = left_chunk.mul_add(f32x4::new(*right_chunk), acc);
-    }
-
-    let dot = acc.reduce_add();
-
-    let tail_dot = match left_tail.len() {
-        0 => 0.0,
-        1 => left_tail[0] * right_tail[0],
-        2 => left_tail[0].mul_add(right_tail[0], left_tail[1] * right_tail[1]),
-        3 => {
-            let partial = left_tail[0].mul_add(right_tail[0], left_tail[1] * right_tail[1]);
-            left_tail[2].mul_add(right_tail[2], partial)
-        }
-        _ => {
-            let mut scalar = 0.0;
-            for (l, r) in left_tail.iter().zip(right_tail.iter()) {
-                scalar = l.mul_add(*r, scalar);
-            }
-            scalar
-        }
-    };
-
-    dot + tail_dot
-}
-
-// Stores cached sine/cosine prefix sums so trigger correlation reuses a single pass.
 #[derive(Debug, Clone, Default)]
 struct TriggerScratch {
     sin: Vec<f32>,
@@ -473,7 +435,7 @@ impl AudioProcessor for OscilloscopeProcessor {
         let capacity = detect.max(base) * ch;
 
         if !self.history.is_empty() && !self.history.len().is_multiple_of(ch) {
-            self.history.clear(); // will drop on channel count change. sort of an edge case
+            self.history.clear();
             self.last_pitch = None;
         }
 
@@ -685,18 +647,30 @@ mod tests {
     }
 
     #[test]
-    fn high_frequency_pitch_detection() {
+    fn pitch_detection() {
         let mut detector = PitchDetector::new();
-        let (rate, freq) = (48_000.0, 12_000.0);
-        let samples = sine_samples(freq, rate, (rate * 0.05) as usize);
-        let detected = detector
-            .detect_pitch(&samples, rate)
-            .expect("pitch detection failed");
-        assert!(
-            (detected - freq).abs() < freq * 0.05,
-            "Detected {} too far from {}",
-            detected,
-            freq
-        );
+        let rate = 48_000.0;
+
+        for freq in [41.0, 110.0, 440.0, 1000.0, 4000.0] {
+            let samples = sine_samples(freq, rate, (rate * 0.1) as usize);
+            let detected = detector
+                .detect_pitch(&samples, rate)
+                .unwrap_or_else(|| panic!("Failed to detect {}Hz", freq));
+            let error = (detected - freq).abs() / freq;
+            assert!(
+                error < 0.05,
+                "Detected {}Hz, expected {}Hz (error {:.1}%)",
+                detected,
+                freq,
+                error * 100.0
+            );
+        }
+    }
+
+    #[test]
+    fn parabolic_interpolation() {
+        let y = |x: f32| (x - 5.3_f32).powi(2);
+        let refined = parabolic_refine(y(4.0), y(5.0), y(6.0), 5);
+        assert!((refined - 5.3).abs() < 0.01);
     }
 }
