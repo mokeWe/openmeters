@@ -151,8 +151,8 @@ impl StereometerState {
             instance_id: self.instance_id,
             bounds,
             points: self.snapshot.xy_points.clone(),
-            trace_color: theme::color_to_rgba(self.trace_color),
-            grid_color: theme::color_to_rgba(self.grid_color),
+            trace_color: theme::color_to_linear_rgba(self.trace_color),
+            grid_color: theme::color_to_linear_rgba(self.grid_color),
             mode: self.mode,
         })
     }

@@ -1,11 +1,14 @@
 //! Monochrome Iced theme.
+//!
+//! GPU palette colors are pre-converted to sRGB values that produce the desired
+//! visual appearance after the GPU pipeline's linear conversion.
 
 use iced::border::Border;
 use iced::theme::palette::{self, Extended, Pair};
 use iced::widget::{button, container};
 use iced::{Background, Color, Theme};
 
-// Core palette stops
+// Core palette stops (sRGB for UI elements rendered by iced)
 pub const BG_BASE: Color = Color::from_rgb(0.059, 0.063, 0.071);
 
 const TEXT_PRIMARY: Color = Color::from_rgb(0.902, 0.910, 0.925);
@@ -16,48 +19,53 @@ const TEXT_SECONDARY_DARK: Color = Color::from_rgb(0.40, 0.40, 0.40);
 const BORDER_SUBTLE: Color = Color::from_rgb(0.196, 0.204, 0.224);
 const BORDER_FOCUS: Color = Color::from_rgb(0.416, 0.424, 0.443);
 
-// Accent colors
+// Accent colors (sRGB for UI elements)
 const ACCENT_PRIMARY: Color = Color::from_rgb(0.529, 0.549, 0.584);
 const ACCENT_SUCCESS: Color = Color::from_rgb(0.478, 0.557, 0.502);
 const ACCENT_DANGER: Color = Color::from_rgb(0.557, 0.478, 0.478);
 
+// GPU palettes - sRGB values pre-calculated to produce correct appearance after linear conversion.
+// These were computed using linear_to_srgb() on the desired linear values.
+
 pub const DEFAULT_SPECTROGRAM_PALETTE: [Color; 5] = [
     Color::from_rgba(0.000, 0.000, 0.000, 0.0),
-    Color::from_rgba(0.039, 0.011, 0.09, 1.0),
-    Color::from_rgba(0.329, 0.000, 0.000, 1.0),
-    Color::from_rgba(1.000, 0.502, 0.102, 1.0),
+    Color::from_rgba(0.218, 0.106, 0.332, 1.0),
+    Color::from_rgba(0.609, 0.000, 0.000, 1.0),
+    Color::from_rgba(1.000, 0.737, 0.353, 1.0),
     Color::from_rgba(1.000, 1.000, 1.000, 1.0),
 ];
 
 pub const DEFAULT_SPECTRUM_PALETTE: [Color; 5] = [
-    Color::from_rgba(0.039, 0.011, 0.09, 1.0),
-    Color::from_rgba(0.329, 0.000, 0.000, 1.0),
-    Color::from_rgba(0.800, 0.200, 0.000, 1.0),
-    Color::from_rgba(1.000, 0.502, 0.102, 1.0),
+    Color::from_rgba(0.218, 0.106, 0.332, 1.0),
+    Color::from_rgba(0.609, 0.000, 0.000, 1.0),
+    Color::from_rgba(0.906, 0.485, 0.000, 1.0),
+    Color::from_rgba(1.000, 0.737, 0.353, 1.0),
     Color::from_rgba(1.000, 1.000, 0.000, 1.0),
 ];
 
 pub const DEFAULT_WAVEFORM_PALETTE: [Color; 5] = [
-    Color::from_rgb(0.400, 0.000, 0.000),
-    Color::from_rgb(1.000, 0.000, 0.000),
-    Color::from_rgb(1.000, 0.400, 0.000),
-    Color::from_rgb(0.600, 0.200, 0.800),
-    Color::from_rgb(0.400, 0.000, 0.800),
+    Color::from_rgba(0.665, 0.000, 0.000, 1.0),
+    Color::from_rgba(1.000, 0.000, 0.000, 1.0),
+    Color::from_rgba(1.000, 0.665, 0.000, 1.0),
+    Color::from_rgba(0.798, 0.485, 0.906, 1.0),
+    Color::from_rgba(0.665, 0.000, 0.906, 1.0),
 ];
 
-pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 1] = [Color::from_rgb(1.0, 1.0, 1.0)];
+pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 1] = [
+    Color::from_rgba(1.000, 1.000, 1.000, 1.0),
+];
 
 pub const DEFAULT_STEREOMETER_PALETTE: [Color; 2] = [
-    Color::from_rgb(1.0, 1.0, 1.0),
-    Color::from_rgb(0.25, 0.26, 0.28),
+    Color::from_rgba(1.000, 1.000, 1.000, 1.0),
+    Color::from_rgba(0.537, 0.547, 0.566, 1.0),
 ];
 
 pub const DEFAULT_LOUDNESS_PALETTE: [Color; 5] = [
-    Color::from_rgba(0.14, 0.15, 0.17, 1.0),
-    Color::from_rgba(0.35, 0.40, 0.42, 1.0),
-    Color::from_rgba(0.30, 0.34, 0.38, 1.0),
-    Color::from_rgba(0.45, 0.55, 0.50, 1.0),
-    Color::from_rgba(0.50, 0.52, 0.56, 0.88),
+    Color::from_rgba(0.410, 0.424, 0.449, 1.0),
+    Color::from_rgba(0.626, 0.665, 0.680, 1.0),
+    Color::from_rgba(0.584, 0.618, 0.650, 1.0),
+    Color::from_rgba(0.701, 0.767, 0.735, 1.0),
+    Color::from_rgba(0.735, 0.748, 0.774, 0.88),
 ];
 
 pub fn luminance(color: Color) -> f32 {
@@ -292,14 +300,15 @@ pub fn with_alpha(color: Color, alpha: f32) -> Color {
     Color::new(color.r, color.g, color.b, alpha.clamp(0.0, 1.0))
 }
 
-/// Converts a color into an `[f32; 4]` RGBA array for GPU pipelines.
-pub fn color_to_rgba(color: Color) -> [f32; 4] {
-    [color.r, color.g, color.b, color.a]
+/// Converts a color into linear space `[f32; 4]` RGBA array for GPU pipelines.
+/// This matches iced's internal color handling which converts sRGB to linear.
+pub fn color_to_linear_rgba(color: Color) -> [f32; 4] {
+    color.into_linear()
 }
 
-/// Converts a color to RGBA with custom opacity override.
-pub fn color_to_rgba_with_opacity(color: Color, opacity: f32) -> [f32; 4] {
-    let mut rgba = color_to_rgba(color);
+/// Converts a color to linear RGBA with custom opacity override.
+pub fn color_to_linear_rgba_with_opacity(color: Color, opacity: f32) -> [f32; 4] {
+    let mut rgba = color_to_linear_rgba(color);
     rgba[3] = rgba[3].clamp(0.0, 1.0) * opacity.clamp(0.0, 1.0);
     rgba
 }

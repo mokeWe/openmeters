@@ -222,30 +222,33 @@ impl LoudnessMeterState {
 
     fn render_params(&self) -> RenderParams {
         let (min, max) = self.range;
-        let guide_color = theme::color_to_rgba(self.palette[4]);
+        let guide_color = theme::color_to_linear_rgba(self.palette[4]);
+        let mut bg = self.palette[0];
+        bg.a = 1.0;
+        let bg_color = theme::color_to_linear_rgba(bg);
 
         RenderParams {
             min_db: min,
             max_db: max,
             bars: vec![
                 MeterBar {
-                    bg_color: theme::color_to_rgba(self.palette[0]),
+                    bg_color,
                     fills: vec![
                         (
                             self.get_value(self.left_mode, 0),
-                            theme::color_to_rgba(self.palette[1]),
+                            theme::color_to_linear_rgba(self.palette[1]),
                         ),
                         (
                             self.get_value(self.left_mode, 1),
-                            theme::color_to_rgba(self.palette[2]),
+                            theme::color_to_linear_rgba(self.palette[2]),
                         ),
                     ],
                 },
                 MeterBar {
-                    bg_color: theme::color_to_rgba(self.palette[0]),
+                    bg_color,
                     fills: vec![(
                         self.get_value(self.right_mode, 0),
-                        theme::color_to_rgba(self.palette[3]),
+                        theme::color_to_linear_rgba(self.palette[3]),
                     )],
                 },
             ],
@@ -321,13 +324,8 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
         // Draw the meter bars via custom primitive
         renderer.draw_primitive(bounds, LoudnessMeterPrimitive::new(params.clone()));
 
-        // Draw guide labels
         let palette = theme.extended_palette();
-        let label_color = theme::mix_colors(
-            palette.background.base.text,
-            palette.background.weak.color,
-            0.2,
-        );
+        let label_color = self.state.palette[4];
 
         if params.meter_bounds(&bounds).is_some() {
             let height = bounds.height;
@@ -380,14 +378,10 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
                     border: Border::default(),
                     shadow: Default::default(),
                 },
-                Background::Color(theme::with_alpha(
-                    theme::mix_colors(
-                        palette.background.weak.color,
-                        palette.primary.base.color,
-                        0.25,
-                    ),
-                    0.92,
-                )),
+                Background::Color(Color {
+                    a: 1.0,
+                    ..self.state.palette[0]
+                }),
             );
 
             text::Renderer::fill_text(

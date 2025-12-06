@@ -397,16 +397,16 @@ impl SpectrumState {
                 normalized_points: Arc::clone(&self.points.weighted),
                 secondary_points: Arc::clone(&self.points.unweighted),
                 instance_key: self.points.instance_key,
-                line_color: theme::color_to_rgba(line_color),
+                line_color: theme::color_to_linear_rgba(line_color),
                 line_width: self.style.line_thickness,
-                secondary_line_color: theme::color_to_rgba(secondary_line_color),
+                secondary_line_color: theme::color_to_linear_rgba(secondary_line_color),
                 secondary_line_width: self.style.unweighted_line_thickness,
                 highlight_threshold: self.style.highlight_threshold,
                 spectrum_palette: self
                     .style
                     .spectrum_palette
                     .iter()
-                    .map(|&c| theme::color_to_rgba(c))
+                    .map(|&c| theme::color_to_linear_rgba(c))
                     .collect(),
             },
             label: self

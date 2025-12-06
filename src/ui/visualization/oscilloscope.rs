@@ -193,7 +193,7 @@ impl OscilloscopeState {
             .iter()
             .cycle()
             .take(channels)
-            .map(|c| theme::color_to_rgba(*c))
+            .map(|c| theme::color_to_linear_rgba(*c))
             .collect();
 
         Some(OscilloscopeParams {

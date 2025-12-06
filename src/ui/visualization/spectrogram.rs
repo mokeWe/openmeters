@@ -953,20 +953,20 @@ impl PaletteCache {
     fn new(style: &SpectrogramStyle, palette: &[Color; PALETTE_STOPS]) -> Self {
         Self {
             palette: Self::convert_palette(palette, style.opacity),
-            background: theme::color_to_rgba_with_opacity(style.background, style.opacity),
+            background: theme::color_to_linear_rgba_with_opacity(style.background, style.opacity),
         }
     }
 
     fn refresh(&mut self, style: &SpectrogramStyle, palette: &[Color; PALETTE_STOPS]) {
         self.palette = Self::convert_palette(palette, style.opacity);
-        self.background = theme::color_to_rgba_with_opacity(style.background, style.opacity);
+        self.background = theme::color_to_linear_rgba_with_opacity(style.background, style.opacity);
     }
 
     fn convert_palette(
         palette: &[Color; PALETTE_STOPS],
         opacity: f32,
     ) -> [[f32; 4]; PALETTE_STOPS] {
-        palette.map(|color| theme::color_to_rgba_with_opacity(color, opacity))
+        palette.map(|color| theme::color_to_linear_rgba_with_opacity(color, opacity))
     }
 }
 
