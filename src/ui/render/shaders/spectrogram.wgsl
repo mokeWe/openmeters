@@ -54,11 +54,17 @@ var palette_tex: texture_1d<f32>;
 @group(0) @binding(3)
 var palette_sampler: sampler;
 
+// Premultiply alpha to match iced's color pipeline
+fn premultiply(color: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(color.rgb * color.a, color.a);
+}
+
 fn sample_palette(value: f32) -> vec4<f32> {
     let clamped = clamp(value, 0.0, 1.0);
     let contrast = max(uniforms.style.x, 0.01);
     let adjusted = pow(clamped, contrast);
-    return textureSampleLevel(palette_tex, palette_sampler, adjusted, 0.0);
+    let color = textureSampleLevel(palette_tex, palette_sampler, adjusted, 0.0);
+    return premultiply(color);
 }
 
 @vertex
@@ -110,7 +116,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let count = state.y;
 
     if capacity == 0u || height == 0u || count == 0u {
-        return uniforms.background;
+        return premultiply(uniforms.background);
     }
 
     let latest = min(state.x, capacity - 1u);

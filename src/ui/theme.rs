@@ -297,23 +297,25 @@ pub fn mix_colors(a: Color, b: Color, factor: f32) -> Color {
 }
 
 pub fn with_alpha(color: Color, alpha: f32) -> Color {
-    Color::new(color.r, color.g, color.b, alpha.clamp(0.0, 1.0))
+    Color { a: alpha.clamp(0.0, 1.0), ..color }
 }
 
 /// Converts a color into linear space `[f32; 4]` RGBA array for GPU pipelines.
-/// This matches iced's internal color handling which converts sRGB to linear.
+/// used in rendering as WGPU expects linear colors, iced does sRGB conversion automatically.
+#[inline]
 pub fn color_to_linear_rgba(color: Color) -> [f32; 4] {
     color.into_linear()
 }
 
-/// Converts a color to linear RGBA with custom opacity override.
+/// Converts a color to linear RGBA, scaling alpha by the given opacity.
+#[inline]
 pub fn color_to_linear_rgba_with_opacity(color: Color, opacity: f32) -> [f32; 4] {
-    let mut rgba = color_to_linear_rgba(color);
-    rgba[3] = rgba[3].clamp(0.0, 1.0) * opacity.clamp(0.0, 1.0);
-    rgba
+    let [r, g, b, a] = color.into_linear();
+    [r, g, b, a * opacity.clamp(0.0, 1.0)]
 }
 
-/// Compares two colors for approximate equality within a small epsilon.
+/// Compares two colors for approximate equality.
+#[inline]
 pub fn colors_equal(a: Color, b: Color) -> bool {
     const EPSILON: f32 = 1e-4;
     (a.r - b.r).abs() <= EPSILON

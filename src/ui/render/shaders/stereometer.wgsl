@@ -10,7 +10,6 @@ struct VertexOutput {
     @location(1) params: vec4<f32>,
 };
 
-// Premultiply alpha to match iced's color pipeline
 fn premultiply(color: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(color.rgb * color.a, color.a);
 }
@@ -30,5 +29,5 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let radius = input.params.z;
     let feather = max(input.params.w, 1.0e-4);
     let coverage = clamp((radius + feather - dist) / feather, 0.0, 1.0);
-    return vec4<f32>(input.color.rgb, input.color.a * coverage);
+    return input.color * coverage;
 }

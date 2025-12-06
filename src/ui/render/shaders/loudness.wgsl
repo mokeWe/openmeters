@@ -3,7 +3,6 @@ struct VertexOutput {
     @location(0) color : vec4<f32>,
 };
 
-// Premultiply alpha to match iced's color pipeline
 fn premultiply(color: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(color.rgb * color.a, color.a);
 }

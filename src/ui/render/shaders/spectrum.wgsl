@@ -10,7 +10,6 @@ struct VertexOutput {
     @location(1) params: vec3<f32>,
 };
 
-// Premultiply alpha to match iced's color pipeline
 fn premultiply(color: vec4<f32>) -> vec4<f32> {
     return vec4<f32>(color.rgb * color.a, color.a);
 }
@@ -29,9 +28,7 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     let signed_distance = input.params.x;
     let inner = input.params.y;
     let feather = max(input.params.z, 1.0e-4);
-    
-    // If inner and feather are both zero, this is a filled region (highlight column)
-    // so just return the color as-is
+
     if inner == 0.0 && feather == 1.0e-4 {
         return input.color;
     }
@@ -39,6 +36,5 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
     // Otherwise, apply antialiasing for the line
     let dist = abs(signed_distance);
     let coverage = clamp((inner + feather - dist) / feather, 0.0, 1.0);
-    let alpha = input.color.a * coverage;
-    return vec4<f32>(input.color.rgb, alpha);
+    return input.color * coverage;
 }
