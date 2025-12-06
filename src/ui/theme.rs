@@ -30,28 +30,36 @@ pub const DEFAULT_SPECTROGRAM_PALETTE: [Color; 5] = [
 ];
 
 pub const DEFAULT_SPECTRUM_PALETTE: [Color; 5] = [
-    Color::from_rgba(0.039, 0.011, 0.09, 1.0), // #0A0317 - dark purple (quiet)
-    Color::from_rgba(0.329, 0.000, 0.000, 1.0), // #540000 - dark red
-    Color::from_rgba(0.800, 0.200, 0.000, 1.0), // #CC3300 - red-orange
-    Color::from_rgba(1.000, 0.502, 0.102, 1.0), // #FF801A - orange
-    Color::from_rgba(1.000, 1.000, 0.000, 1.0), // #FFFF00 - yellow (loud)
+    Color::from_rgba(0.039, 0.011, 0.09, 1.0),
+    Color::from_rgba(0.329, 0.000, 0.000, 1.0),
+    Color::from_rgba(0.800, 0.200, 0.000, 1.0),
+    Color::from_rgba(1.000, 0.502, 0.102, 1.0),
+    Color::from_rgba(1.000, 1.000, 0.000, 1.0),
 ];
 
 pub const DEFAULT_WAVEFORM_PALETTE: [Color; 5] = [
-    Color::from_rgb(0.400, 0.000, 0.000), // dark red
-    Color::from_rgb(1.000, 0.000, 0.000), // bright red
-    Color::from_rgb(1.000, 0.400, 0.000), // orange
-    Color::from_rgb(0.600, 0.200, 0.800), // purple-magenta
-    Color::from_rgb(0.400, 0.000, 0.800), // deep purple
+    Color::from_rgb(0.400, 0.000, 0.000),
+    Color::from_rgb(1.000, 0.000, 0.000),
+    Color::from_rgb(1.000, 0.400, 0.000),
+    Color::from_rgb(0.600, 0.200, 0.800),
+    Color::from_rgb(0.400, 0.000, 0.800),
 ];
 
 pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 1] = [
-    Color::from_rgb(1.0, 1.0, 1.0), // white
+    Color::from_rgb(1.0, 1.0, 1.0),
 ];
 
 pub const DEFAULT_STEREOMETER_PALETTE: [Color; 2] = [
-    Color::from_rgb(1.0, 1.0, 1.0),    // white
-    Color::from_rgb(0.25, 0.26, 0.28), // slightly darker
+    Color::from_rgb(1.0, 1.0, 1.0),
+    Color::from_rgb(0.25, 0.26, 0.28),
+];
+
+pub const DEFAULT_LOUDNESS_PALETTE: [Color; 5] = [
+    Color::from_rgba(0.14, 0.15, 0.17, 1.0),
+    Color::from_rgba(0.35, 0.40, 0.42, 1.0),
+    Color::from_rgba(0.30, 0.34, 0.38, 1.0),
+    Color::from_rgba(0.45, 0.55, 0.50, 1.0),
+    Color::from_rgba(0.50, 0.52, 0.56, 0.88),
 ];
 
 pub fn luminance(color: Color) -> f32 {

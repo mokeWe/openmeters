@@ -372,19 +372,28 @@ impl SpectrumSettings {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct LoudnessSettings {
     pub left_mode: MeterMode,
     pub right_mode: MeterMode,
+    #[serde(default)]
+    pub palette: Option<PaletteSettings>,
 }
 
 impl LoudnessSettings {
-    pub const fn new(left_mode: MeterMode, right_mode: MeterMode) -> Self {
+    pub fn new(left_mode: MeterMode, right_mode: MeterMode) -> Self {
         Self {
             left_mode,
             right_mode,
+            palette: None,
         }
+    }
+
+    pub fn palette_array<const N: usize>(&self) -> Option<[iced::Color; N]> {
+        self.palette
+            .as_ref()
+            .and_then(PaletteSettings::to_array::<N>)
     }
 }
 

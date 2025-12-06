@@ -118,18 +118,6 @@ const LIVE_VALUE_LABEL_WIDTH: f32 = clamp_width(
 const LIVE_VALUE_LABEL_RESERVE: f32 =
     LIVE_VALUE_LABEL_GAP + LIVE_VALUE_LABEL_MARGIN + LIVE_VALUE_LABEL_WIDTH;
 
-fn guide_line_color(theme: &Theme) -> Color {
-    let palette = theme.extended_palette();
-    theme::with_alpha(
-        theme::mix_colors(
-            palette.secondary.weak.text,
-            palette.background.weak.color,
-            0.35,
-        ),
-        0.88,
-    )
-}
-
 fn guide_label_color(theme: &Theme) -> Color {
     let palette = theme.extended_palette();
     theme::mix_colors(
@@ -196,6 +184,9 @@ impl LoudnessMeterProcessor {
     }
 }
 
+/// Number of colors in the loudness meter palette.
+pub const LOUDNESS_PALETTE_SIZE: usize = 5;
+
 /// View-model state consumed by the loudness widget.
 #[derive(Debug, Clone)]
 pub struct LoudnessMeterState {
@@ -207,6 +198,7 @@ pub struct LoudnessMeterState {
     range: (f32, f32),
     left_mode: MeterMode,
     right_mode: MeterMode,
+    palette: [Color; LOUDNESS_PALETTE_SIZE],
 }
 
 impl LoudnessMeterState {
@@ -220,6 +212,7 @@ impl LoudnessMeterState {
             range: DEFAULT_RANGE,
             left_mode: MeterMode::TruePeak,
             right_mode: MeterMode::LufsShortTerm,
+            palette: theme::DEFAULT_LOUDNESS_PALETTE,
         }
     }
 
@@ -265,6 +258,14 @@ impl LoudnessMeterState {
         self.right_mode
     }
 
+    pub fn set_palette(&mut self, palette: &[Color; LOUDNESS_PALETTE_SIZE]) {
+        self.palette = *palette;
+    }
+
+    pub fn palette(&self) -> &[Color; LOUDNESS_PALETTE_SIZE] {
+        &self.palette
+    }
+
     #[cfg(test)]
     pub fn short_term_average(&self) -> f32 {
         self.short_term_loudness.iter().copied().sum::<f32>() / CHANNELS as f32
@@ -284,23 +285,15 @@ impl LoudnessMeterState {
         }
     }
 
-    pub fn visual_params(&self, range: (f32, f32), theme: &Theme) -> VisualParams {
+    pub fn visual_params(&self, range: (f32, f32), _theme: &Theme) -> VisualParams {
         let (min, max) = range;
-        let palette = theme.extended_palette();
-        let elevated = palette.background.strong.color;
-        let text = palette.background.base.text;
-        let accent = palette.primary.base.color;
-        let success = palette.success.base.color;
 
-        // Approximate hover as elevated for now
-        let hover = elevated;
-
-        let short_term_fill = theme::mix_colors(accent, success, 0.35);
-        let raw_peak_left_fill = theme::mix_colors(elevated, text, 0.18);
-        let raw_peak_right_fill = theme::mix_colors(hover, text, 0.12);
-
-        let guide_color = theme::color_to_rgba(guide_line_color(theme));
-        let bg_color = theme::color_to_rgba(palette.background.weak.color);
+        // Extract colors from stored palette:
+        // [0] Background, [1] Left ch0 fill, [2] Left ch1 fill, [3] Right fill, [4] Guide line
+        let bg_color = theme::color_to_rgba(self.palette[0]);
+        let left_fill_colors = [self.palette[1], self.palette[2]];
+        let right_fill_color = self.palette[3];
+        let guide_color = theme::color_to_rgba(self.palette[4]);
 
         let left_values: Vec<f32> = (0..CHANNELS)
             .map(|ch| self.get_value_for_mode(self.left_mode, ch))
@@ -309,7 +302,7 @@ impl LoudnessMeterState {
 
         let left_fills: Vec<_> = left_values
             .iter()
-            .zip([raw_peak_left_fill, raw_peak_right_fill])
+            .zip(left_fill_colors)
             .map(|(&value, color)| FillVisual {
                 value_loudness: value,
                 color: theme::color_to_rgba(color),
@@ -325,7 +318,7 @@ impl LoudnessMeterState {
                 background_color: bg_color,
                 fills: vec![FillVisual {
                     value_loudness: right_value,
-                    color: theme::color_to_rgba(short_term_fill),
+                    color: theme::color_to_rgba(right_fill_color),
                 }],
             },
         ];

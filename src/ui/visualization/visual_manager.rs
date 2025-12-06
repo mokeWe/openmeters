@@ -10,7 +10,9 @@ use crate::ui::settings::{
     SpectrumSettings, StereometerSettings, VisualSettings, WaveformSettings,
 };
 use crate::ui::theme;
-use crate::ui::visualization::loudness::{LoudnessMeterProcessor, LoudnessMeterState};
+use crate::ui::visualization::loudness::{
+    LoudnessMeterProcessor, LoudnessMeterState, LOUDNESS_PALETTE_SIZE,
+};
 use crate::ui::visualization::oscilloscope::{OscilloscopeProcessor, OscilloscopeState};
 use crate::ui::visualization::spectrogram::{SpectrogramProcessor, SpectrogramState};
 use crate::ui::visualization::spectrum::{SpectrumProcessor, SpectrumState};
@@ -300,14 +302,25 @@ impl VisualModule for LoudnessVisual {
         if let Some(loudness_settings) = settings.config::<LoudnessSettings>() {
             self.state
                 .set_modes(loudness_settings.left_mode, loudness_settings.right_mode);
+
+            if let Some(palette) = loudness_settings.palette_array::<LOUDNESS_PALETTE_SIZE>() {
+                self.state.set_palette(&palette);
+            } else {
+                self.state.set_palette(&theme::DEFAULT_LOUDNESS_PALETTE);
+            }
         }
     }
 
     fn export_settings(&self) -> Option<ModuleSettings> {
-        Some(ModuleSettings::with_config(&LoudnessSettings::new(
+        let mut settings = LoudnessSettings::new(
             self.state.left_mode(),
             self.state.right_mode(),
-        )))
+        );
+        settings.palette = PaletteSettings::maybe_from_colors(
+            self.state.palette(),
+            &theme::DEFAULT_LOUDNESS_PALETTE,
+        );
+        Some(ModuleSettings::with_config(&settings))
     }
 }
 

@@ -20,11 +20,16 @@ pub enum PaletteEvent {
 pub struct PaletteEditor {
     colors: Vec<Color>,
     defaults: Vec<Color>,
+    labels: Vec<&'static str>,
     active: Option<usize>,
 }
 
 impl PaletteEditor {
     pub fn new(current: &[Color], defaults: &[Color]) -> Self {
+        Self::with_labels(current, defaults, &[])
+    }
+
+    pub fn with_labels(current: &[Color], defaults: &[Color], labels: &[&'static str]) -> Self {
         Self {
             colors: if current.len() == defaults.len() {
                 current.to_vec()
@@ -32,7 +37,16 @@ impl PaletteEditor {
                 defaults.to_vec()
             },
             defaults: defaults.to_vec(),
+            labels: labels.to_vec(),
             active: None,
+        }
+    }
+
+    fn label_for(&self, index: usize) -> String {
+        if let Some(&label) = self.labels.get(index) {
+            label.to_string()
+        } else {
+            format!("Color {}", index + 1)
         }
     }
 
@@ -111,11 +125,13 @@ impl PaletteEditor {
     fn color_picker(&self, i: usize, c: Color) -> Element<'_, PaletteEvent> {
         let (w, h) = SWATCH_SIZE;
         let is_active = self.active == Some(i);
+        let label = self.label_for(i);
         Button::new(
             Column::new()
-                .width(Length::Fixed(w))
-                .spacing(6.0)
+                .width(Length::Shrink)
+                .spacing(4.0)
                 .align_x(Horizontal::Center)
+                .push(text(label).size(LABEL_SIZE))
                 .push(
                     container(Space::new(Length::Fill, Length::Fill))
                         .width(Length::Fixed(w))
@@ -131,11 +147,12 @@ impl PaletteEditor {
     }
 
     fn color_controls(&self, i: usize, c: Color) -> Element<'_, PaletteEvent> {
+        let label = self.label_for(i);
         let mut col = Column::new().spacing(8.0).push(
             Row::new()
                 .spacing(8.0)
                 .align_y(Vertical::Center)
-                .push(text(format!("Color {}", i + 1)).size(12))
+                .push(text(label).size(12))
                 .push(Space::new(Length::Fill, Length::Shrink))
                 .push(
                     Button::new(text("Done").size(12))
@@ -146,7 +163,7 @@ impl PaletteEditor {
         );
 
         // RGB+A channels
-        for (label, value, setter, display_fn) in [
+        for (channel_label, value, setter, display_fn) in [
             (
                 "R",
                 c.r,
@@ -176,7 +193,7 @@ impl PaletteEditor {
                 Row::new()
                     .spacing(8.0)
                     .align_y(Vertical::Center)
-                    .push(text(label).size(12).width(Length::Fixed(32.0)))
+                    .push(text(channel_label).size(12).width(Length::Fixed(32.0)))
                     .push(
                         slider::Slider::new(0.0..=1.0, value, move |nv| PaletteEvent::Adjust {
                             index: i,
