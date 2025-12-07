@@ -2,7 +2,7 @@
 
 ![preview](screenshots/preview.gif)
 
-<small>Above is an early preview and thus may not represent the current state of the application. Build it yourself to see where it currently stands.</small>
+<sup>Above is an early preview and thus may not represent the current state of the application. Build it yourself to see where it currently stands.</sup>
 
 OpenMeters is a fast and simple audio metering application for Linux, built with Rust and PipeWire.
 
