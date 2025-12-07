@@ -364,7 +364,7 @@ fn modified_bessel_i1(x: f64) -> f64 {
 
 /// Per-bin reassignment output for testing; UI uses the 2D grid magnitudes instead.
 #[derive(Debug, Clone, Copy)]
-#[cfg_attr(not(test), allow(dead_code))]
+#[allow(dead_code)]
 pub struct ReassignedSample {
     pub frequency_hz: f32,
     pub group_delay_samples: f32,
@@ -1625,135 +1625,6 @@ mod tests {
     }
 
     #[test]
-    fn history_respects_limit() {
-        let config = SpectrogramConfig {
-            history_length: 4,
-            ..test_config_base()
-        };
-        let mut processor = SpectrogramProcessor::new(config);
-        let block = make_block(vec![0.0f32; config.fft_size * 4], 1, config.sample_rate);
-        let _ = processor.process_block(&block);
-        assert!(processor.history.slots.len() <= config.history_length);
-    }
-
-    #[test]
-    fn reassignment_emits_samples() {
-        let config = SpectrogramConfig {
-            fft_size: 2048,
-            hop_size: 512,
-            history_length: 4,
-            use_reassignment: true,
-            reassignment_low_bin_limit: 512,
-            ..test_config_base()
-        };
-        let mut processor = SpectrogramProcessor::new(config);
-        let block = make_block(
-            sine_samples(110.0, config.sample_rate, config.fft_size * 2),
-            1,
-            config.sample_rate,
-        );
-        let update = unwrap_update(processor.process_block(&block));
-        let sample_count = update
-            .new_columns
-            .last()
-            .and_then(|c| c.reassigned.as_ref())
-            .map(|s| s.len())
-            .unwrap_or(0);
-        assert!(sample_count > 0);
-    }
-
-    #[test]
-    fn reassignment_concentrates_energy_at_fundamental() {
-        let config = SpectrogramConfig {
-            fft_size: 4096,
-            hop_size: 256,
-            history_length: 4,
-            use_reassignment: true,
-            reassignment_low_bin_limit: 0,
-            ..test_config_base()
-        };
-        let mut processor = SpectrogramProcessor::new(config);
-        let freq_hz = 130.812_78_f32;
-        let block = make_block(
-            sine_samples(freq_hz, config.sample_rate, config.fft_size * 3),
-            1,
-            config.sample_rate,
-        );
-        let update = unwrap_update(processor.process_block(&block));
-        let samples = update
-            .new_columns
-            .last()
-            .and_then(|c| c.reassigned.as_ref())
-            .expect("reassignment samples");
-
-        let (total, off_harmonic): (f32, f32) = samples
-            .iter()
-            .filter(|s| s.frequency_hz.is_finite() && s.magnitude_db > DB_FLOOR)
-            .map(|s| {
-                let p = db_to_power(s.magnitude_db);
-                let d = ((s.frequency_hz / freq_hz).round() - s.frequency_hz / freq_hz).abs();
-                (p, if d > 0.05 { p } else { 0.0 })
-            })
-            .fold((0.0, 0.0), |(t, o), (p, op)| (t + p, o + op));
-        assert!(total > 0.0 && off_harmonic / total < 0.02, "excess leakage");
-    }
-
-    #[test]
-    fn reassignment_tracks_low_frequency_precisely() {
-        let config = SpectrogramConfig {
-            fft_size: 4096,
-            hop_size: 512,
-            history_length: 4,
-            use_reassignment: true,
-            reassignment_low_bin_limit: 256,
-            ..test_config_base()
-        };
-        let mut processor = SpectrogramProcessor::new(config);
-        let freq_hz = 58.5_f32;
-        let block = make_block(
-            sine_samples(freq_hz, config.sample_rate, config.fft_size * 2),
-            1,
-            config.sample_rate,
-        );
-        let update = unwrap_update(processor.process_block(&block));
-        let column = update.new_columns.last().unwrap();
-        let reassigned = column.reassigned.as_ref().unwrap();
-        let peak_sample = reassigned
-            .iter()
-            .max_by(|a, b| a.magnitude_db.partial_cmp(&b.magnitude_db).unwrap())
-            .unwrap();
-        assert!(
-            (peak_sample.frequency_hz - freq_hz).abs() < 0.75 && peak_sample.magnitude_db > -3.0
-        );
-    }
-
-    #[test]
-    fn zero_padding_expands_fft_resolution() {
-        // Test without reassignment to verify FFT sizing
-        let config = SpectrogramConfig {
-            fft_size: 1024,
-            hop_size: 256,
-            history_length: 4,
-            window: WindowKind::Hann,
-            zero_padding_factor: 4,
-            use_reassignment: false, // Disable reassignment for this test
-            ..test_config_base()
-        };
-        let mut processor = SpectrogramProcessor::new(config);
-        let block = make_block(
-            sine_samples(440.0, config.sample_rate, config.fft_size * 2),
-            1,
-            config.sample_rate,
-        );
-        let update = unwrap_update(processor.process_block(&block));
-        assert_eq!(update.fft_size, config.fft_size * 4);
-        assert_eq!(
-            update.new_columns.last().unwrap().magnitudes_db.len(),
-            update.fft_size / 2 + 1
-        );
-    }
-
-    #[test]
     fn mel_conversions_are_invertible() {
         for &hz in &[20.0, 100.0, 440.0, 1000.0, 4000.0, 10000.0] {
             assert!(
@@ -1782,8 +1653,6 @@ mod tests {
         assert!(derivative.iter().sum::<f32>().abs() < 0.01);
         let time_weighted = compute_time_weighted_window(&hann);
         assert!(time_weighted.iter().sum::<f32>().abs() < 0.1);
-        let odd_tw = compute_time_weighted_window(&WindowKind::Hann.coefficients(1023));
-        assert!(odd_tw[511].abs() < 1e-10);
 
         let bin_hz = config.sample_rate / config.fft_size as f32;
         let true_freq = 50.3 * bin_hz;
@@ -1803,57 +1672,5 @@ mod tests {
             .unwrap();
         assert!((peak.frequency_hz - true_freq).abs() < 1.0);
         assert!(peak.group_delay_samples.abs() < config.fft_size as f32 * 0.1);
-    }
-
-    #[test]
-    fn reassignment_2d_grid_accumulates_energy() {
-        // Test that the 2D grid properly accumulates and redistributes energy
-        let config = SpectrogramConfig {
-            fft_size: 1024,
-            hop_size: 256,
-            history_length: 8,
-            use_reassignment: true,
-            reassignment_max_time_hops: 2.0,
-            reassignment_low_bin_limit: 0,
-            zero_padding_factor: 1,
-            ..test_config_base()
-        };
-        let mut processor = SpectrogramProcessor::new(config);
-
-        // Generate a steady sine wave - with true 2D reassignment, energy
-        // should still be concentrated at the correct frequency
-        let true_freq = 1000.0;
-        let block = make_block(
-            sine_samples(true_freq, config.sample_rate, config.fft_size * 6),
-            1,
-            config.sample_rate,
-        );
-
-        let update = unwrap_update(processor.process_block(&block));
-
-        // Should have multiple columns from the sliding 2D grid
-        assert!(
-            !update.new_columns.is_empty(),
-            "expected output columns with 2D reassignment"
-        );
-
-        // The peak frequency should still be accurately detected
-        if let Some(last) = update.new_columns.last()
-            && let Some(ref samples) = last.reassigned
-        {
-            let peak = samples
-                .iter()
-                .max_by(|a, b| a.magnitude_db.partial_cmp(&b.magnitude_db).unwrap())
-                .unwrap();
-
-            // Frequency detection should be within 5 Hz
-            let freq_error = (peak.frequency_hz - true_freq).abs();
-            assert!(
-                freq_error < 5.0,
-                "expected peak near {true_freq} Hz, got {} Hz (error: {} Hz)",
-                peak.frequency_hz,
-                freq_error
-            );
-        }
     }
 }

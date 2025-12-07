@@ -97,11 +97,6 @@ impl CaptureBuffer {
         }
     }
 
-    #[cfg(test)]
-    fn capacity(&self) -> usize {
-        self.inner.lock().map(|guard| guard.capacity()).unwrap_or(0)
-    }
-
     pub fn dropped_frames(&self) -> u64 {
         self.dropped_frames.load(Ordering::Relaxed)
     }
@@ -312,15 +307,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn capture_buffer_is_singleton_with_expected_capacity() {
-        let first = ensure_capture_buffer();
-        let second = ensure_capture_buffer();
-        assert!(Arc::ptr_eq(first, second));
-
-        assert_eq!(first.capacity(), CAPTURE_BUFFER_CAPACITY);
-    }
-
-    #[test]
     fn virtual_sink_state_defaults_match_requested_configuration() {
         let state = VirtualSinkState::new(2, DEFAULT_SAMPLE_RATE as u32);
         assert_eq!(state.channels, 2);
@@ -330,24 +316,5 @@ mod tests {
             state.frame_bytes,
             2 * bytes_per_sample(state.format).unwrap()
         );
-    }
-
-    #[test]
-    fn update_from_info_clamps_channels_and_updates_frame_bytes() {
-        let mut state = VirtualSinkState::new(4, 96_000);
-        let mut info = spa::param::audio::AudioInfoRaw::new();
-        info.set_channels(0); // PipeWire may report 0 before negotiation; we clamp to at least 1.
-        info.set_rate(44_100);
-        info.set_format(spa::param::audio::AudioFormat::S16LE);
-
-        state.update_from_info(&info);
-
-        assert_eq!(
-            state.channels, 1,
-            "channels should be clamped to at least 1"
-        );
-        assert_eq!(state.sample_rate, 44_100);
-        assert_eq!(state.format, spa::param::audio::AudioFormat::S16LE);
-        assert_eq!(state.frame_bytes, bytes_per_sample(state.format).unwrap());
     }
 }

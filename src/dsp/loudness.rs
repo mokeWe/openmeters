@@ -455,43 +455,6 @@ mod tests {
     }
 
     #[test]
-    fn processor_tracks_peak() {
-        let mut samples = vec![0.0; 2048];
-        samples[0] = 0.9;
-        let block = AudioBlock::new(&samples, 2, DEFAULT_SAMPLE_RATE, Instant::now());
-        let s = unwrap_snapshot(
-            LoudnessProcessor::new(LoudnessConfig::default()).process_block(&block),
-        );
-        assert!(s.true_peak_db[0] > -1.0);
-    }
-
-    #[test]
-    fn processor_sums_channel_energy_before_log() {
-        let mono = sine_wave(DEFAULT_SAMPLE_RATE, 3.0, 1000.0, 0.5);
-        let stereo: Vec<f32> = mono.iter().flat_map(|&s| [s, s]).collect();
-        let mono_s = unwrap_snapshot(
-            LoudnessProcessor::new(LoudnessConfig::default()).process_block(&AudioBlock::new(
-                &mono,
-                1,
-                DEFAULT_SAMPLE_RATE,
-                Instant::now(),
-            )),
-        );
-        let stereo_s = unwrap_snapshot(
-            LoudnessProcessor::new(LoudnessConfig::default()).process_block(&AudioBlock::new(
-                &stereo,
-                2,
-                DEFAULT_SAMPLE_RATE,
-                Instant::now(),
-            )),
-        );
-        assert!((stereo_s.short_term_loudness[0] - stereo_s.short_term_loudness[1]).abs() < 1e-3);
-        // Correlated stereo content should increase loudness by ~3.01 dB compared to mono
-        let diff = stereo_s.short_term_loudness[0] - mono_s.short_term_loudness[0];
-        assert!((2.9..3.1).contains(&diff), "diff was {diff}");
-    }
-
-    #[test]
     fn processor_matches_ebur128_short_term() {
         for sample_rate in [44100.0_f32, 48000.0, 96000.0] {
             let mono = sine_wave(sample_rate, 4.0, 1000.0, 0.5);

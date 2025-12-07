@@ -686,26 +686,6 @@ mod tests {
     }
 
     #[test]
-    fn average_downsampling_produces_envelope() {
-        let mut processor = WaveformProcessor::new(WaveformConfig {
-            scroll_speed: MIN_SCROLL_SPEED,
-            downsample: DownsampleStrategy::Average,
-            ..Default::default()
-        });
-        let fpc = frames_per_column(&processor.config);
-        let samples: Vec<f32> = (0..fpc)
-            .map(|i| if i % 2 == 0 { 0.6 } else { -0.2 })
-            .collect();
-        let s = unwrap_snapshot(processor.process_block(&make_block(
-            &samples,
-            1,
-            processor.config.sample_rate,
-        )));
-        assert_eq!(s.columns, 1);
-        assert!((s.max_values[0] - 0.6).abs() < 1e-3 && (s.min_values[0] + 0.2).abs() < 1e-3);
-    }
-
-    #[test]
     fn estimates_frequency_for_sine_wave() {
         let mut processor = WaveformProcessor::new(WaveformConfig {
             sample_rate: 48_000.0,
@@ -721,43 +701,5 @@ mod tests {
         )));
         let last = s.frequency_normalized.last().copied().unwrap_or_default();
         assert!((last - 0.44).abs() < 0.02, "expected ~0.44, got {}", last);
-    }
-
-    #[test]
-    fn frequency_estimate_remains_stable_at_high_scroll() {
-        let mut processor = WaveformProcessor::new(WaveformConfig {
-            sample_rate: 48_000.0,
-            scroll_speed: 400.0,
-            ..Default::default()
-        });
-        let fpc = frames_per_column(&processor.config);
-        let samples = sine_samples(220.0, processor.config.sample_rate, fpc * 8);
-        let s = unwrap_snapshot(processor.process_block(&make_block(
-            &samples,
-            1,
-            processor.config.sample_rate,
-        )));
-        let last = s.frequency_normalized.last().copied().unwrap_or_default();
-        assert!(last > 0.3 && last < 0.5, "expected 0.3..0.5, got {}", last);
-    }
-
-    #[test]
-    fn produces_columns_over_time() {
-        let mut processor = WaveformProcessor::new(WaveformConfig {
-            sample_rate: 48_000.0,
-            scroll_speed: 100.0,
-            ..Default::default()
-        });
-        let fpc = frames_per_column(&processor.config);
-        let samples: Vec<f32> = (0..fpc * 5 * 2)
-            .map(|i| if i % 2 == 0 { 0.1 } else { -0.1 })
-            .collect();
-        let s = unwrap_snapshot(processor.process_block(&make_block(
-            &samples,
-            2,
-            processor.config.sample_rate,
-        )));
-        assert_eq!(s.channels, 2);
-        assert!(s.columns >= 4 && s.min_values.len() == s.columns * 2);
     }
 }

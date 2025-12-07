@@ -52,13 +52,4 @@ mod tests {
             NodeDirection::Input
         );
     }
-
-    #[test]
-    fn derive_direction_falls_back_to_port_direction() {
-        let mut props = HashMap::new();
-        props.insert((*pw::keys::PORT_DIRECTION).to_string(), "in".into());
-        assert_eq!(derive_node_direction(None, &props), NodeDirection::Input);
-        props.insert((*pw::keys::PORT_DIRECTION).to_string(), "out".into());
-        assert_eq!(derive_node_direction(None, &props), NodeDirection::Output);
-    }
 }

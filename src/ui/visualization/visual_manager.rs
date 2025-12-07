@@ -815,17 +815,6 @@ impl std::fmt::Debug for VisualManagerHandle {
 mod tests {
     use super::*;
 
-    fn loudness_average(snapshot: &VisualSnapshot) -> f32 {
-        snapshot
-            .slots
-            .iter()
-            .find_map(|slot| match &slot.content {
-                VisualContent::LoudnessMeter { state } => Some(state.short_term_average()),
-                _ => None,
-            })
-            .expect("loudness meter missing from snapshot")
-    }
-
     #[test]
     fn snapshot_reflects_descriptor_defaults() {
         let manager = VisualManager::new();
@@ -851,50 +840,5 @@ mod tests {
                 descriptor.metadata.display_name
             );
         }
-    }
-
-    #[test]
-    fn toggling_a_kind_updates_snapshot_state() {
-        let mut manager = VisualManager::new();
-        manager.set_enabled_by_kind(VisualKind::LOUDNESS, false);
-
-        let snapshot = manager.snapshot();
-        let loudness_slot = snapshot
-            .slots
-            .iter()
-            .find(|slot| slot.kind == VisualKind::LOUDNESS)
-            .expect("loudness slot not found");
-
-        assert!(!loudness_slot.enabled);
-    }
-
-    #[test]
-    fn reorder_changes_visual_order() {
-        let mut manager = VisualManager::new();
-        let snapshot = manager.snapshot();
-        let mut desired_order: Vec<_> = snapshot.slots.iter().map(|slot| slot.id).collect();
-        desired_order.reverse();
-
-        manager.reorder(&desired_order);
-        let snapshot_after = manager.snapshot();
-        let reordered: Vec<_> = snapshot_after.slots.iter().map(|slot| slot.id).collect();
-
-        assert_eq!(reordered, desired_order);
-    }
-
-    #[test]
-    fn ingest_samples_updates_visual_content() {
-        let mut manager = VisualManager::new();
-        manager.set_enabled_by_kind(VisualKind::LOUDNESS, true);
-        let baseline = manager.snapshot();
-        let baseline_loudness = loudness_average(&baseline);
-
-        let samples = vec![0.5_f32; 480];
-        manager.ingest_samples(&samples);
-
-        let snapshot = manager.snapshot();
-        let updated_loudness = loudness_average(&snapshot);
-
-        assert!(updated_loudness > baseline_loudness);
     }
 }

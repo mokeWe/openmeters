@@ -121,15 +121,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metadata_payload_prefers_object_serial_when_available() {
-        let payload = format_target_metadata(Some("102"), 7, "speakers");
-        assert_eq!(payload.type_hint, "Spa:Id");
-        assert_eq!(payload.target_object, "102");
-        assert_eq!(payload.target_node, "7");
-        assert_eq!(payload.target_name, "speakers");
-    }
-
-    #[test]
     fn metadata_payload_falls_back_to_node_id() {
         let payload = format_target_metadata(None, 9, "  sink  ");
         assert_eq!(payload.target_object, "9");

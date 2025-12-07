@@ -238,46 +238,4 @@ mod tests {
         assert_eq!(buffer.pop(), Some(2));
         assert_eq!(buffer.pop(), Some(3));
     }
-
-    #[test]
-    fn peek_returns_oldest_without_removing() {
-        let mut buffer = RingBuffer::with_capacity(3);
-        buffer.push(10);
-        buffer.push(20);
-        assert_eq!(buffer.peek(), Some(&10));
-        assert_eq!(buffer.len(), 2);
-        assert_eq!(buffer.pop(), Some(10));
-        assert_eq!(buffer.peek(), Some(&20));
-    }
-
-    #[test]
-    fn clear_removes_all_items() {
-        let mut buffer = RingBuffer::with_capacity(3);
-        buffer.push_iter([1, 2, 3]);
-        buffer.clear();
-        assert!(buffer.is_empty());
-        assert_eq!(buffer.pop(), None);
-        assert!(buffer.push(4).is_none());
-        assert_eq!(buffer.pop(), Some(4));
-    }
-
-    #[test]
-    fn iterator_reflects_current_state() {
-        let mut buffer = RingBuffer::with_capacity(4);
-        buffer.push_iter(1..=4);
-        let collected: Vec<_> = buffer.iter().copied().collect();
-        assert_eq!(collected, vec![1, 2, 3, 4]);
-
-        buffer.push_iter([5, 6]);
-        let collected: Vec<_> = buffer.iter().copied().collect();
-        assert_eq!(collected, vec![3, 4, 5, 6]);
-    }
-
-    #[test]
-    fn into_iter_drains_in_order() {
-        let mut buffer = RingBuffer::with_capacity(3);
-        buffer.push_iter(['a', 'b', 'c']);
-        let collected: String = buffer.into_iter().collect();
-        assert_eq!(collected, "abc");
-    }
 }

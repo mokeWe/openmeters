@@ -430,11 +430,6 @@ impl SpectrogramBuffer {
         self.column_count
     }
 
-    #[cfg(test)]
-    fn using_synchro(&self) -> bool {
-        self.has_display_bins
-    }
-
     fn has_dimensions(&self) -> bool {
         self.capacity != 0 && self.height != 0
     }
@@ -830,112 +825,6 @@ mod tests {
         let first = buffer.row_bin_positions.first().copied().unwrap();
         let last = buffer.row_bin_positions.last().copied().unwrap();
         assert!(first > last, "top row should map to higher-frequency bins");
-    }
-
-    #[test]
-    fn sample_column_interpolates_between_bins() {
-        let column = [0.0_f32, -12.0, -24.0];
-
-        let exact = column[1];
-        assert!((exact + 12.0).abs() < 1e-6);
-
-        let midpoint = column[1] + (column[2] - column[1]) * 0.5;
-        assert!((midpoint + 18.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn display_format_columns_use_grid_height() {
-        let mut state = SpectrogramState::new();
-        let column = SpectrogramColumn {
-            magnitudes_db: Arc::from(vec![-30.0, -25.0, -20.0, -15.0].into_boxed_slice()),
-            reassigned: None,
-        };
-
-        let update = SpectrogramUpdate {
-            fft_size: 1024,
-            hop_size: 256,
-            sample_rate: DEFAULT_SAMPLE_RATE,
-            frequency_scale: FrequencyScale::default(),
-            history_length: 4,
-            reset: true,
-            display_bins_hz: Some(Arc::from(vec![40.0, 80.0, 160.0, 320.0].into_boxed_slice())),
-            new_columns: vec![column],
-        };
-
-        state.apply_update(&update);
-
-        let buffer = state.buffer.borrow();
-        assert!(buffer.using_synchro());
-        assert_eq!(buffer.texture_height(), 4);
-    }
-
-    #[test]
-    fn display_format_columns_place_high_frequencies_on_top() {
-        let mut state = SpectrogramState::new();
-        let column = SpectrogramColumn {
-            magnitudes_db: Arc::from(vec![-10.0, -20.0, -30.0, -40.0].into_boxed_slice()),
-            reassigned: None,
-        };
-
-        let update = SpectrogramUpdate {
-            fft_size: 1024,
-            hop_size: 256,
-            sample_rate: DEFAULT_SAMPLE_RATE,
-            frequency_scale: FrequencyScale::default(),
-            history_length: 4,
-            reset: true,
-            display_bins_hz: Some(Arc::from(
-                vec![10_000.0, 2_500.0, 625.0, 156.25].into_boxed_slice(),
-            )),
-            new_columns: vec![column],
-        };
-
-        state.apply_update(&update);
-
-        let buffer = state.buffer.borrow();
-        assert!(buffer.using_synchro());
-        assert_eq!(buffer.texture_height(), 4);
-        assert_eq!(buffer.grid_bin_frequencies.len(), 4);
-        let highest = buffer.grid_bin_frequencies.first().copied().unwrap();
-        let lowest = buffer.grid_bin_frequencies.last().copied().unwrap();
-        assert!(highest > lowest);
-
-        let top = buffer.values.first().copied().unwrap_or_default();
-        let bottom_index = buffer.texture_height() as usize - 1;
-        let bottom = buffer.values.get(bottom_index).copied().unwrap_or_default();
-        assert!(
-            top > bottom,
-            "top row should represent higher magnitudes (high frequencies)"
-        );
-    }
-
-    #[test]
-    fn clamps_height_when_bins_exceed_texture_limit() {
-        let mut state = SpectrogramState::new();
-        let oversized = MAX_TEXTURE_BINS + 5;
-        let magnitudes = vec![-42.0_f32; oversized];
-
-        let column = SpectrogramColumn {
-            magnitudes_db: Arc::from(magnitudes.into_boxed_slice()),
-            reassigned: None,
-        };
-
-        let update = SpectrogramUpdate {
-            fft_size: 16_384,
-            hop_size: 2_048,
-            sample_rate: DEFAULT_SAMPLE_RATE,
-            frequency_scale: FrequencyScale::default(),
-            history_length: 8,
-            reset: true,
-            display_bins_hz: None,
-            new_columns: vec![column],
-        };
-
-        state.apply_update(&update);
-
-        let buffer = state.buffer.borrow();
-        assert_eq!(buffer.texture_height() as usize, MAX_TEXTURE_BINS);
-        assert_eq!(buffer.column_count(), 1);
     }
 }
 

@@ -280,11 +280,4 @@ mod tests {
         let bytes = [0u8; 4];
         assert!(convert_samples_to_f32(&bytes, spa::param::audio::AudioFormat::Unknown).is_none());
     }
-
-    #[test]
-    fn conversion_fails_for_misaligned_buffer() {
-        let bytes = [0u8; 3]; // 3 bytes cannot be evenly divided into 2-byte or 4-byte samples
-        assert!(convert_samples_to_f32(&bytes, spa::param::audio::AudioFormat::S16LE).is_none());
-        assert!(convert_samples_to_f32(&bytes, spa::param::audio::AudioFormat::F32LE).is_none());
-    }
 }

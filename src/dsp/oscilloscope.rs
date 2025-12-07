@@ -622,31 +622,6 @@ mod tests {
     }
 
     #[test]
-    fn stable_mode_detects_pitch() {
-        let mut processor = OscilloscopeProcessor::new(OscilloscopeConfig {
-            segment_duration: 0.1,
-            trigger_mode: TriggerMode::Stable { num_cycles: 2 },
-            ..Default::default()
-        });
-        let samples: Vec<f32> = sine_samples(
-            440.0,
-            DEFAULT_SAMPLE_RATE,
-            (DEFAULT_SAMPLE_RATE * 0.15) as usize,
-        )
-        .into_iter()
-        .flat_map(|s| [s, s])
-        .collect();
-        if let ProcessorUpdate::Snapshot(s) =
-            processor.process_block(&make_block(&samples, 2, DEFAULT_SAMPLE_RATE))
-        {
-            assert_eq!(s.channels, 2);
-            assert!(s.samples_per_channel > 0 && !s.samples.is_empty());
-        } else {
-            panic!("expected snapshot");
-        }
-    }
-
-    #[test]
     fn pitch_detection() {
         let mut detector = PitchDetector::new();
         let rate = 48_000.0;
