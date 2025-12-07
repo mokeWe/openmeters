@@ -804,7 +804,6 @@ fn calculate_frequency(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     #[test]
     fn row_positions_follow_log_profile() {
@@ -848,7 +847,6 @@ mod tests {
     fn display_format_columns_use_grid_height() {
         let mut state = SpectrogramState::new();
         let column = SpectrogramColumn {
-            timestamp: Instant::now(),
             magnitudes_db: Arc::from(vec![-30.0, -25.0, -20.0, -15.0].into_boxed_slice()),
             reassigned: None,
         };
@@ -875,7 +873,6 @@ mod tests {
     fn display_format_columns_place_high_frequencies_on_top() {
         let mut state = SpectrogramState::new();
         let column = SpectrogramColumn {
-            timestamp: Instant::now(),
             magnitudes_db: Arc::from(vec![-10.0, -20.0, -30.0, -40.0].into_boxed_slice()),
             reassigned: None,
         };
@@ -919,7 +916,6 @@ mod tests {
         let magnitudes = vec![-42.0_f32; oversized];
 
         let column = SpectrogramColumn {
-            timestamp: Instant::now(),
             magnitudes_db: Arc::from(magnitudes.into_boxed_slice()),
             reassigned: None,
         };

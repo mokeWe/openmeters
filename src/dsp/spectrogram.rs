@@ -30,7 +30,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
-use std::time::{Duration, Instant};
 
 const MAX_REASSIGNMENT_SAMPLES: usize = 8192;
 pub const PLANCK_BESSEL_DEFAULT_EPSILON: f32 = 0.1;
@@ -49,16 +48,6 @@ const GAUSSIAN_KERNEL_3X3: [[f32; 3]; 3] = {
         [CORNER / SUM, EDGE / SUM, CORNER / SUM], // df = +1
     ]
 };
-
-#[inline]
-fn resize_vecdeque<T: Default + Clone>(buffer: &mut VecDeque<T>, capacity: usize) {
-    if capacity == 0 {
-        buffer.clear();
-        buffer.shrink_to_fit();
-    } else if buffer.len() > capacity {
-        buffer.drain(..buffer.len() - capacity);
-    }
-}
 
 #[derive(Debug, Clone, Copy)]
 pub struct SpectrogramConfig {
@@ -373,14 +362,13 @@ fn modified_bessel_i1(x: f64) -> f64 {
     }
 }
 
-#[allow(dead_code)]
+/// Per-bin reassignment output for testing; UI uses the 2D grid magnitudes instead.
 #[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub struct ReassignedSample {
     pub frequency_hz: f32,
     pub group_delay_samples: f32,
     pub magnitude_db: f32,
-    pub confidence: f32,
-    pub chirp_rate: f32,
 }
 
 struct ReassignmentBuffers {
@@ -395,7 +383,6 @@ struct ReassignmentBuffers {
     second_derivative_spectrum: Vec<Complex32>,
     sample_cache: Vec<ReassignedSample>,
     power_floor_linear: f32,
-    bin_omega: f32,
 }
 
 impl ReassignmentBuffers {
@@ -405,16 +392,10 @@ impl ReassignmentBuffers {
         fft: &Arc<dyn RealToComplex<f32>>,
         fft_size: usize,
         power_floor_db: f32,
-        sample_rate: f32,
     ) -> Self {
         let bins = fft_size / 2 + 1;
         let derivative_window = compute_derivative_window(window_kind, window);
         let second_derivative_window = compute_second_derivative_window(&derivative_window);
-        let bin_omega = if fft_size > 0 && sample_rate > 0.0 {
-            core::f32::consts::TAU / fft_size as f32
-        } else {
-            0.0
-        };
         Self {
             derivative_window,
             time_weighted_window: compute_time_weighted_window(window),
@@ -427,7 +408,6 @@ impl ReassignmentBuffers {
             second_derivative_spectrum: fft.make_output_vec(),
             sample_cache: Vec::with_capacity(bins >> 4),
             power_floor_linear: db_to_power(power_floor_db),
-            bin_omega,
         }
     }
 
@@ -438,7 +418,6 @@ impl ReassignmentBuffers {
         fft: &Arc<dyn RealToComplex<f32>>,
         fft_size: usize,
         power_floor_db: f32,
-        sample_rate: f32,
     ) {
         self.derivative_window = compute_derivative_window(window_kind, window);
         self.time_weighted_window = compute_time_weighted_window(window);
@@ -450,11 +429,6 @@ impl ReassignmentBuffers {
         self.time_weighted_spectrum = fft.make_output_vec();
         self.second_derivative_spectrum = fft.make_output_vec();
         self.power_floor_linear = db_to_power(power_floor_db);
-        self.bin_omega = if fft_size > 0 && sample_rate > 0.0 {
-            core::f32::consts::TAU / fft_size as f32
-        } else {
-            0.0
-        };
     }
 }
 
@@ -471,7 +445,7 @@ struct FrequencyScaleParams {
 }
 
 impl FrequencyScaleParams {
-    fn compute(_scale: FrequencyScale, min_hz: f32, max_hz: f32, bin_count: usize) -> Self {
+    fn compute(min_hz: f32, max_hz: f32, bin_count: usize) -> Self {
         if bin_count == 0 || max_hz <= min_hz {
             return Self::default();
         }
@@ -532,10 +506,8 @@ struct Reassignment2DGrid {
     max_time_hops: usize,
     hop_size: usize,
     power_grid: Vec<f32>,
-    weight_grid: Vec<f32>,
     center_column: usize,
     column_count: usize,
-    frames_accumulated: usize,
     output_buffer: Vec<f32>,
     magnitude_buffer: Vec<f32>,
     scale: FrequencyScale,
@@ -553,10 +525,8 @@ impl Reassignment2DGrid {
             max_time_hops: 1,
             hop_size: config.hop_size,
             power_grid: Vec::new(),
-            weight_grid: Vec::new(),
             center_column: 1,
             column_count: 3,
-            frames_accumulated: 0,
             output_buffer: Vec::new(),
             magnitude_buffer: Vec::new(),
             scale: config.frequency_scale,
@@ -577,7 +547,6 @@ impl Reassignment2DGrid {
             self.enabled = false;
             self.display_bins = 0;
             self.power_grid.clear();
-            self.weight_grid.clear();
             self.output_buffer.clear();
             self.magnitude_buffer.clear();
             self.bin_frequencies_hz = Arc::from([]);
@@ -611,55 +580,43 @@ impl Reassignment2DGrid {
         self.enabled = true;
 
         if freqs_changed {
-            self.scale_params = FrequencyScaleParams::compute(scale, min_hz, max_hz, display_bins);
-            self.bin_frequencies_hz = Self::compute_bin_frequencies(
-                scale,
-                min_hz,
-                max_hz,
-                display_bins,
-                self.scale_params.log_min,
-                1.0 / self.scale_params.inv_log_range,
-                self.scale_params.mel_min,
-                1.0 / self.scale_params.inv_mel_range,
-            );
+            self.scale_params = FrequencyScaleParams::compute(min_hz, max_hz, display_bins);
+            self.bin_frequencies_hz =
+                Self::compute_bin_frequencies(scale, display_bins, &self.scale_params);
         }
 
         if size_changed {
             let grid_size = display_bins * column_count;
             self.power_grid.resize(grid_size, 0.0);
-            self.weight_grid.resize(grid_size, 0.0);
             self.output_buffer.resize(display_bins, 0.0);
             self.magnitude_buffer.resize(display_bins, DB_FLOOR);
             self.reset();
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn compute_bin_frequencies(
         scale: FrequencyScale,
-        min_hz: f32,
-        max_hz: f32,
         bin_count: usize,
-        log_min: f32,
-        log_range: f32,
-        mel_min: f32,
-        mel_range: f32,
+        params: &FrequencyScaleParams,
     ) -> Arc<[f32]> {
         if bin_count == 0 {
             return Arc::from([]);
         }
 
         if bin_count == 1 {
-            return Arc::from([min_hz]);
+            return Arc::from([params.min_hz]);
         }
+
+        let log_range = 1.0 / params.inv_log_range;
+        let mel_range = 1.0 / params.inv_mel_range;
 
         let mut freqs = Vec::with_capacity(bin_count);
         for idx in 0..bin_count {
             let t = idx as f32 / (bin_count as f32 - 1.0);
             let freq = match scale {
-                FrequencyScale::Linear => min_hz + (max_hz - min_hz) * t,
-                FrequencyScale::Logarithmic => (log_min + log_range * t).exp(),
-                FrequencyScale::Mel => mel_to_hz(mel_min + mel_range * t),
+                FrequencyScale::Linear => params.min_hz + (params.max_hz - params.min_hz) * t,
+                FrequencyScale::Logarithmic => (params.log_min + log_range * t).exp(),
+                FrequencyScale::Mel => mel_to_hz(params.mel_min + mel_range * t),
             };
             freqs.push(freq);
         }
@@ -669,9 +626,7 @@ impl Reassignment2DGrid {
 
     fn reset(&mut self) {
         self.power_grid.fill(0.0);
-        self.weight_grid.fill(0.0);
         self.magnitude_buffer.fill(DB_FLOOR);
-        self.frames_accumulated = 0;
     }
 
     #[inline]
@@ -687,16 +642,12 @@ impl Reassignment2DGrid {
 
     #[inline(always)]
     fn accumulate(&mut self, freq_hz: f32, time_offset_samples: f32, power: f32, confidence: f32) {
-        if power <= 0.0 || !self.enabled {
+        if power <= 0.0 {
             return;
         }
 
         let display_bins = self.display_bins;
         let column_count = self.column_count;
-
-        if display_bins == 0 || column_count == 0 || self.hop_size == 0 {
-            return;
-        }
 
         let Some(freq_bin) = self.scale_params.hz_to_bin(freq_hz, self.scale) else {
             return;
@@ -726,7 +677,6 @@ impl Reassignment2DGrid {
 
         let row_end = (t_hi + 1) * display_bins;
         let pg = &mut self.power_grid[..row_end];
-        let wg = &mut self.weight_grid[..row_end];
 
         for dt in 0..=(t_hi - t_lo) {
             let t = t_lo + dt;
@@ -739,20 +689,16 @@ impl Reassignment2DGrid {
                 let idx = row_base + f;
                 let kw = GAUSSIAN_KERNEL_3X3[kf][kt];
                 pg[idx] = kw.mul_add(weighted_power, pg[idx]);
-                wg[idx] = kw.mul_add(confidence, wg[idx]);
             }
         }
     }
 
     fn advance(&mut self, energy_scale: &[f32], bin_norm: &[f32]) {
-        self.frames_accumulated += 1;
         self.output_buffer
             .copy_from_slice(&self.power_grid[..self.display_bins]);
         self.power_grid.rotate_left(self.display_bins);
-        self.weight_grid.rotate_left(self.display_bins);
         let new_right_start = (self.column_count - 1) * self.display_bins;
         self.power_grid[new_right_start..].fill(0.0);
-        self.weight_grid[new_right_start..].fill(0.0);
 
         let len = self.magnitude_buffer.len().min(self.output_buffer.len());
         for i in 0..len {
@@ -782,11 +728,12 @@ impl Reassignment2DGrid {
     }
 }
 
-#[allow(dead_code)]
+/// Output column with magnitude data per FFT frame.
 #[derive(Debug, Clone)]
 pub struct SpectrogramColumn {
-    pub timestamp: Instant,
     pub magnitudes_db: Arc<[f32]>,
+    /// Reassignment samples for testing/debugging; UI uses magnitudes_db.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub reassigned: Option<Arc<[ReassignedSample]>>,
 }
 
@@ -867,9 +814,6 @@ pub struct SpectrogramProcessor {
     bin_normalization: Vec<f32>,
     energy_normalization: Vec<f32>,
     pcm_buffer: VecDeque<f32>,
-    buffer_start_index: u64,
-    start_instant: Option<Instant>,
-    accumulated_offset: Duration,
     history: SpectrogramHistory,
     magnitude_pool: Vec<Arc<[f32]>>,
     evicted_columns: Vec<SpectrogramColumn>,
@@ -879,31 +823,27 @@ pub struct SpectrogramProcessor {
 
 impl SpectrogramProcessor {
     pub fn new(config: SpectrogramConfig) -> Self {
-        let mut runtime_config = config;
-        Self::normalize_config(&mut runtime_config);
-
-        let window_size = runtime_config.fft_size;
-        let zero_padding = runtime_config.zero_padding_factor.max(1);
+        let window_size = config.fft_size;
+        let zero_padding = config.zero_padding_factor.max(1);
         let fft_size = window_size.saturating_mul(zero_padding);
         assert!(fft_size > 0, "FFT size must be greater than zero");
 
-        let history_len = runtime_config.history_length;
+        let history_len = config.history_length;
         let bins = fft_size / 2 + 1;
 
         let mut planner = RealFftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(fft_size);
-        let window = WindowCache::global().get(runtime_config.window, window_size);
+        let window = WindowCache::global().get(config.window, window_size);
 
         let reassignment = ReassignmentBuffers::new(
-            runtime_config.window,
+            config.window,
             window.as_ref(),
             &fft,
             fft_size,
-            runtime_config.reassignment_power_floor_db,
-            runtime_config.sample_rate,
+            config.reassignment_power_floor_db,
         );
 
-        let reassignment_2d = Reassignment2DGrid::new(&runtime_config, runtime_config.sample_rate);
+        let reassignment_2d = Reassignment2DGrid::new(&config, config.sample_rate);
 
         let spectrum_buffer = fft.make_output_vec();
         let scratch_buffer = fft.make_scratch_vec();
@@ -912,7 +852,7 @@ impl SpectrogramProcessor {
         let energy_normalization = Self::compute_energy_normalization(window.as_ref(), fft_size);
 
         Self {
-            config: runtime_config,
+            config,
             planner,
             fft,
             window_size,
@@ -927,19 +867,12 @@ impl SpectrogramProcessor {
             bin_normalization,
             energy_normalization,
             pcm_buffer: VecDeque::with_capacity(window_size.saturating_mul(2)),
-            buffer_start_index: 0,
-            start_instant: None,
-            accumulated_offset: Duration::default(),
             history: SpectrogramHistory::new(history_len),
             magnitude_pool: Vec::new(),
             evicted_columns: Vec::new(),
             pending_reset: true,
             output_columns_buffer: Vec::with_capacity(8),
         }
-    }
-
-    fn normalize_config(_config: &mut SpectrogramConfig) {
-        // All configuration is now self-consistent; no normalization needed.
     }
 
     pub fn config(&self) -> SpectrogramConfig {
@@ -971,7 +904,6 @@ impl SpectrogramProcessor {
             &self.fft,
             fft_size,
             self.config.reassignment_power_floor_db,
-            self.config.sample_rate,
         );
 
         self.reassignment_2d
@@ -989,7 +921,8 @@ impl SpectrogramProcessor {
         };
         self.magnitude_pool
             .retain(|buffer| buffer.len() == output_bins);
-        resize_vecdeque(&mut self.pcm_buffer, window_size.saturating_mul(2).max(1));
+        self.pcm_buffer
+            .truncate(window_size.saturating_mul(2).max(1));
 
         let mut evicted = std::mem::take(&mut self.evicted_columns);
         self.history.clear_into(&mut evicted);
@@ -1005,8 +938,6 @@ impl SpectrogramProcessor {
         self.evicted_columns = evicted;
 
         self.pcm_buffer.clear();
-        self.buffer_start_index = 0;
-        self.accumulated_offset = Duration::default();
         self.pending_reset = true;
     }
 
@@ -1019,7 +950,6 @@ impl SpectrogramProcessor {
             || self.real_buffer.len() != expected_fft
         {
             self.rebuild_fft();
-            self.start_instant = None;
         }
     }
 
@@ -1043,11 +973,6 @@ impl SpectrogramProcessor {
         } else {
             self.config.reassignment_low_bin_limit.min(fft_bins)
         };
-
-        let Some(start_instant) = self.start_instant else {
-            return std::mem::take(&mut self.output_columns_buffer);
-        };
-        let center_offset = duration_from_samples((window_size / 2) as u64, sample_rate);
 
         let estimated_count = self.pcm_buffer.len() / hop;
         if estimated_count > 1 {
@@ -1121,8 +1046,6 @@ impl SpectrogramProcessor {
                     .expect("second-derivative-window FFT");
             }
 
-            let timestamp = start_instant + self.accumulated_offset + center_offset;
-
             let (magnitudes, reassigned) = if reassignment_enabled {
                 let reassigned_samples =
                     self.compute_reassigned_samples(sample_rate, fft_size, reassignment_bin_limit);
@@ -1148,7 +1071,6 @@ impl SpectrogramProcessor {
             };
 
             let history_column = SpectrogramColumn {
-                timestamp,
                 magnitudes_db: Arc::clone(&magnitudes),
                 reassigned: reassigned.clone(),
             };
@@ -1157,16 +1079,12 @@ impl SpectrogramProcessor {
             }
 
             self.output_columns_buffer.push(SpectrogramColumn {
-                timestamp,
                 magnitudes_db: magnitudes,
                 reassigned,
             });
 
             let discard = hop.min(self.pcm_buffer.len());
             self.pcm_buffer.drain(..discard);
-            let drained_samples = discard as u64;
-            self.buffer_start_index += drained_samples;
-            self.accumulated_offset += duration_from_samples(drained_samples, sample_rate);
         }
 
         std::mem::take(&mut self.output_columns_buffer)
@@ -1230,7 +1148,6 @@ impl SpectrogramProcessor {
                 continue;
             }
 
-            let mut chirp_rate = 0.0f32;
             let mut freq_correction_hz = delta_omega * inv_two_pi;
 
             {
@@ -1239,7 +1156,7 @@ impl SpectrogramProcessor {
                 let d_omega_dt = -second_cross_freq * inv_power;
 
                 if d_omega_dt.is_finite() {
-                    chirp_rate = d_omega_dt * inv_two_pi;
+                    let chirp_rate = d_omega_dt * inv_two_pi;
 
                     let max_chirp_correction = 0.25 * bin_hz;
                     if chirp_rate.abs() < max_chirp_correction * 10.0 {
@@ -1287,8 +1204,6 @@ impl SpectrogramProcessor {
                     frequency_hz: freq_hz,
                     group_delay_samples,
                     magnitude_db: power_to_db(display_power),
-                    confidence,
-                    chirp_rate,
                 });
             }
         }
@@ -1311,15 +1226,8 @@ impl AudioProcessor for SpectrogramProcessor {
         if self.config.sample_rate <= 0.0 {
             self.config.sample_rate = block.sample_rate;
         } else if (self.config.sample_rate - block.sample_rate).abs() > f32::EPSILON {
-            let duration_elapsed =
-                duration_from_samples(self.buffer_start_index, self.config.sample_rate);
             self.config.sample_rate = block.sample_rate;
             self.rebuild_fft();
-            self.accumulated_offset = duration_elapsed;
-        }
-
-        if self.start_instant.is_none() {
-            self.start_instant = Some(block.timestamp);
         }
 
         self.ensure_fft_capacity();
@@ -1352,13 +1260,7 @@ impl AudioProcessor for SpectrogramProcessor {
             .for_each(|column| self.recycle_column(column));
         self.evicted_columns = evicted;
 
-        resize_vecdeque(
-            &mut self.pcm_buffer,
-            self.window_size.saturating_mul(2).max(1),
-        );
         self.pcm_buffer.clear();
-        self.buffer_start_index = 0;
-        self.start_instant = None;
         self.pending_reset = true;
 
         self.reassignment_2d.reset();
@@ -1605,7 +1507,6 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
         let previous = self.config;
 
         self.config = config;
-        Self::normalize_config(&mut self.config);
 
         let fft_related_changed = previous.fft_size != self.config.fft_size
             || previous.zero_padding_factor != self.config.zero_padding_factor
@@ -1614,7 +1515,6 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
 
         if fft_related_changed {
             self.rebuild_fft();
-            self.start_instant = None;
             return;
         }
 
@@ -1652,14 +1552,6 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
                 .retain(|buffer| buffer.len() == output_bins);
             self.clear_history();
         }
-    }
-}
-
-fn duration_from_samples(sample_index: u64, sample_rate: f32) -> Duration {
-    if sample_rate > 0.0 {
-        Duration::from_secs_f64(sample_index as f64 / sample_rate as f64)
-    } else {
-        Duration::default()
     }
 }
 
