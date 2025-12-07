@@ -2,7 +2,9 @@
 
 ![preview](screenshots/preview.gif)
 
-OpenMeters is an audio metering program for Linux written in Rust.
+<small>Above is an early preview and thus may not represent the current state of the application. Build it yourself to see where it currently stands.</small>
+
+OpenMeters is a fast and simple audio metering application for Linux, built with Rust and PipeWire.
 
 ## roadmap
 
@@ -15,7 +17,7 @@ Checked features are implemented, unchecked features are planned. If you have id
 - [x] Per-application capture
 - [x] Per-device capture
 
-#### visualizations
+#### visuals
 
 - [x] **loudness**
   - [x] LUFS (ITU-R BS.1770-5)
@@ -51,20 +53,14 @@ Checked features are implemented, unchecked features are planned. If you have id
 ## build and run
 
 1. Ensure you have a working Rust toolchain. The recommended way is via [rustup](https://rustup.rs/).
-2. Install the required system dependencies. On Arch-based systems, for example, you can run:
-
-   ```bash
-   sudo pacman -S pipewire libpipewire
-   ```
-
-3. Clone the repository:
+2. Clone the repository:
 
    ```bash
    git clone https://github.com/httpsworldview/openmeters/
    cd openmeters
    ```
 
-4. Build and run the application:
+3. Build and run the application:
 
    ```bash
    cargo build -r
@@ -76,8 +72,6 @@ Checked features are implemented, unchecked features are planned. If you have id
    ```bash
    cargo run
    ```
-
-5. If you encounter any issues or want to contribute in any way, please feel free to open an issue or a pull request.
 
 ## usage
 
@@ -95,6 +89,8 @@ Configurations are saved to `~/.config/openmeters/settings.json`. If you want to
 If you encounter a bug that causes OpenMeters to misbehave, you can delete `settings.json` to reset everything, or change the problematic setting manually.
 
 ## credits
+
+Thank *you* for checking out my shitty passion project. If you think OpenMeters is useful, please consider starring the repository and sharing it with others. I appreciate any and all criticism and feedback, so feel free to open issues or reach out to me.
 
 ### inspiration
 
