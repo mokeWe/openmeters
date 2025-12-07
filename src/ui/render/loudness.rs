@@ -237,7 +237,12 @@ struct Pipeline {
 impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         Self {
-            inner: SdfPipeline::new(device, format, "Loudness", wgpu::PrimitiveTopology::TriangleList),
+            inner: SdfPipeline::new(
+                device,
+                format,
+                "Loudness",
+                wgpu::PrimitiveTopology::TriangleList,
+            ),
         }
     }
 

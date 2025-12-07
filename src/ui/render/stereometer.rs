@@ -293,10 +293,7 @@ impl Primitive for StereometerPrimitive {
             clip_bounds.height.max(1),
         );
         pass.set_pipeline(&pipeline.inner.pipeline);
-        pass.set_vertex_buffer(
-            0,
-            instance.vertex_buffer.slice(0..instance.used_bytes()),
-        );
+        pass.set_vertex_buffer(0, instance.vertex_buffer.slice(0..instance.used_bytes()));
         pass.draw(0..instance.vertex_count, 0..1);
     }
 }
@@ -309,12 +306,24 @@ struct Pipeline {
 impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         Self {
-            inner: SdfPipeline::new(device, format, "Stereometer", wgpu::PrimitiveTopology::TriangleList),
+            inner: SdfPipeline::new(
+                device,
+                format,
+                "Stereometer",
+                wgpu::PrimitiveTopology::TriangleList,
+            ),
         }
     }
 
-    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: u64, vertices: &[SdfVertex]) {
-        self.inner.prepare_instance(device, queue, "Stereometer", key, vertices);
+    fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        key: u64,
+        vertices: &[SdfVertex],
+    ) {
+        self.inner
+            .prepare_instance(device, queue, "Stereometer", key, vertices);
     }
 
     fn instance(&self, key: u64) -> Option<&InstanceBuffer<SdfVertex>> {

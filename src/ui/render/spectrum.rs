@@ -5,7 +5,7 @@ use iced_wgpu::wgpu;
 use std::sync::Arc;
 
 use crate::ui::render::common::{ClipTransform, InstanceBuffer, SdfPipeline, SdfVertex};
-use crate::ui::render::geometry::{build_aa_line_list, DEFAULT_FEATHER};
+use crate::ui::render::geometry::{DEFAULT_FEATHER, build_aa_line_list};
 
 #[derive(Debug, Clone)]
 pub struct SpectrumParams {
@@ -244,7 +244,12 @@ struct Pipeline {
 impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
         Self {
-            inner: SdfPipeline::new(device, format, "Spectrum", wgpu::PrimitiveTopology::TriangleList),
+            inner: SdfPipeline::new(
+                device,
+                format,
+                "Spectrum",
+                wgpu::PrimitiveTopology::TriangleList,
+            ),
         }
     }
 
