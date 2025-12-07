@@ -4,9 +4,10 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{Primitive, Storage};
 use iced_wgpu::wgpu;
-use std::collections::HashMap;
 
-use crate::ui::render::common::{ClipTransform, SimplePipeline, SimpleVertex, quad_vertices};
+use crate::ui::render::common::{
+    ClipTransform, InstanceBuffer, SdfPipeline, SdfVertex, quad_vertices,
+};
 
 const GAP_FRACTION: f32 = 0.1;
 const BAR_WIDTH_SCALE: f32 = 0.6;
@@ -86,7 +87,7 @@ impl LoudnessMeterPrimitive {
         self as *const Self as usize
     }
 
-    fn build_vertices(&self, bounds: &Rectangle, viewport: &Viewport) -> Vec<SimpleVertex> {
+    fn build_vertices(&self, bounds: &Rectangle, viewport: &Viewport) -> Vec<SdfVertex> {
         let clip = ClipTransform::from_viewport(viewport);
         let Some((meter_x, bar_width, stride)) = self.params.meter_bounds(bounds) else {
             return Vec::new();
@@ -222,58 +223,37 @@ impl Primitive for LoudnessMeterPrimitive {
             clip_bounds.width.max(1),
             clip_bounds.height.max(1),
         );
-        pass.set_pipeline(&pipeline.pipeline);
+        pass.set_pipeline(&pipeline.inner.pipeline);
         pass.set_vertex_buffer(0, instance.vertex_buffer.slice(0..instance.used_bytes()));
         pass.draw(0..instance.vertex_count, 0..1);
     }
 }
 
-type Pipeline = SimplePipeline<usize>;
+#[derive(Debug)]
+struct Pipeline {
+    inner: SdfPipeline<usize>,
+}
 
 impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Loudness shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/loudness.wgsl").into()),
-        });
-
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Loudness layout"),
-            bind_group_layouts: &[],
-            push_constant_ranges: &[],
-        });
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Loudness pipeline"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: "vs_main",
-                buffers: &[SimpleVertex::layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-        });
-
         Self {
-            pipeline,
-            instances: HashMap::new(),
+            inner: SdfPipeline::new(device, format, "Loudness", wgpu::PrimitiveTopology::TriangleList),
         }
+    }
+
+    fn prepare_instance(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        label: &'static str,
+        key: usize,
+        vertices: &[SdfVertex],
+    ) {
+        self.inner
+            .prepare_instance(device, queue, label, key, vertices);
+    }
+
+    fn instance(&self, key: usize) -> Option<&InstanceBuffer<SdfVertex>> {
+        self.inner.instance(key)
     }
 }

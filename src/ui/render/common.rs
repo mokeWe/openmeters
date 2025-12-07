@@ -32,18 +32,27 @@ impl ClipTransform {
     }
 }
 
-/// Simple 2D vertex with position and color.
+/// Vertex with SDF params for antialiased rendering.
+///
+/// `params`: `[dist_x, dist_y, radius, feather]`
+/// - Solid: `[0, 0, 1000, 1]`
+/// - Line: `[±outer, 0, half_width, feather]`
+/// - Dot: `[ox, oy, radius, feather]`
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Pod, Zeroable)]
-pub struct SimpleVertex {
+pub struct SdfVertex {
     pub position: [f32; 2],
     pub color: [f32; 4],
+    pub params: [f32; 4],
 }
 
-impl SimpleVertex {
+impl SdfVertex {
+    /// Params for solid fills (always full coverage).
+    pub const SOLID_PARAMS: [f32; 4] = [0.0, 0.0, 1000.0, 1.0];
+
     pub fn layout() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<SimpleVertex>() as wgpu::BufferAddress,
+            array_stride: mem::size_of::<SdfVertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[
                 wgpu::VertexAttribute {
@@ -56,7 +65,36 @@ impl SimpleVertex {
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32x4,
                 },
+                wgpu::VertexAttribute {
+                    offset: 24,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32x4,
+                },
             ],
+        }
+    }
+
+    #[inline]
+    pub fn solid(position: [f32; 2], color: [f32; 4]) -> Self {
+        Self {
+            position,
+            color,
+            params: Self::SOLID_PARAMS,
+        }
+    }
+
+    #[inline]
+    pub fn antialiased(
+        position: [f32; 2],
+        color: [f32; 4],
+        signed_distance: f32,
+        half_width: f32,
+        feather: f32,
+    ) -> Self {
+        Self {
+            position,
+            color,
+            params: [signed_distance, 0.0, half_width, feather],
         }
     }
 }
@@ -111,7 +149,6 @@ impl<V: Pod> InstanceBuffer<V> {
     }
 }
 
-/// Creates a GPU buffer for vertex data with dynamic sizing.
 pub fn create_vertex_buffer(
     device: &wgpu::Device,
     label: &'static str,
@@ -125,7 +162,7 @@ pub fn create_vertex_buffer(
     })
 }
 
-/// Tracks frame advancement and produces thresholds for pruning cached instances.
+/// Produces eviction thresholds for pruning stale cache entries.
 #[derive(Debug, Clone)]
 pub struct CacheTracker {
     frame: u64,
@@ -144,8 +181,7 @@ impl CacheTracker {
         }
     }
 
-    /// Advances the internal frame counter and returns the current frame along
-    /// with an optional eviction threshold.
+    /// Returns `(frame, Some(eviction_threshold))` every `interval` frames.
     pub fn advance(&mut self) -> (u64, Option<u64>) {
         self.frame = self.frame.wrapping_add(1).max(1);
         if self.interval == 0 {
@@ -168,7 +204,6 @@ impl Default for CacheTracker {
     }
 }
 
-/// Convenience wrapper for WGSL shader compilation.
 #[inline]
 pub fn create_shader_module(
     device: &wgpu::Device,
@@ -178,6 +213,57 @@ pub fn create_shader_module(
     device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some(label),
         source: wgpu::ShaderSource::Wgsl(source.into()),
+    })
+}
+
+/// Creates a render pipeline using `sdf.wgsl` with the given topology.
+pub fn create_sdf_pipeline(
+    device: &wgpu::Device,
+    format: wgpu::TextureFormat,
+    label: &'static str,
+    topology: wgpu::PrimitiveTopology,
+) -> wgpu::RenderPipeline {
+    let shader = create_shader_module(device, label, include_str!("shaders/sdf.wgsl"));
+
+    let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some(label),
+        bind_group_layouts: &[],
+        push_constant_ranges: &[],
+    });
+
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some(label),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: "vs_main",
+            buffers: &[SdfVertex::layout()],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: "fs_main",
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology,
+            strip_index_format: None,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: None,
+            unclipped_depth: false,
+            polygon_mode: wgpu::PolygonMode::Fill,
+            conservative: false,
+        },
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState {
+            count: 1,
+            mask: !0,
+            alpha_to_coverage_enabled: false,
+        },
+        multiview: None,
     })
 }
 
@@ -208,7 +294,7 @@ pub fn write_texture_region(
     );
 }
 
-/// Helper to generate six vertices forming a quad (two triangles).
+/// Helper to generate six SDF vertices forming a solid quad (two triangles).
 #[inline]
 pub fn quad_vertices(
     x0: f32,
@@ -217,72 +303,80 @@ pub fn quad_vertices(
     y1: f32,
     clip: ClipTransform,
     color: [f32; 4],
-) -> [SimpleVertex; 6] {
+) -> [SdfVertex; 6] {
     let tl = clip.to_clip(x0, y0);
     let tr = clip.to_clip(x1, y0);
     let bl = clip.to_clip(x0, y1);
     let br = clip.to_clip(x1, y1);
 
     [
-        SimpleVertex {
-            position: tl,
-            color,
-        },
-        SimpleVertex {
-            position: bl,
-            color,
-        },
-        SimpleVertex {
-            position: br,
-            color,
-        },
-        SimpleVertex {
-            position: tl,
-            color,
-        },
-        SimpleVertex {
-            position: br,
-            color,
-        },
-        SimpleVertex {
-            position: tr,
-            color,
-        },
+        SdfVertex::solid(tl, color),
+        SdfVertex::solid(bl, color),
+        SdfVertex::solid(br, color),
+        SdfVertex::solid(tl, color),
+        SdfVertex::solid(br, color),
+        SdfVertex::solid(tr, color),
     ]
 }
 
-/// Common pipeline management for simple vertex-only rendering.
 #[derive(Debug)]
-pub struct SimplePipeline<K> {
-    pub pipeline: wgpu::RenderPipeline,
-    pub instances: HashMap<K, InstanceBuffer<SimpleVertex>>,
+pub struct CachedInstance {
+    pub buffer: InstanceBuffer<SdfVertex>,
+    pub last_used: u64,
 }
 
-impl<K: std::hash::Hash + Eq + Copy> SimplePipeline<K> {
+/// Pipeline + instance cache for SDF-based primitives.
+#[derive(Debug)]
+pub struct SdfPipeline<K> {
+    pub pipeline: wgpu::RenderPipeline,
+    pub instances: HashMap<K, CachedInstance>,
+    pub cache: CacheTracker,
+}
+
+impl<K: std::hash::Hash + Eq + Copy> SdfPipeline<K> {
+    pub fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        label: &'static str,
+        topology: wgpu::PrimitiveTopology,
+    ) -> Self {
+        Self {
+            pipeline: create_sdf_pipeline(device, format, label, topology),
+            instances: HashMap::new(),
+            cache: CacheTracker::default(),
+        }
+    }
+
     pub fn prepare_instance(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         label: &'static str,
         key: K,
-        vertices: &[SimpleVertex],
+        vertices: &[SdfVertex],
     ) {
+        let (frame, threshold) = self.cache.advance();
         let required_size = mem::size_of_val(vertices) as wgpu::BufferAddress;
-        let entry = self
-            .instances
-            .entry(key)
-            .or_insert_with(|| InstanceBuffer::new(device, label, required_size.max(1)));
+
+        let entry = self.instances.entry(key).or_insert_with(|| CachedInstance {
+            buffer: InstanceBuffer::new(device, label, required_size.max(1)),
+            last_used: frame,
+        });
+        entry.last_used = frame;
 
         if vertices.is_empty() {
-            entry.vertex_count = 0;
-            return;
+            entry.buffer.vertex_count = 0;
+        } else {
+            entry.buffer.ensure_capacity(device, label, required_size);
+            entry.buffer.write(queue, vertices);
         }
 
-        entry.ensure_capacity(device, label, required_size);
-        entry.write(queue, vertices);
+        if let Some(t) = threshold {
+            self.instances.retain(|_, e| e.last_used >= t);
+        }
     }
 
-    pub fn instance(&self, key: K) -> Option<&InstanceBuffer<SimpleVertex>> {
-        self.instances.get(&key)
+    pub fn instance(&self, key: K) -> Option<&InstanceBuffer<SdfVertex>> {
+        self.instances.get(&key).map(|e| &e.buffer)
     }
 }

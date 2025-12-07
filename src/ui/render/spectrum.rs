@@ -1,48 +1,11 @@
-use bytemuck::{Pod, Zeroable};
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{Primitive, Storage};
 use iced_wgpu::wgpu;
-use std::collections::HashMap;
-use std::mem;
 use std::sync::Arc;
 
-use crate::ui::render::common::{ClipTransform, InstanceBuffer};
-use crate::ui::render::geometry::compute_normals;
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    color: [f32; 4],
-    params: [f32; 4],
-}
-
-impl Vertex {
-    fn layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: 8,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: 24,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-            ],
-        }
-    }
-}
+use crate::ui::render::common::{ClipTransform, InstanceBuffer, SdfPipeline, SdfVertex};
+use crate::ui::render::geometry::{build_aa_line_list, DEFAULT_FEATHER};
 
 #[derive(Debug, Clone)]
 pub struct SpectrumParams {
@@ -72,7 +35,7 @@ impl SpectrumPrimitive {
         self.params.instance_key
     }
 
-    fn build_vertices(&self, viewport: &Viewport) -> Vec<Vertex> {
+    fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
         let bounds = self.params.bounds;
         let clip = ClipTransform::from_viewport(viewport);
 
@@ -94,24 +57,24 @@ impl SpectrumPrimitive {
             self.params.highlight_threshold,
         );
 
-        push_polyline(
-            &mut vertices,
+        vertices.extend(build_aa_line_list(
             &positions,
             self.params.line_width,
+            DEFAULT_FEATHER,
             self.params.line_color,
             &clip,
-        );
+        ));
 
         if self.params.secondary_points.len() >= 2 {
             let overlay_positions =
                 to_cartesian_positions(bounds, self.params.secondary_points.as_ref());
-            push_polyline(
-                &mut vertices,
+            vertices.extend(build_aa_line_list(
                 &overlay_positions,
                 self.params.secondary_line_width,
+                DEFAULT_FEATHER,
                 self.params.secondary_line_color,
                 &clip,
-            );
+            ));
         }
 
         vertices
@@ -137,7 +100,7 @@ impl Primitive for SpectrumPrimitive {
             .expect("spectrum pipeline must exist after storage check");
 
         let vertices = self.build_vertices(viewport);
-        pipeline.prepare_instance(device, queue, self.key(), &vertices);
+        pipeline.prepare_instance(device, queue, "Spectrum", self.key(), &vertices);
     }
 
     fn render(
@@ -178,7 +141,7 @@ impl Primitive for SpectrumPrimitive {
             clip_bounds.width.max(1),
             clip_bounds.height.max(1),
         );
-        pass.set_pipeline(&pipeline.pipeline);
+        pass.set_pipeline(&pipeline.inner.pipeline);
         pass.set_vertex_buffer(0, instance.vertex_buffer.slice(0..instance.used_bytes()));
         pass.draw(0..instance.vertex_count, 0..1);
     }
@@ -195,7 +158,7 @@ fn to_cartesian_positions(bounds: Rectangle, points: &[[f32; 2]]) -> Vec<(f32, f
 }
 
 fn push_highlight_columns(
-    vertices: &mut Vec<Vertex>,
+    vertices: &mut Vec<SdfVertex>,
     clip: &ClipTransform,
     baseline: f32,
     positions: &[(f32, f32)],
@@ -229,39 +192,14 @@ fn push_highlight_columns(
         let tr = clip.to_clip(x1, y1);
         let bl = clip.to_clip(x0, baseline);
         let br = clip.to_clip(x1, baseline);
-        let params = [0.0; 4];
 
         vertices.extend_from_slice(&[
-            Vertex {
-                position: bl,
-                color,
-                params,
-            },
-            Vertex {
-                position: tl,
-                color,
-                params,
-            },
-            Vertex {
-                position: tr,
-                color,
-                params,
-            },
-            Vertex {
-                position: bl,
-                color,
-                params,
-            },
-            Vertex {
-                position: tr,
-                color,
-                params,
-            },
-            Vertex {
-                position: br,
-                color,
-                params,
-            },
+            SdfVertex::solid(bl, color),
+            SdfVertex::solid(tl, color),
+            SdfVertex::solid(tr, color),
+            SdfVertex::solid(bl, color),
+            SdfVertex::solid(tr, color),
+            SdfVertex::solid(br, color),
         ]);
     }
 }
@@ -298,102 +236,15 @@ fn interpolate_palette_color(palette: &[[f32; 4]], t: f32) -> [f32; 4] {
     ]
 }
 
-fn push_polyline(
-    vertices: &mut Vec<Vertex>,
-    positions: &[(f32, f32)],
-    width: f32,
-    color: [f32; 4],
-    clip: &ClipTransform,
-) {
-    if positions.len() < 2 || width < 0.0 {
-        return;
-    }
-
-    let normals = compute_normals(positions);
-    let half = width.max(0.1) * 0.5;
-    let feather = 0.5;
-    let outer = half + feather;
-
-    let mut prev = None;
-    for ((x, y), (nx, ny)) in positions.iter().zip(normals.iter()) {
-        let current = (
-            Vertex {
-                position: clip.to_clip(x - nx * outer, y - ny * outer),
-                color,
-                params: [-outer, half, feather, 0.0],
-            },
-            Vertex {
-                position: clip.to_clip(x + nx * outer, y + ny * outer),
-                color,
-                params: [outer, half, feather, 0.0],
-            },
-        );
-
-        if let Some((l0, r0)) = prev {
-            let (l1, r1) = &current;
-            vertices.extend_from_slice(&[l0, r0, *r1, l0, *r1, *l1]);
-        }
-        prev = Some(current);
-    }
-}
-
 #[derive(Debug)]
 struct Pipeline {
-    pipeline: wgpu::RenderPipeline,
-    instances: HashMap<usize, InstanceBuffer<Vertex>>,
+    inner: SdfPipeline<usize>,
 }
 
 impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Spectrum shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/spectrum.wgsl").into()),
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Spectrum pipeline layout"),
-            bind_group_layouts: &[],
-            push_constant_ranges: &[],
-        });
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Spectrum pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: "vs_main",
-                buffers: &[Vertex::layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-        });
-
         Self {
-            pipeline,
-            instances: HashMap::new(),
+            inner: SdfPipeline::new(device, format, "Spectrum", wgpu::PrimitiveTopology::TriangleList),
         }
     }
 
@@ -401,23 +252,15 @@ impl Pipeline {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        label: &'static str,
         key: usize,
-        vertices: &[Vertex],
+        vertices: &[SdfVertex],
     ) {
-        let required_size = mem::size_of_val(vertices) as wgpu::BufferAddress;
-        let buffer = self.instances.entry(key).or_insert_with(|| {
-            InstanceBuffer::new(device, "Spectrum vertex buffer", required_size.max(1))
-        });
-
-        if vertices.is_empty() {
-            buffer.vertex_count = 0;
-        } else {
-            buffer.ensure_capacity(device, "Spectrum vertex buffer", required_size);
-            buffer.write(queue, vertices);
-        }
+        self.inner
+            .prepare_instance(device, queue, label, key, vertices);
     }
 
-    fn instance(&self, key: usize) -> Option<&InstanceBuffer<Vertex>> {
-        self.instances.get(&key)
+    fn instance(&self, key: usize) -> Option<&InstanceBuffer<SdfVertex>> {
+        self.inner.instance(key)
     }
 }

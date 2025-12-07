@@ -230,7 +230,8 @@ impl WaveformState {
                         .copied()
                         .filter(|f| f.is_finite() && *f > 0.0)
                         .unwrap_or(*hint);
-                    let color = theme::color_to_linear_rgba(self.style.color_for_frequency(frequency));
+                    let color =
+                        theme::color_to_linear_rgba(self.style.color_for_frequency(frequency));
                     buffer.push(PreviewSample {
                         min: min_value,
                         max: max_value,

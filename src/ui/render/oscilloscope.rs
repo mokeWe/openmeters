@@ -3,10 +3,8 @@ use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{Primitive, Storage};
 use iced_wgpu::wgpu;
 
-use crate::ui::render::common::{
-    ClipTransform, InstanceBuffer, SimpleVertex, create_shader_module,
-};
-use crate::ui::render::geometry::compute_normals;
+use crate::ui::render::common::{ClipTransform, InstanceBuffer, SdfVertex, create_sdf_pipeline};
+use crate::ui::render::geometry::{self, DEFAULT_FEATHER, append_strip};
 
 #[derive(Debug, Clone)]
 pub struct OscilloscopeParams {
@@ -28,7 +26,7 @@ impl OscilloscopePrimitive {
         Self { params }
     }
 
-    fn build_vertices(&self, viewport: &Viewport) -> Vec<SimpleVertex> {
+    fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
         let samples_per_channel = self.params.samples_per_channel;
         let channels = self.params.channels.max(1);
 
@@ -53,30 +51,7 @@ impl OscilloscopePrimitive {
         let amplitude_scale = channel_height * 0.5 * AMPLITUDE_SCALE;
         let step = bounds.width.max(1.0) / (samples_per_channel.saturating_sub(1) as f32).max(1.0);
 
-        let half = STROKE_WIDTH * 0.5;
-        let feather = 1.0f32;
-        let outer = half + feather;
-
         let mut vertices = Vec::new();
-
-        let append_strip = |dest: &mut Vec<SimpleVertex>, strip: Vec<SimpleVertex>| {
-            if strip.is_empty() {
-                return;
-            }
-            if !dest.is_empty()
-                && let Some(last) = dest.last().copied()
-            {
-                let mut iter = strip.into_iter();
-                let first = iter.next().unwrap();
-                dest.push(last);
-                dest.push(last);
-                dest.push(first);
-                dest.push(first);
-                dest.extend(iter);
-                return;
-            }
-            dest.extend(strip);
-        };
 
         for (channel_idx, channel_samples) in self
             .params
@@ -107,6 +82,7 @@ impl OscilloscopePrimitive {
                 })
                 .collect();
 
+            // Build fill vertices (solid, no AA needed)
             let mut fill_vertices = Vec::with_capacity(positions.len() * 2);
             let fill_color = [color[0], color[1], color[2], self.params.fill_alpha];
 
@@ -115,36 +91,22 @@ impl OscilloscopePrimitive {
                 let fill_to_y = if above_zero { y } else { center };
                 let fill_from_y = if above_zero { center } else { y };
 
-                fill_vertices.push(SimpleVertex {
-                    position: clip.to_clip(x, fill_to_y),
-                    color: fill_color,
-                });
-                fill_vertices.push(SimpleVertex {
-                    position: clip.to_clip(x, fill_from_y),
-                    color: fill_color,
-                });
+                fill_vertices.push(SdfVertex::solid(clip.to_clip(x, fill_to_y), fill_color));
+                fill_vertices.push(SdfVertex::solid(clip.to_clip(x, fill_from_y), fill_color));
             }
 
             append_strip(&mut vertices, fill_vertices);
 
-            let normals = compute_normals(&positions);
+            // Build antialiased line strip using geometry helper
             let line_color = [color[0], color[1], color[2], LINE_ALPHA];
-            let mut line_vertices = Vec::with_capacity(positions.len() * 2);
-
-            for (pos, normal) in positions.iter().zip(normals.iter()) {
-                let offset_x = normal.0 * outer;
-                let offset_y = normal.1 * outer;
-                line_vertices.push(SimpleVertex {
-                    position: clip.to_clip(pos.0 - offset_x, pos.1 - offset_y),
-                    color: line_color,
-                });
-                line_vertices.push(SimpleVertex {
-                    position: clip.to_clip(pos.0 + offset_x, pos.1 + offset_y),
-                    color: line_color,
-                });
-            }
-
-            append_strip(&mut vertices, line_vertices);
+            let line_strip = geometry::build_aa_line_strip(
+                &positions,
+                STROKE_WIDTH,
+                DEFAULT_FEATHER,
+                line_color,
+                &clip,
+            );
+            append_strip(&mut vertices, line_strip);
         }
 
         vertices
@@ -224,65 +186,23 @@ impl Primitive for OscilloscopePrimitive {
 #[derive(Debug)]
 struct Pipeline {
     pipeline: wgpu::RenderPipeline,
-    buffer: InstanceBuffer<SimpleVertex>,
+    buffer: InstanceBuffer<SdfVertex>,
 }
 
 impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let shader = create_shader_module(
-            device,
-            "Oscilloscope shader",
-            include_str!("shaders/oscilloscope.wgsl"),
-        );
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Oscilloscope pipeline layout"),
-            bind_group_layouts: &[],
-            push_constant_ranges: &[],
-        });
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Oscilloscope pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: "vs_main",
-                buffers: &[SimpleVertex::layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-        });
-
         Self {
-            pipeline,
+            pipeline: create_sdf_pipeline(
+                device,
+                format,
+                "Oscilloscope",
+                wgpu::PrimitiveTopology::TriangleStrip,
+            ),
             buffer: InstanceBuffer::new(device, "Oscilloscope vertex buffer", 1024),
         }
     }
 
-    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[SimpleVertex]) {
+    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[SdfVertex]) {
         if vertices.is_empty() {
             self.buffer.vertex_count = 0;
             return;

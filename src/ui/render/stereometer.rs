@@ -1,14 +1,9 @@
-use bytemuck::{Pod, Zeroable};
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{Primitive, Storage};
 use iced_wgpu::wgpu;
-use std::collections::HashMap;
-use std::mem;
 
-use crate::ui::render::common::{
-    CacheTracker, ClipTransform, InstanceBuffer, create_shader_module,
-};
+use crate::ui::render::common::{ClipTransform, InstanceBuffer, SdfPipeline, SdfVertex};
 use crate::ui::settings::StereometerMode;
 
 const PI: f32 = std::f32::consts::PI;
@@ -34,7 +29,7 @@ impl StereometerPrimitive {
         Self { params }
     }
 
-    fn build_vertices(&self, viewport: &Viewport) -> Vec<Vertex> {
+    fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
         let bounds = self.params.bounds;
         let clip = ClipTransform::from_viewport(viewport);
         let cx = bounds.x + bounds.width * 0.5;
@@ -58,7 +53,7 @@ impl StereometerPrimitive {
 
     fn build_grid(
         &self,
-        verts: &mut Vec<Vertex>,
+        verts: &mut Vec<SdfVertex>,
         cx: f32,
         cy: f32,
         radius: f32,
@@ -84,7 +79,7 @@ impl StereometerPrimitive {
 
     fn build_dots(
         &self,
-        verts: &mut Vec<Vertex>,
+        verts: &mut Vec<SdfVertex>,
         cx: f32,
         cy: f32,
         radius: f32,
@@ -108,7 +103,7 @@ impl StereometerPrimitive {
 
     fn build_trace(
         &self,
-        verts: &mut Vec<Vertex>,
+        verts: &mut Vec<SdfVertex>,
         cx: f32,
         cy: f32,
         radius: f32,
@@ -150,7 +145,7 @@ impl StereometerPrimitive {
 
     fn build_circle(
         &self,
-        verts: &mut Vec<Vertex>,
+        verts: &mut Vec<SdfVertex>,
         cx: f32,
         cy: f32,
         r: f32,
@@ -169,7 +164,7 @@ impl StereometerPrimitive {
 
     fn build_line_segment(
         &self,
-        verts: &mut Vec<Vertex>,
+        verts: &mut Vec<SdfVertex>,
         p0: (f32, f32),
         p1: (f32, f32),
         c0: [f32; 4],
@@ -186,27 +181,26 @@ impl StereometerPrimitive {
         const FEATHER: f32 = 1.0;
 
         let (ox, oy) = (nx * OUTER, ny * OUTER);
-        let params = |d: f32| [d, 0.0, HALF, FEATHER];
 
-        let v0 = Vertex {
+        let v0 = SdfVertex {
             position: clip.to_clip(p0.0 - ox, p0.1 - oy),
             color: c0,
-            params: params(-OUTER),
+            params: [-OUTER, 0.0, HALF, FEATHER],
         };
-        let v1 = Vertex {
+        let v1 = SdfVertex {
             position: clip.to_clip(p0.0 + ox, p0.1 + oy),
             color: c0,
-            params: params(OUTER),
+            params: [OUTER, 0.0, HALF, FEATHER],
         };
-        let v2 = Vertex {
+        let v2 = SdfVertex {
             position: clip.to_clip(p1.0 - ox, p1.1 - oy),
             color: c1,
-            params: params(-OUTER),
+            params: [-OUTER, 0.0, HALF, FEATHER],
         };
-        let v3 = Vertex {
+        let v3 = SdfVertex {
             position: clip.to_clip(p1.0 + ox, p1.1 + oy),
             color: c1,
-            params: params(OUTER),
+            params: [OUTER, 0.0, HALF, FEATHER],
         };
 
         verts.extend([v0, v1, v2, v1, v3, v2]);
@@ -214,7 +208,7 @@ impl StereometerPrimitive {
 
     fn build_dot(
         &self,
-        verts: &mut Vec<Vertex>,
+        verts: &mut Vec<SdfVertex>,
         cx: f32,
         cy: f32,
         color: [f32; 4],
@@ -224,7 +218,7 @@ impl StereometerPrimitive {
         const FEATHER: f32 = 0.75;
         let o = R + FEATHER;
 
-        let v = |px, py, ox, oy| Vertex {
+        let v = |px, py, ox, oy| SdfVertex {
             position: clip.to_clip(px, py),
             color,
             params: [ox, oy, R, FEATHER],
@@ -270,10 +264,10 @@ impl Primitive for StereometerPrimitive {
         let Some(pipeline) = storage.get::<Pipeline>() else {
             return;
         };
-        let Some(instance) = pipeline.instances.get(&self.params.instance_id) else {
+        let Some(instance) = pipeline.instance(self.params.instance_id) else {
             return;
         };
-        if instance.buffer.vertex_count == 0 {
+        if instance.vertex_count == 0 {
             return;
         }
 
@@ -298,137 +292,32 @@ impl Primitive for StereometerPrimitive {
             clip_bounds.width.max(1),
             clip_bounds.height.max(1),
         );
-        pass.set_pipeline(&pipeline.pipeline);
+        pass.set_pipeline(&pipeline.inner.pipeline);
         pass.set_vertex_buffer(
             0,
-            instance
-                .buffer
-                .vertex_buffer
-                .slice(0..instance.buffer.used_bytes()),
+            instance.vertex_buffer.slice(0..instance.used_bytes()),
         );
-        pass.draw(0..instance.buffer.vertex_count, 0..1);
-    }
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Pod, Zeroable)]
-struct Vertex {
-    position: [f32; 2],
-    color: [f32; 4],
-    params: [f32; 4],
-}
-
-impl Vertex {
-    fn layout() -> wgpu::VertexBufferLayout<'static> {
-        wgpu::VertexBufferLayout {
-            array_stride: mem::size_of::<Vertex>() as wgpu::BufferAddress,
-            step_mode: wgpu::VertexStepMode::Vertex,
-            attributes: &[
-                wgpu::VertexAttribute {
-                    offset: 0,
-                    shader_location: 0,
-                    format: wgpu::VertexFormat::Float32x2,
-                },
-                wgpu::VertexAttribute {
-                    offset: 8,
-                    shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-                wgpu::VertexAttribute {
-                    offset: 24,
-                    shader_location: 2,
-                    format: wgpu::VertexFormat::Float32x4,
-                },
-            ],
-        }
+        pass.draw(0..instance.vertex_count, 0..1);
     }
 }
 
 #[derive(Debug)]
 struct Pipeline {
-    pipeline: wgpu::RenderPipeline,
-    instances: HashMap<u64, InstanceRecord>,
-    cache: CacheTracker,
-}
-
-#[derive(Debug)]
-struct InstanceRecord {
-    buffer: InstanceBuffer<Vertex>,
-    last_used: u64,
+    inner: SdfPipeline<u64>,
 }
 
 impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let shader = create_shader_module(
-            device,
-            "Stereometer",
-            include_str!("shaders/stereometer.wgsl"),
-        );
-
-        let layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Stereometer"),
-            bind_group_layouts: &[],
-            push_constant_ranges: &[],
-        });
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Stereometer"),
-            layout: Some(&layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: "vs_main",
-                buffers: &[Vertex::layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                ..Default::default()
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState::default(),
-            multiview: None,
-        });
-
         Self {
-            pipeline,
-            instances: HashMap::new(),
-            cache: CacheTracker::default(),
+            inner: SdfPipeline::new(device, format, "Stereometer", wgpu::PrimitiveTopology::TriangleList),
         }
     }
 
-    fn prepare(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        key: u64,
-        vertices: &[Vertex],
-    ) {
-        let (frame, threshold) = self.cache.advance();
-        let size = std::mem::size_of_val(vertices) as wgpu::BufferAddress;
+    fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, key: u64, vertices: &[SdfVertex]) {
+        self.inner.prepare_instance(device, queue, "Stereometer", key, vertices);
+    }
 
-        let entry = self.instances.entry(key).or_insert_with(|| InstanceRecord {
-            buffer: InstanceBuffer::new(device, "Stereometer", size.max(1)),
-            last_used: frame,
-        });
-        entry.last_used = frame;
-
-        if vertices.is_empty() {
-            entry.buffer.vertex_count = 0;
-        } else {
-            entry.buffer.ensure_capacity(device, "Stereometer", size);
-            entry.buffer.write(queue, vertices);
-        }
-
-        if let Some(t) = threshold {
-            self.instances.retain(|_, r| r.last_used >= t);
-        }
+    fn instance(&self, key: u64) -> Option<&InstanceBuffer<SdfVertex>> {
+        self.inner.instance(key)
     }
 }

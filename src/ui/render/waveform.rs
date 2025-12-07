@@ -2,11 +2,10 @@ use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
 use iced_wgpu::primitive::{Primitive, Storage};
 use iced_wgpu::wgpu;
-use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::ui::render::common::{ClipTransform, InstanceBuffer, SimplePipeline, SimpleVertex};
-use crate::ui::render::geometry::compute_normals;
+use crate::ui::render::common::{ClipTransform, InstanceBuffer, SdfPipeline, SdfVertex};
+use crate::ui::render::geometry::{self, DEFAULT_FEATHER, append_strip};
 
 #[derive(Debug, Clone, Copy)]
 pub struct PreviewSample {
@@ -54,7 +53,7 @@ impl WaveformPrimitive {
         self.params.instance_key
     }
 
-    fn build_vertices(&self, viewport: &Viewport) -> Vec<SimpleVertex> {
+    fn build_vertices(&self, viewport: &Viewport) -> Vec<SdfVertex> {
         let channels = self.params.channels.max(1);
         let columns = self.params.columns;
         let total_samples = channels * columns;
@@ -85,28 +84,9 @@ impl WaveformPrimitive {
             .max(1.0);
         let channel_height = usable_height / channels as f32;
         let amplitude_scale = channel_height * 0.5 * self.params.amplitude_scale.max(0.01);
-        let half_stroke = self.params.stroke_width.max(0.5) * 0.5;
+        let stroke_width = self.params.stroke_width.max(0.5);
 
         let mut vertices = Vec::with_capacity(channels * (columns + 1) * 6);
-
-        let append_strip = |dest: &mut Vec<SimpleVertex>, strip: Vec<SimpleVertex>| {
-            if strip.is_empty() {
-                return;
-            }
-            if !dest.is_empty()
-                && let Some(last) = dest.last().copied()
-            {
-                let mut iter = strip.into_iter();
-                let first = iter.next().unwrap();
-                dest.push(last);
-                dest.push(last);
-                dest.push(first);
-                dest.push(first);
-                dest.extend(iter);
-                return;
-            }
-            dest.extend(strip);
-        };
 
         for channel in 0..channels {
             let top = bounds.y + vertical_padding + channel as f32 * (channel_height + channel_gap);
@@ -137,14 +117,8 @@ impl WaveformPrimitive {
                     .unwrap_or([1.0; 4]);
                 let fill_color = [color[0], color[1], color[2], self.params.fill_alpha];
 
-                area_vertices.push(SimpleVertex {
-                    position: clip.to_clip(x, top_y),
-                    color: fill_color,
-                });
-                area_vertices.push(SimpleVertex {
-                    position: clip.to_clip(x, bottom_y),
-                    color: fill_color,
-                });
+                area_vertices.push(SdfVertex::solid(clip.to_clip(x, top_y), fill_color));
+                area_vertices.push(SdfVertex::solid(clip.to_clip(x, bottom_y), fill_color));
             }
 
             if self.params.preview_active() {
@@ -167,14 +141,8 @@ impl WaveformPrimitive {
                     self.params.fill_alpha,
                 ];
 
-                area_vertices.push(SimpleVertex {
-                    position: clip.to_clip(x, top_y),
-                    color: fill_color,
-                });
-                area_vertices.push(SimpleVertex {
-                    position: clip.to_clip(x, bottom_y),
-                    color: fill_color,
-                });
+                area_vertices.push(SdfVertex::solid(clip.to_clip(x, top_y), fill_color));
+                area_vertices.push(SdfVertex::solid(clip.to_clip(x, bottom_y), fill_color));
             }
 
             append_strip(&mut vertices, area_vertices);
@@ -216,29 +184,21 @@ impl WaveformPrimitive {
                 continue;
             }
 
-            let normals = compute_normals(&positions);
-            let mut line_vertices = Vec::with_capacity(positions.len() * 2);
-            for ((position, normal), base) in
-                positions.iter().zip(normals.iter()).zip(line_colors.iter())
-            {
-                let line_color = [base[0], base[1], base[2], self.params.line_alpha];
-                let offset_x = normal.0 * half_stroke;
-                let offset_y = normal.1 * half_stroke;
+            // Apply line alpha to all colors
+            let line_colors_alpha: Vec<_> = line_colors
+                .iter()
+                .map(|base| [base[0], base[1], base[2], self.params.line_alpha])
+                .collect();
 
-                let left = clip.to_clip(position.0 - offset_x, position.1 - offset_y);
-                let right = clip.to_clip(position.0 + offset_x, position.1 + offset_y);
-
-                line_vertices.push(SimpleVertex {
-                    position: left,
-                    color: line_color,
-                });
-                line_vertices.push(SimpleVertex {
-                    position: right,
-                    color: line_color,
-                });
-            }
-
-            append_strip(&mut vertices, line_vertices);
+            // Build antialiased line strip using geometry helper
+            let line_strip = geometry::build_aa_line_strip_colored(
+                &positions,
+                &line_colors_alpha,
+                stroke_width,
+                DEFAULT_FEATHER,
+                &clip,
+            );
+            append_strip(&mut vertices, line_strip);
         }
 
         vertices
@@ -315,62 +275,13 @@ impl Primitive for WaveformPrimitive {
 
 #[derive(Debug)]
 struct Pipeline {
-    inner: SimplePipeline<u64>,
+    inner: SdfPipeline<u64>,
 }
 
 impl Pipeline {
     fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Waveform shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shaders/waveform.wgsl").into()),
-        });
-
-        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Waveform pipeline layout"),
-            bind_group_layouts: &[],
-            push_constant_ranges: &[],
-        });
-
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Waveform pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: "vs_main",
-                buffers: &[SimpleVertex::layout()],
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleStrip,
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw,
-                cull_mode: None,
-                unclipped_depth: false,
-                polygon_mode: wgpu::PolygonMode::Fill,
-                conservative: false,
-            },
-            depth_stencil: None,
-            multisample: wgpu::MultisampleState {
-                count: 1,
-                mask: !0,
-                alpha_to_coverage_enabled: false,
-            },
-            multiview: None,
-        });
-
         Self {
-            inner: SimplePipeline {
-                pipeline,
-                instances: HashMap::new(),
-            },
+            inner: SdfPipeline::new(device, format, "Waveform", wgpu::PrimitiveTopology::TriangleStrip),
         }
     }
 
@@ -379,13 +290,13 @@ impl Pipeline {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         key: u64,
-        vertices: &[SimpleVertex],
+        vertices: &[SdfVertex],
     ) {
         self.inner
             .prepare_instance(device, queue, "Waveform vertex buffer", key, vertices);
     }
 
-    fn instance(&self, key: u64) -> Option<&InstanceBuffer<SimpleVertex>> {
+    fn instance(&self, key: u64) -> Option<&InstanceBuffer<SdfVertex>> {
         self.inner.instance(key)
     }
 }

@@ -1,7 +1,32 @@
 //! Geometry utilities for rendering.
 
+use crate::ui::render::common::{ClipTransform, SdfVertex};
+
 const MIN_SEGMENT_LENGTH: f32 = 0.1;
 const MAX_MITER_RATIO: f32 = 4.0;
+
+/// Default feather distance for antialiased lines.
+pub const DEFAULT_FEATHER: f32 = 1.0;
+
+/// Joins triangle strips with degenerate triangles for batched draw calls.
+pub fn append_strip(dest: &mut Vec<SdfVertex>, strip: Vec<SdfVertex>) {
+    if strip.is_empty() {
+        return;
+    }
+    if !dest.is_empty()
+        && let Some(last) = dest.last().copied()
+    {
+        let mut iter = strip.into_iter();
+        let first = iter.next().unwrap();
+        dest.push(last);
+        dest.push(last);
+        dest.push(first);
+        dest.push(first);
+        dest.extend(iter);
+        return;
+    }
+    dest.extend(strip);
+}
 
 pub fn compute_normals(positions: &[(f32, f32)]) -> Vec<(f32, f32)> {
     match positions.len() {
@@ -58,4 +83,134 @@ pub fn compute_normals(positions: &[(f32, f32)]) -> Vec<(f32, f32)> {
                 .collect()
         }
     }
+}
+
+/// Builds an antialiased polyline for `TriangleStrip` topology.
+pub fn build_aa_line_strip(
+    positions: &[(f32, f32)],
+    stroke_width: f32,
+    feather: f32,
+    color: [f32; 4],
+    clip: &ClipTransform,
+) -> Vec<SdfVertex> {
+    if positions.len() < 2 {
+        return Vec::new();
+    }
+
+    let normals = compute_normals(positions);
+    let half = stroke_width.max(0.1) * 0.5;
+    let outer = half + feather;
+
+    let mut vertices = Vec::with_capacity(positions.len() * 2);
+
+    for ((x, y), (nx, ny)) in positions.iter().zip(normals.iter()) {
+        let offset_x = nx * outer;
+        let offset_y = ny * outer;
+
+        vertices.push(SdfVertex::antialiased(
+            clip.to_clip(x - offset_x, y - offset_y),
+            color,
+            -outer,
+            half,
+            feather,
+        ));
+        vertices.push(SdfVertex::antialiased(
+            clip.to_clip(x + offset_x, y + offset_y),
+            color,
+            outer,
+            half,
+            feather,
+        ));
+    }
+
+    vertices
+}
+
+/// Like `build_aa_line_strip` but with per-vertex colors.
+pub fn build_aa_line_strip_colored(
+    positions: &[(f32, f32)],
+    colors: &[[f32; 4]],
+    stroke_width: f32,
+    feather: f32,
+    clip: &ClipTransform,
+) -> Vec<SdfVertex> {
+    if positions.len() < 2 || colors.len() < positions.len() {
+        return Vec::new();
+    }
+
+    let normals = compute_normals(positions);
+    let half = stroke_width.max(0.1) * 0.5;
+    let outer = half + feather;
+
+    let mut vertices = Vec::with_capacity(positions.len() * 2);
+
+    for (((x, y), (nx, ny)), color) in positions.iter().zip(normals.iter()).zip(colors.iter()) {
+        let offset_x = nx * outer;
+        let offset_y = ny * outer;
+
+        vertices.push(SdfVertex::antialiased(
+            clip.to_clip(x - offset_x, y - offset_y),
+            *color,
+            -outer,
+            half,
+            feather,
+        ));
+        vertices.push(SdfVertex::antialiased(
+            clip.to_clip(x + offset_x, y + offset_y),
+            *color,
+            outer,
+            half,
+            feather,
+        ));
+    }
+
+    vertices
+}
+
+/// Builds an antialiased polyline for `TriangleList` topology.
+pub fn build_aa_line_list(
+    positions: &[(f32, f32)],
+    stroke_width: f32,
+    feather: f32,
+    color: [f32; 4],
+    clip: &ClipTransform,
+) -> Vec<SdfVertex> {
+    if positions.len() < 2 {
+        return Vec::new();
+    }
+
+    let normals = compute_normals(positions);
+    let half = stroke_width.max(0.1) * 0.5;
+    let outer = half + feather;
+
+    // Each segment emits 6 vertices (2 triangles)
+    let mut vertices = Vec::with_capacity((positions.len() - 1) * 6);
+    let mut prev: Option<(SdfVertex, SdfVertex)> = None;
+
+    for ((x, y), (nx, ny)) in positions.iter().zip(normals.iter()) {
+        let offset_x = nx * outer;
+        let offset_y = ny * outer;
+
+        let left = SdfVertex::antialiased(
+            clip.to_clip(x - offset_x, y - offset_y),
+            color,
+            -outer,
+            half,
+            feather,
+        );
+        let right = SdfVertex::antialiased(
+            clip.to_clip(x + offset_x, y + offset_y),
+            color,
+            outer,
+            half,
+            feather,
+        );
+
+        if let Some((l0, r0)) = prev {
+            vertices.extend_from_slice(&[l0, r0, right, l0, right, left]);
+        }
+        prev = Some((left, right));
+    }
+
+    vertices
 }

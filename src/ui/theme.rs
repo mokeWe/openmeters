@@ -51,9 +51,7 @@ pub const DEFAULT_WAVEFORM_PALETTE: [Color; 5] = [
     Color::from_rgba(0.665, 0.000, 0.906, 1.0),
 ];
 
-pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 1] = [
-    Color::from_rgba(1.000, 1.000, 1.000, 1.0),
-];
+pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 1] = [Color::from_rgba(1.000, 1.000, 1.000, 1.0)];
 
 pub const DEFAULT_STEREOMETER_PALETTE: [Color; 2] = [
     Color::from_rgba(1.000, 1.000, 1.000, 1.0),
@@ -297,7 +295,10 @@ pub fn mix_colors(a: Color, b: Color, factor: f32) -> Color {
 }
 
 pub fn with_alpha(color: Color, alpha: f32) -> Color {
-    Color { a: alpha.clamp(0.0, 1.0), ..color }
+    Color {
+        a: alpha.clamp(0.0, 1.0),
+        ..color
+    }
 }
 
 /// Converts a color into linear space `[f32; 4]` RGBA array for GPU pipelines.
