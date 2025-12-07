@@ -19,9 +19,9 @@ iced_wgpu = "0.13.5"
 rustc-hash = "2.1.1"
 rustfft = "6.4.1"
 realfft = "3.5"
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt"] }
-wide = "0.8.3"
+tracing = "0.1.43"
+tracing-subscriber = { version = "0.3.22", features = ["env-filter", "fmt"] }
+wide = "1.0.2"
 
 [target.'cfg(not(target_env = "msvc"))'.dependencies]
 tikv-jemallocator = "0.6"
