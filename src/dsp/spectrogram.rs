@@ -35,10 +35,19 @@ const MAX_REASSIGNMENT_SAMPLES: usize = 8192;
 pub const PLANCK_BESSEL_DEFAULT_EPSILON: f32 = 0.1;
 pub const PLANCK_BESSEL_DEFAULT_BETA: f32 = 5.5;
 
+/// SNR range (dB) over which confidence scales from 0 to 1.
+const CONFIDENCE_SNR_RANGE_DB: f32 = 60.0;
+
+/// Minimum confidence to prevent complete zeroing of valid bins.
+const CONFIDENCE_FLOOR: f32 = 0.01;
+
+/// Safety margin for max chirp rate; 2x accounts for estimation noise.
+const CHIRP_SAFETY_MARGIN: f32 = 2.0;
+
 const GAUSSIAN_KERNEL_3X3: [[f32; 3]; 3] = {
-    const CENTER: f32 = 1.0;
-    const EDGE: f32 = 0.324_652_5;
-    const CORNER: f32 = 0.105_399_2;
+    const CENTER: f32 = 1.0;              // exp(-0) = 1
+    const EDGE: f32 = 0.324_652_5;        // exp(-1) for d=1
+    const CORNER: f32 = 0.105_399_2;      // exp(-2) for d=sqrt(2)
     const SUM: f32 = CENTER + 4.0 * EDGE + 4.0 * CORNER;
     [
         [CORNER / SUM, EDGE / SUM, CORNER / SUM],
@@ -381,6 +390,12 @@ struct ReassignmentBuffers {
     second_derivative_spectrum: Vec<Complex32>,
     sample_cache: Vec<ReassignedSample>,
     power_floor_linear: f32,
+    /// Window time spread (sigma_t) in samples.
+    sigma_t: f32,
+    /// Precomputed 1/sigma_t for weight normalization.
+    inv_sigma_t: f32,
+    /// Max chirp = pi / sigma_t^2 in Hz/sample; beyond this estimates are unreliable.
+    max_chirp_hz_per_sample: f32,
 }
 
 impl ReassignmentBuffers {
@@ -394,6 +409,13 @@ impl ReassignmentBuffers {
         let bins = fft_size / 2 + 1;
         let derivative_window = compute_derivative_window(window_kind, window);
         let second_derivative_window = compute_second_derivative_window(&derivative_window);
+
+        // Window time spread from Gabor uncertainty; limits chirp estimation accuracy.
+        let sigma_t = compute_window_sigma_t(window);
+        let inv_sigma_t = 1.0 / sigma_t;
+        // max_chirp = pi / sigma_t^2 (rad/sample^2), converted to Hz/sample.
+        let max_chirp_hz_per_sample = 0.5 / (sigma_t * sigma_t);
+
         Self {
             derivative_window,
             time_weighted_window: compute_time_weighted_window(window),
@@ -406,6 +428,9 @@ impl ReassignmentBuffers {
             second_derivative_spectrum: fft.make_output_vec(),
             sample_cache: Vec::with_capacity(bins >> 4),
             power_floor_linear: db_to_power(power_floor_db),
+            sigma_t,
+            inv_sigma_t,
+            max_chirp_hz_per_sample,
         }
     }
 
@@ -427,6 +452,10 @@ impl ReassignmentBuffers {
         self.time_weighted_spectrum = fft.make_output_vec();
         self.second_derivative_spectrum = fft.make_output_vec();
         self.power_floor_linear = db_to_power(power_floor_db);
+
+        self.sigma_t = compute_window_sigma_t(window);
+        self.inv_sigma_t = 1.0 / self.sigma_t;
+        self.max_chirp_hz_per_sample = 0.5 / (self.sigma_t * self.sigma_t);
     }
 }
 
@@ -1180,16 +1209,18 @@ impl SpectrogramProcessor {
         let v_zero = f32x8::splat(0.0);
         let v_one = f32x8::splat(1.0);
         let v_db_scale = f32x8::splat(4.342_944_8);
-        let v_sixty = f32x8::splat(60.0);
-        let v_point_zero_one = f32x8::splat(0.01);
+        let v_snr_range = f32x8::splat(CONFIDENCE_SNR_RANGE_DB);
         let v_point_five = f32x8::splat(0.5);
-        let v_point_two_five = f32x8::splat(0.25);
-        let v_ten = f32x8::splat(10.0);
+        let v_confidence_floor = f32x8::splat(CONFIDENCE_FLOOR);
+
+        // Chirp limit from uncertainty principle: |c| <= pi/sigma_t^2 in rad/sample^2.
+        let v_max_chirp = f32x8::splat(self.reassignment.max_chirp_hz_per_sample * CHIRP_SAFETY_MARGIN);
+        let v_inv_sigma_t = f32x8::splat(self.reassignment.inv_sigma_t);
 
         let v_display_min_hz = f32x8::splat(self.reassignment_2d.min_hz);
         let v_display_max_hz = f32x8::splat(self.reassignment_2d.max_hz);
 
-        let chunks = (reassignment_bin_limit + 7) / 8;
+        let chunks = reassignment_bin_limit.div_ceil(8);
         let limit_f = f32x8::splat(reassignment_bin_limit as f32);
 
         for i in 0..chunks {
@@ -1236,12 +1267,14 @@ impl SpectrogramProcessor {
             let second_cross_freq = second_im * base_re - second_re * base_im;
             let d_omega_dt = -second_cross_freq * inv_power;
             let chirp_rate = d_omega_dt * v_inv_two_pi;
-            let max_chirp = v_bin_hz * v_point_two_five;
 
-            let mask_chirp = chirp_rate.abs().simd_lt(max_chirp * v_ten);
+            let mask_chirp = chirp_rate.abs().simd_lt(v_max_chirp);
 
+            // Weight normalized by magnitude: exp(-|S_tg| / (|S_g| * sigma_t))
             let time_cross_mag = (time_re * time_re + time_im * time_im).sqrt();
-            let weight = (-time_cross_mag * v_point_zero_one).exp().min(v_one);
+            let base_mag = power.sqrt().max(f32x8::splat(f32::MIN_POSITIVE));
+            let normalized_time = time_cross_mag * v_inv_sigma_t / base_mag;
+            let weight = (-normalized_time).exp().min(v_one);
             let correction = chirp_rate * weight * v_point_five;
 
             freq_correction_hz =
@@ -1261,15 +1294,18 @@ impl SpectrogramProcessor {
             let cross_prod_time = time_re * base_re + time_im * base_im;
             let delta_tau = -cross_prod_time * inv_power;
 
+            // Confidence combines two indicators:
+            // 1. SNR: bins near noise floor contribute less (unreliable phase)
+            // 2. Phase coherence: large corrections indicate poor separability
             let snr_factor =
                 ((display_power.ln() * v_db_scale) - (v_power_floor.ln() * v_db_scale)).max(v_zero)
-                    / v_sixty;
+                    / v_snr_range;
             let snr_confidence = snr_factor.min(v_one);
 
             let correction_ratio = freq_correction_hz.abs() / v_bin_hz;
             let phase_coherence = v_one - correction_ratio.min(v_one);
 
-            let confidence = (snr_confidence * phase_coherence).max(v_point_zero_one);
+            let confidence = (snr_confidence * phase_coherence).max(v_confidence_floor);
             let energy_power = power * energy_scale_v;
 
             let freq_bins = self
@@ -1483,6 +1519,34 @@ fn compute_numeric_derivative(window: &[f32]) -> Vec<f32> {
             0.5 * (next - prev)
         })
         .collect()
+}
+
+/// Time spread (sigma_t) of window in samples: sqrt(sum(t^2*g^2) / sum(g^2)).
+/// Determines max chirp rate: |c_max| = pi / sigma_t^2.
+fn compute_window_sigma_t(window: &[f32]) -> f32 {
+    if window.is_empty() {
+        return 1.0;
+    }
+
+    let len = window.len();
+    let center = (len - 1) as f32 * 0.5;
+
+    let mut sum_t2_g2 = 0.0f64;
+    let mut sum_g2 = 0.0f64;
+
+    for (n, &g) in window.iter().enumerate() {
+        let t = n as f32 - center;
+        let g2 = (g * g) as f64;
+        sum_t2_g2 += (t * t) as f64 * g2;
+        sum_g2 += g2;
+    }
+
+    if sum_g2 < f64::EPSILON {
+        return 1.0;
+    }
+
+    let sigma_t_squared = sum_t2_g2 / sum_g2;
+    (sigma_t_squared.sqrt() as f32).max(1.0)
 }
 
 /// Second derivative via 3-point central differences.
@@ -1805,5 +1869,88 @@ mod tests {
             .unwrap();
         assert!((peak.frequency_hz - true_freq).abs() < 1.0);
         assert!(peak.group_delay_samples.abs() < config.fft_size as f32 * 0.1);
+    }
+
+    #[test]
+    fn window_sigma_t_matches_theoretical_ratios() {
+        let fft_size = 4096;
+
+        let hann = WindowKind::Hann.coefficients(fft_size);
+        let sigma_t_hann = compute_window_sigma_t(&hann);
+        let ratio_hann = sigma_t_hann / fft_size as f32;
+        assert!(
+            (ratio_hann - 0.1414).abs() < 0.01,
+            "Hann sigma_t/N = {ratio_hann}, expected ~0.1414"
+        );
+
+        let blackman = WindowKind::Blackman.coefficients(fft_size);
+        let sigma_t_blackman = compute_window_sigma_t(&blackman);
+        let ratio_blackman = sigma_t_blackman / fft_size as f32;
+        assert!(
+            (ratio_blackman - 0.1188).abs() < 0.01,
+            "Blackman sigma_t/N = {ratio_blackman}, expected ~0.1188"
+        );
+
+        let hann_2048 = WindowKind::Hann.coefficients(2048);
+        let sigma_t_2048 = compute_window_sigma_t(&hann_2048);
+        let ratio_2048 = sigma_t_2048 / 2048.0;
+        assert!(
+            (ratio_2048 - ratio_hann).abs() < 0.001,
+            "sigma_t/N should be constant: {ratio_2048} vs {ratio_hann}"
+        );
+    }
+
+    #[test]
+    fn chirp_correction_tracks_linear_fm() {
+        // Linear FM chirp: f(t) = f0 + c*t tests second-order correction.
+        let sample_rate = 48_000.0;
+        let config = SpectrogramConfig {
+            fft_size: 2048,
+            hop_size: 256,
+            use_reassignment: true,
+            zero_padding_factor: 2,
+            window: WindowKind::Hann,
+            ..test_config_base()
+        };
+        let mut processor = SpectrogramProcessor::new(config);
+
+        let f0 = 1000.0;
+        let chirp_rate = 2000.0; // Hz/second
+        let duration_samples = config.fft_size * 3;
+
+        let samples: Vec<f32> = (0..duration_samples)
+            .map(|n| {
+                let t = n as f32 / sample_rate;
+                let phase = core::f32::consts::TAU * (f0 * t + 0.5 * chirp_rate * t * t);
+                phase.sin()
+            })
+            .collect();
+
+        let block = make_block(samples, 1, sample_rate);
+        let update = unwrap_update(processor.process_block(&block));
+
+        // Find peak in middle frame (after transient settles)
+        let mid_frame = update.new_columns.len() / 2;
+        let peak = update.new_columns[mid_frame]
+            .reassigned
+            .as_ref()
+            .expect("reassignment enabled")
+            .iter()
+            .max_by(|a, b| a.magnitude_db.partial_cmp(&b.magnitude_db).unwrap())
+            .unwrap();
+
+        // Instantaneous frequency at window center
+        let window_center_samples = (config.hop_size * mid_frame + config.fft_size / 2) as f32;
+        let expected_freq = f0 + chirp_rate * (window_center_samples / sample_rate);
+
+        // Tolerance: within 1% or 20 Hz, whichever is larger
+        let tolerance = (expected_freq * 0.01).max(20.0);
+        assert!(
+            (peak.frequency_hz - expected_freq).abs() < tolerance,
+            "Chirp tracking: got {:.1} Hz, expected {:.1} Hz (±{:.1})",
+            peak.frequency_hz,
+            expected_freq,
+            tolerance
+        );
     }
 }
