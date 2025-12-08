@@ -3,7 +3,7 @@
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::spectrogram::{
     FrequencyScale, SpectrogramColumn, SpectrogramConfig,
-    SpectrogramProcessor as CoreSpectrogramProcessor, SpectrogramUpdate, hz_to_mel, mel_to_hz,
+    SpectrogramProcessor as CoreSpectrogramProcessor, SpectrogramUpdate,
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::spectrogram::{
@@ -13,6 +13,7 @@ use crate::ui::render::spectrogram::{
 use crate::ui::theme;
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use crate::util::audio::musical::MusicalNote;
+use crate::util::audio::{hz_to_mel, mel_to_hz};
 use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
 use iced::advanced::text::Renderer as TextRenderer;

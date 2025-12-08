@@ -1,5 +1,5 @@
 use crate::audio::meter_tap::MeterFormat;
-use crate::dsp::spectrogram::{FrequencyScale, hz_to_mel, mel_to_hz};
+use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::{
     SpectrumConfig, SpectrumProcessor as CoreSpectrumProcessor, SpectrumSnapshot,
 };
@@ -8,6 +8,7 @@ use crate::ui::render::spectrum::{SpectrumParams, SpectrumPrimitive};
 use crate::ui::theme;
 use crate::util::audio::lerp;
 use crate::util::audio::musical::MusicalNote;
+use crate::util::audio::{hz_to_mel, mel_to_hz};
 use iced::advanced::Renderer as _;
 use iced::advanced::graphics::text::Paragraph as RenderParagraph;
 use iced::advanced::renderer::{self, Quad};
