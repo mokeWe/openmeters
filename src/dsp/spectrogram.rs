@@ -19,9 +19,8 @@
 
 use super::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::util::audio::{
-    DB_FLOOR, DEFAULT_SAMPLE_RATE, copy_from_deque, db_to_power, power_to_db,
+    DB_FLOOR, DEFAULT_SAMPLE_RATE, copy_from_deque, db_to_power, hz_to_mel, mel_to_hz, power_to_db,
 };
-pub use crate::util::audio::{hz_to_mel, mel_to_hz};
 use parking_lot::RwLock;
 use realfft::{RealFftPlanner, RealToComplex};
 use rustc_hash::FxHashMap;
@@ -30,22 +29,21 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};
 use std::sync::{Arc, OnceLock};
+use wide::{CmpGe, CmpGt, CmpLe, CmpLt, f32x8};
 
 const MAX_REASSIGNMENT_SAMPLES: usize = 8192;
 pub const PLANCK_BESSEL_DEFAULT_EPSILON: f32 = 0.1;
 pub const PLANCK_BESSEL_DEFAULT_BETA: f32 = 5.5;
 
-/// Precomputed Gaussian kernel for 3x3 splatting (sigma=0.667, radius=1).
-/// Stored as [df][dt] for natural iteration order.
 const GAUSSIAN_KERNEL_3X3: [[f32; 3]; 3] = {
     const CENTER: f32 = 1.0;
     const EDGE: f32 = 0.324_652_5;
     const CORNER: f32 = 0.105_399_2;
     const SUM: f32 = CENTER + 4.0 * EDGE + 4.0 * CORNER;
     [
-        [CORNER / SUM, EDGE / SUM, CORNER / SUM], // df = -1
-        [EDGE / SUM, CENTER / SUM, EDGE / SUM],   // df = 0
-        [CORNER / SUM, EDGE / SUM, CORNER / SUM], // df = +1
+        [CORNER / SUM, EDGE / SUM, CORNER / SUM],
+        [EDGE / SUM, CENTER / SUM, EDGE / SUM],
+        [CORNER / SUM, EDGE / SUM, CORNER / SUM],
     ]
 };
 
@@ -483,21 +481,24 @@ impl FrequencyScaleParams {
     }
 
     #[inline(always)]
-    fn hz_to_bin(&self, freq_hz: f32, scale: FrequencyScale) -> Option<f32> {
-        if freq_hz < self.min_hz || freq_hz > self.max_hz {
-            return None;
-        }
-
+    fn hz_to_bin_simd(&self, freq_hz: f32x8, scale: FrequencyScale) -> f32x8 {
         let normalized = match scale {
             FrequencyScale::Linear => (freq_hz - self.min_hz) * self.inv_linear_range,
             FrequencyScale::Logarithmic => (freq_hz.ln() - self.log_min) * self.inv_log_range,
             FrequencyScale::Mel => {
-                let mel = hz_to_mel(freq_hz);
+                let one = f32x8::splat(1.0);
+                let seven_hundred = f32x8::splat(700.0);
+                let two_five_nine_five = f32x8::splat(2595.0);
+                let log10_e = f32x8::splat(core::f32::consts::LOG10_E);
+
+                let val = one + freq_hz / seven_hundred;
+                let mel = two_five_nine_five * (val.ln() * log10_e);
                 (mel - self.mel_min) * self.inv_mel_range
             }
         };
 
-        Some((1.0 - normalized) * self.bin_count_minus_1)
+        // No clamping here - caller is responsible for filtering out-of-range frequencies
+        (f32x8::splat(1.0) - normalized) * self.bin_count_minus_1
     }
 }
 
@@ -641,54 +642,108 @@ impl Reassignment2DGrid {
     }
 
     #[inline(always)]
-    fn accumulate(&mut self, freq_hz: f32, time_offset_samples: f32, power: f32, confidence: f32) {
-        if power <= 0.0 {
-            return;
-        }
-
-        let display_bins = self.display_bins;
-        let column_count = self.column_count;
-
-        let Some(freq_bin) = self.scale_params.hz_to_bin(freq_hz, self.scale) else {
-            return;
-        };
+    fn accumulate_simd(
+        &mut self,
+        freq_bin: f32x8,
+        time_offset_samples: f32x8,
+        power: f32x8,
+        confidence: f32x8,
+        mask: f32x8,
+    ) {
+        let masks: [f32; 8] = mask.to_array();
 
         let inv_hop = 1.0 / self.hop_size as f32;
-        let time_offset_hops = time_offset_samples * inv_hop;
         let max_offset = self.max_time_hops as f32;
-        let clamped_time = time_offset_hops.clamp(-max_offset, max_offset);
-        let time_col = clamped_time + self.center_column as f32;
+        let center_col = self.center_column as f32;
+        let display_bins = self.display_bins;
+        let column_count = self.column_count;
+        let w = display_bins;
+        let grid = &mut self.power_grid;
 
-        let f_center_i = freq_bin.round() as i32;
-        let t_center_i = time_col.round() as i32;
+        let freq_bins: [f32; 8] = freq_bin.to_array();
+        let time_offsets: [f32; 8] = time_offset_samples.to_array();
+        let powers: [f32; 8] = power.to_array();
+        let confidences: [f32; 8] = confidence.to_array();
 
-        let f_lo = (f_center_i - 1).max(0) as usize;
-        let f_hi = (f_center_i + 1).min(display_bins as i32 - 1) as usize;
-        let t_lo = (t_center_i - 1).max(0) as usize;
-        let t_hi = (t_center_i + 1).min(column_count as i32 - 1) as usize;
+        // Pre-compute kernel weights (flattened for cache efficiency)
+        const K00: f32 = GAUSSIAN_KERNEL_3X3[0][0];
+        const K10: f32 = GAUSSIAN_KERNEL_3X3[1][0];
+        const K20: f32 = GAUSSIAN_KERNEL_3X3[2][0];
+        const K01: f32 = GAUSSIAN_KERNEL_3X3[0][1];
+        const K11: f32 = GAUSSIAN_KERNEL_3X3[1][1];
+        const K21: f32 = GAUSSIAN_KERNEL_3X3[2][1];
+        const K02: f32 = GAUSSIAN_KERNEL_3X3[0][2];
+        const K12: f32 = GAUSSIAN_KERNEL_3X3[1][2];
+        const K22: f32 = GAUSSIAN_KERNEL_3X3[2][2];
 
-        if f_lo > f_hi || t_lo > t_hi {
-            return;
-        }
+        for i in 0..8 {
+            if masks[i] == 0.0 {
+                continue;
+            }
 
-        let kf_off = (f_lo as i32 - f_center_i + 1) as usize;
-        let kt_off = (t_lo as i32 - t_center_i + 1) as usize;
-        let weighted_power = power * confidence;
+            let fb = freq_bins[i];
+            let val = powers[i] * confidences[i];
 
-        let row_end = (t_hi + 1) * display_bins;
-        let pg = &mut self.power_grid[..row_end];
+            if !(val > 0.0 && val.is_finite() && fb.is_finite()) {
+                continue;
+            }
 
-        for dt in 0..=(t_hi - t_lo) {
-            let t = t_lo + dt;
-            let kt = kt_off + dt;
-            let row_base = t * display_bins;
+            let time_hops = time_offsets[i] * inv_hop;
+            let clamped = time_hops.clamp(-max_offset, max_offset);
+            let tc_f = (clamped + center_col).round();
+            let fc_f = fb.round();
 
-            for df in 0..=(f_hi - f_lo) {
-                let f = f_lo + df;
-                let kf = kf_off + df;
-                let idx = row_base + f;
-                let kw = GAUSSIAN_KERNEL_3X3[kf][kt];
-                pg[idx] = kw.mul_add(weighted_power, pg[idx]);
+            let fc = fc_f as i32;
+            let tc = tc_f as i32;
+
+            if fc >= 1
+                && fc < (display_bins as i32 - 1)
+                && tc >= 1
+                && tc < (column_count as i32 - 1)
+            {
+                // Fast path: 3x3 kernel fully in bounds
+                let base = (tc as usize) * w + (fc as usize);
+
+                let v00 = val * K00;
+                let v10 = val * K10;
+                let v20 = val * K20;
+                let v01 = val * K01;
+                let v11 = val * K11;
+                let v21 = val * K21;
+                let v02 = val * K02;
+                let v12 = val * K12;
+                let v22 = val * K22;
+
+                let r0 = base - w - 1;
+                grid[r0] += v00;
+                grid[r0 + 1] += v10;
+                grid[r0 + 2] += v20;
+
+                let r1 = base - 1;
+                grid[r1] += v01;
+                grid[r1 + 1] += v11;
+                grid[r1 + 2] += v21;
+
+                let r2 = base + w - 1;
+                grid[r2] += v02;
+                grid[r2 + 1] += v12;
+                grid[r2 + 2] += v22;
+            } else if fc >= 0 && fc < display_bins as i32 && tc >= 0 && tc < column_count as i32 {
+                for ky in 0..3i32 {
+                    let t = tc + ky - 1;
+                    if t < 0 || t >= column_count as i32 {
+                        continue;
+                    }
+                    let row_base = (t as usize) * w;
+
+                    for kx in 0..3i32 {
+                        let f = fc + kx - 1;
+                        if f >= 0 && f < display_bins as i32 {
+                            let idx = row_base + f as usize;
+                            grid[idx] += val * GAUSSIAN_KERNEL_3X3[kx as usize][ky as usize];
+                        }
+                    }
+                }
             }
         }
     }
@@ -1098,7 +1153,6 @@ impl SpectrogramProcessor {
     ) -> Option<Arc<[ReassignedSample]>> {
         let power_floor = self.reassignment.power_floor_linear;
         let bin_hz = sample_rate / fft_size as f32;
-        let nyquist = sample_rate * 0.5;
         let inv_two_pi = sample_rate / core::f32::consts::TAU;
 
         let max_correction_hz = if self.config.reassignment_max_correction_hz > 0.0 {
@@ -1119,92 +1173,133 @@ impl SpectrogramProcessor {
         let samples = &mut self.reassignment.sample_cache;
         samples.clear();
 
-        for (k, ((&base, &cross), ((&time_cross, &bin_norm_k), &energy_scale_k))) in spectrum
-            .iter()
-            .zip(derivative_spectrum.iter())
-            .zip(
-                time_weighted_spectrum
-                    .iter()
-                    .zip(bin_norm.iter())
-                    .zip(energy_scale.iter()),
-            )
-            .enumerate()
-        {
-            let k_f32 = k as f32;
+        let v_power_floor = f32x8::splat(power_floor);
+        let v_bin_hz = f32x8::splat(bin_hz);
+        let v_inv_two_pi = f32x8::splat(inv_two_pi);
+        let v_max_correction = f32x8::splat(max_correction_hz);
+        let v_zero = f32x8::splat(0.0);
+        let v_one = f32x8::splat(1.0);
+        let v_db_scale = f32x8::splat(4.342_944_8);
+        let v_sixty = f32x8::splat(60.0);
+        let v_point_zero_one = f32x8::splat(0.01);
+        let v_point_five = f32x8::splat(0.5);
+        let v_point_two_five = f32x8::splat(0.25);
+        let v_ten = f32x8::splat(10.0);
 
-            let power = base.re * base.re + base.im * base.im;
-            let display_power = power * bin_norm_k;
+        let v_display_min_hz = f32x8::splat(self.reassignment_2d.min_hz);
+        let v_display_max_hz = f32x8::splat(self.reassignment_2d.max_hz);
 
-            if display_power < power_floor || energy_scale_k <= 0.0 {
+        let chunks = (reassignment_bin_limit + 7) / 8;
+        let limit_f = f32x8::splat(reassignment_bin_limit as f32);
+
+        for i in 0..chunks {
+            let offset = i * 8;
+            let k_indices = f32x8::new([
+                (offset) as f32,
+                (offset + 1) as f32,
+                (offset + 2) as f32,
+                (offset + 3) as f32,
+                (offset + 4) as f32,
+                (offset + 5) as f32,
+                (offset + 6) as f32,
+                (offset + 7) as f32,
+            ]);
+
+            let mask_limit = k_indices.simd_lt(limit_f);
+
+            let (base_re, base_im) = load_complex_simd_safe(&spectrum[offset..]);
+            let (cross_re, cross_im) = load_complex_simd_safe(&derivative_spectrum[offset..]);
+            let (time_re, time_im) = load_complex_simd_safe(&time_weighted_spectrum[offset..]);
+            let (second_re, second_im) =
+                load_complex_simd_safe(&second_derivative_spectrum[offset..]);
+
+            let bin_norm_v = load_f32_simd_safe(&bin_norm[offset..]);
+            let energy_scale_v = load_f32_simd_safe(&energy_scale[offset..]);
+
+            let power = base_re * base_re + base_im * base_im;
+            let display_power = power * bin_norm_v;
+
+            let mask_power =
+                display_power.simd_ge(v_power_floor) & energy_scale_v.simd_gt(v_zero) & mask_limit;
+
+            if mask_power.none() {
                 continue;
             }
 
-            let inv_power = 1.0 / power;
+            let inv_power = v_one / power.max(f32x8::splat(f32::MIN_POSITIVE));
 
-            let cross_product_freq = cross.im * base.re - cross.re * base.im;
-            let delta_omega = -cross_product_freq * inv_power;
+            let cross_prod_freq = cross_im * base_re - cross_re * base_im;
+            let delta_omega = -cross_prod_freq * inv_power;
 
-            if !delta_omega.is_finite() {
+            let mut freq_correction_hz = delta_omega * v_inv_two_pi;
+
+            let second_cross_freq = second_im * base_re - second_re * base_im;
+            let d_omega_dt = -second_cross_freq * inv_power;
+            let chirp_rate = d_omega_dt * v_inv_two_pi;
+            let max_chirp = v_bin_hz * v_point_two_five;
+
+            let mask_chirp = chirp_rate.abs().simd_lt(max_chirp * v_ten);
+
+            let time_cross_mag = (time_re * time_re + time_im * time_im).sqrt();
+            let weight = (-time_cross_mag * v_point_zero_one).exp().min(v_one);
+            let correction = chirp_rate * weight * v_point_five;
+
+            freq_correction_hz =
+                mask_chirp.blend(freq_correction_hz + correction, freq_correction_hz);
+
+            let mask_correction = freq_correction_hz.abs().simd_le(v_max_correction);
+
+            let freq_hz = k_indices.mul_add(v_bin_hz, freq_correction_hz);
+            let mask_freq = freq_hz.simd_ge(v_display_min_hz) & freq_hz.simd_lt(v_display_max_hz);
+
+            let final_mask = mask_power & mask_correction & mask_freq;
+
+            if final_mask.none() {
                 continue;
             }
 
-            let mut freq_correction_hz = delta_omega * inv_two_pi;
-
-            {
-                let second = second_derivative_spectrum[k];
-                let second_cross_freq = second.im * base.re - second.re * base.im;
-                let d_omega_dt = -second_cross_freq * inv_power;
-
-                if d_omega_dt.is_finite() {
-                    let chirp_rate = d_omega_dt * inv_two_pi;
-
-                    let max_chirp_correction = 0.25 * bin_hz;
-                    if chirp_rate.abs() < max_chirp_correction * 10.0 {
-                        let time_cross_mag =
-                            (time_cross.re * time_cross.re + time_cross.im * time_cross.im).sqrt();
-                        let weight = (-time_cross_mag * 0.01).exp().min(1.0);
-                        freq_correction_hz += chirp_rate * weight * 0.5;
-                    }
-                }
-            }
-
-            if freq_correction_hz.abs() > max_correction_hz {
-                continue;
-            }
-
-            let freq_hz = k_f32.mul_add(bin_hz, freq_correction_hz);
-            if freq_hz < 0.0 || freq_hz > nyquist {
-                continue;
-            }
-
-            let cross_product_time = time_cross.re * base.re + time_cross.im * base.im;
-            let delta_tau = -cross_product_time * inv_power;
-            let group_delay_samples = if delta_tau.is_finite() {
-                delta_tau
-            } else {
-                0.0
-            };
+            let cross_prod_time = time_re * base_re + time_im * base_im;
+            let delta_tau = -cross_prod_time * inv_power;
 
             let snr_factor =
-                (power_to_db(display_power) - power_to_db(power_floor)).max(0.0) / 60.0;
-            let snr_confidence = snr_factor.min(1.0);
+                ((display_power.ln() * v_db_scale) - (v_power_floor.ln() * v_db_scale)).max(v_zero)
+                    / v_sixty;
+            let snr_confidence = snr_factor.min(v_one);
 
-            let correction_ratio = freq_correction_hz.abs() / bin_hz;
-            let phase_coherence = 1.0 - correction_ratio.min(1.0);
+            let correction_ratio = freq_correction_hz.abs() / v_bin_hz;
+            let phase_coherence = v_one - correction_ratio.min(v_one);
 
-            let confidence = (snr_confidence * phase_coherence).max(0.01);
+            let confidence = (snr_confidence * phase_coherence).max(v_point_zero_one);
+            let energy_power = power * energy_scale_v;
 
-            let energy_power = power * energy_scale_k;
+            let freq_bins = self
+                .reassignment_2d
+                .scale_params
+                .hz_to_bin_simd(freq_hz, self.reassignment_2d.scale);
 
-            self.reassignment_2d
-                .accumulate(freq_hz, group_delay_samples, energy_power, confidence);
+            self.reassignment_2d.accumulate_simd(
+                freq_bins,
+                delta_tau,
+                energy_power,
+                confidence,
+                final_mask.blend(v_one, v_zero),
+            );
 
             if samples.len() < MAX_REASSIGNMENT_SAMPLES {
-                samples.push(ReassignedSample {
-                    frequency_hz: freq_hz,
-                    group_delay_samples,
-                    magnitude_db: power_to_db(display_power),
-                });
+                let freq_hz_arr = freq_hz.to_array();
+                let group_delay_arr = delta_tau.to_array();
+                let display_power_arr = display_power.to_array();
+                let valid_flags: [f32; 8] = final_mask.blend(v_one, v_zero).to_array();
+
+                for j in 0..8 {
+                    if valid_flags[j] > 0.0 {
+                        samples.push(ReassignedSample {
+                            frequency_hz: freq_hz_arr[j],
+                            group_delay_samples: group_delay_arr[j],
+                            magnitude_db: power_to_db(display_power_arr[j]),
+                        });
+                    }
+                }
             }
         }
 
@@ -1555,6 +1650,45 @@ impl Reconfigurable<SpectrogramConfig> for SpectrogramProcessor {
     }
 }
 
+#[inline(always)]
+fn load_complex_simd(data: &[Complex32]) -> (f32x8, f32x8) {
+    let re = f32x8::new([
+        data[0].re, data[1].re, data[2].re, data[3].re, data[4].re, data[5].re, data[6].re,
+        data[7].re,
+    ]);
+    let im = f32x8::new([
+        data[0].im, data[1].im, data[2].im, data[3].im, data[4].im, data[5].im, data[6].im,
+        data[7].im,
+    ]);
+    (re, im)
+}
+
+#[inline(always)]
+fn load_complex_simd_safe(data: &[Complex32]) -> (f32x8, f32x8) {
+    if data.len() >= 8 {
+        load_complex_simd(data)
+    } else {
+        let mut re = [0.0; 8];
+        let mut im = [0.0; 8];
+        for (i, c) in data.iter().enumerate() {
+            re[i] = c.re;
+            im[i] = c.im;
+        }
+        (f32x8::new(re), f32x8::new(im))
+    }
+}
+
+#[inline(always)]
+fn load_f32_simd_safe(data: &[f32]) -> f32x8 {
+    if data.len() >= 8 {
+        f32x8::new(data[..8].try_into().unwrap())
+    } else {
+        let mut arr = [0.0; 8];
+        arr[..data.len()].copy_from_slice(data);
+        f32x8::new(arr)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1589,14 +1723,13 @@ mod tests {
 
     #[test]
     fn detects_sine_frequency_peak() {
-        // Test without reassignment to verify basic FFT functionality
         let config = SpectrogramConfig {
             fft_size: 1024,
             hop_size: 512,
             history_length: 8,
             window: WindowKind::Hann,
             zero_padding_factor: 1,
-            use_reassignment: false, // Disable reassignment for this test
+            use_reassignment: false,
             ..test_config_base()
         };
         let mut processor = SpectrogramProcessor::new(config);
