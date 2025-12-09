@@ -59,7 +59,7 @@ pub const DEFAULT_STEREOMETER_PALETTE: [Color; 2] = [
 ];
 
 pub const DEFAULT_LOUDNESS_PALETTE: [Color; 5] = [
-    Color::from_rgba(0.410, 0.424, 0.449, 1.0),
+    Color::from_rgba(0.161, 0.161, 0.161, 1.0),
     Color::from_rgba(0.626, 0.665, 0.680, 1.0),
     Color::from_rgba(0.584, 0.618, 0.650, 1.0),
     Color::from_rgba(0.701, 0.767, 0.735, 1.0),
