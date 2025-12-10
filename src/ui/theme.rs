@@ -137,7 +137,6 @@ pub fn tab_button_style(theme: &Theme, active: bool, status: button::Status) -> 
     let mut base = if active {
         palette.primary.base.color
     } else {
-        // Hand-tuned neutral lift to avoid the bluish tint of the generated weak background.
         mix_colors(palette.background.base.color, Color::WHITE, 0.08)
     };
     base.a = 1.0;
