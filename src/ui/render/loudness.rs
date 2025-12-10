@@ -2,7 +2,7 @@
 
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
-use iced_wgpu::primitive::{Primitive, Storage};
+use iced_wgpu::primitive::{self, Primitive};
 use iced_wgpu::wgpu;
 
 use crate::ui::render::common::{
@@ -167,34 +167,27 @@ impl LoudnessMeterPrimitive {
 }
 
 impl Primitive for LoudnessMeterPrimitive {
+    type Pipeline = Pipeline;
+
     fn prepare(
         &self,
+        pipeline: &mut Self::Pipeline,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        format: wgpu::TextureFormat,
-        storage: &mut Storage,
         bounds: &Rectangle,
         viewport: &Viewport,
     ) {
-        if !storage.has::<Pipeline>() {
-            storage.store(Pipeline::new(device, format));
-        }
-
-        let pipeline = storage.get_mut::<Pipeline>().expect("pipeline exists");
         let vertices = self.build_vertices(bounds, viewport);
         pipeline.prepare_instance(device, queue, "Loudness", self.key(), &vertices);
     }
 
     fn render(
         &self,
+        pipeline: &Self::Pipeline,
         encoder: &mut wgpu::CommandEncoder,
-        storage: &Storage,
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
-        let Some(pipeline) = storage.get::<Pipeline>() else {
-            return;
-        };
         let Some(instance) = pipeline.instance(self.key()) else {
             return;
         };
@@ -211,6 +204,7 @@ impl Primitive for LoudnessMeterPrimitive {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
+                depth_slice: None,
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
@@ -230,12 +224,12 @@ impl Primitive for LoudnessMeterPrimitive {
 }
 
 #[derive(Debug)]
-struct Pipeline {
+pub struct Pipeline {
     inner: SdfPipeline<usize>,
 }
 
-impl Pipeline {
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+impl primitive::Pipeline for Pipeline {
+    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         Self {
             inner: SdfPipeline::new(
                 device,
@@ -245,7 +239,9 @@ impl Pipeline {
             ),
         }
     }
+}
 
+impl Pipeline {
     fn prepare_instance(
         &mut self,
         device: &wgpu::Device,

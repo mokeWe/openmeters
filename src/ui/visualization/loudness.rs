@@ -222,10 +222,10 @@ impl LoudnessMeterState {
 
     fn render_params(&self) -> RenderParams {
         let (min, max) = self.range;
-        let guide_color = theme::color_to_linear_rgba(self.palette[4]);
+        let guide_color = theme::color_to_rgba(self.palette[4]);
         let mut bg = self.palette[0];
         bg.a = 1.0;
-        let bg_color = theme::color_to_linear_rgba(bg);
+        let bg_color = theme::color_to_rgba(bg);
 
         RenderParams {
             min_db: min,
@@ -236,11 +236,11 @@ impl LoudnessMeterState {
                     fills: vec![
                         (
                             self.get_value(self.left_mode, 0),
-                            theme::color_to_linear_rgba(self.palette[1]),
+                            theme::color_to_rgba(self.palette[1]),
                         ),
                         (
                             self.get_value(self.left_mode, 1),
-                            theme::color_to_linear_rgba(self.palette[2]),
+                            theme::color_to_rgba(self.palette[2]),
                         ),
                     ],
                 },
@@ -248,7 +248,7 @@ impl LoudnessMeterState {
                     bg_color,
                     fills: vec![(
                         self.get_value(self.right_mode, 0),
-                        theme::color_to_linear_rgba(self.palette[3]),
+                        theme::color_to_rgba(self.palette[3]),
                     )],
                 },
             ],
@@ -300,7 +300,7 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
     }
 
     fn layout(
-        &self,
+        &mut self,
         _tree: &mut Tree,
         _renderer: &iced::Renderer,
         limits: &layout::Limits,
@@ -343,8 +343,8 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
                         size: iced::Pixels(LABEL_FONT_SIZE),
                         line_height: iced::advanced::text::LineHeight::default(),
                         font: iced::Font::default(),
-                        horizontal_alignment: Horizontal::Right,
-                        vertical_alignment: Vertical::Center,
+                        align_x: Horizontal::Right.into(),
+                        align_y: Vertical::Center,
                         shaping: iced::advanced::text::Shaping::Basic,
                         wrapping: iced::advanced::text::Wrapping::None,
                     },
@@ -377,6 +377,7 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
                     bounds: label_rect,
                     border: Border::default(),
                     shadow: Default::default(),
+                    snap: true,
                 },
                 Background::Color(Color {
                     a: 1.0,
@@ -395,8 +396,8 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
                         weight: iced::font::Weight::Bold,
                         ..Default::default()
                     },
-                    horizontal_alignment: Horizontal::Center,
-                    vertical_alignment: Vertical::Center,
+                    align_x: Horizontal::Center.into(),
+                    align_y: Vertical::Center,
                     shaping: iced::advanced::text::Shaping::Basic,
                     wrapping: iced::advanced::text::Wrapping::None,
                 },

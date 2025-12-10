@@ -15,7 +15,8 @@ use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManag
 use iced::Element;
 use iced::Length;
 use iced::widget::rule;
-use iced::widget::{Rule, column, container, row, text, toggler};
+use iced::widget::text::Wrapping;
+use iced::widget::{column, container, row, text, toggler};
 use std::fmt;
 
 const FFT_OPTIONS: [usize; 5] = [1024, 2048, 4096, 8192, 16384];
@@ -36,12 +37,11 @@ const SECTION_PADDING: f32 = 12.0;
 const SECTION_SPACING: f32 = 10.0;
 const ROW_SPACING: f32 = 10.0;
 const OUTER_SPACING: f32 = 14.0;
-const RULE_HEIGHT: f32 = 1.0;
-const RULE_THICKNESS: u16 = 1;
+const RULE_THICKNESS: u32 = 1;
 const RULE_FILL_PERCENT: f32 = 82.0;
 
-const TITLE_SIZE: u16 = 14;
-const TOGGLER_TEXT_SIZE: u16 = 11;
+const TITLE_SIZE: u32 = 14;
+const TOGGLER_TEXT_SIZE: u32 = 11;
 
 #[derive(Debug)]
 pub struct SpectrogramSettingsPane {
@@ -285,8 +285,14 @@ fn section_container<'a>(
     title: &'static str,
     body: iced::widget::Column<'a, SettingsMessage>,
 ) -> container::Container<'a, SettingsMessage> {
-    container(column![text(title).size(TITLE_SIZE), body].spacing(SECTION_SPACING))
-        .padding(SECTION_PADDING)
+    container(
+        column![
+            container(text(title).size(TITLE_SIZE).wrapping(Wrapping::None)).clip(true),
+            body
+        ]
+        .spacing(SECTION_SPACING),
+    )
+    .padding(SECTION_PADDING)
 }
 
 impl ModuleSettingsPane for SpectrogramSettingsPane {
@@ -296,11 +302,11 @@ impl ModuleSettingsPane for SpectrogramSettingsPane {
 
     fn view(&self) -> Element<'_, SettingsMessage> {
         let make_divider = || {
-            Rule::horizontal(RULE_HEIGHT).style(move |theme: &iced::Theme| rule::Style {
-                color: theme::with_alpha(theme.extended_palette().secondary.weak.text, 0.35),
-                width: RULE_THICKNESS,
+            rule::horizontal(RULE_THICKNESS).style(move |_| rule::Style {
+                color: theme::with_alpha(theme::accent_primary(), 0.35),
                 radius: 0.0.into(),
                 fill_mode: rule::FillMode::Percent(RULE_FILL_PERCENT),
+                snap: true,
             })
         };
 

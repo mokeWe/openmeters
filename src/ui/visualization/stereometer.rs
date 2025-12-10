@@ -151,8 +151,8 @@ impl StereometerState {
             instance_id: self.instance_id,
             bounds,
             points: self.snapshot.xy_points.clone(),
-            trace_color: theme::color_to_linear_rgba(self.trace_color),
-            grid_color: theme::color_to_linear_rgba(self.grid_color),
+            trace_color: theme::color_to_rgba(self.trace_color),
+            grid_color: theme::color_to_rgba(self.grid_color),
             mode: self.mode,
         })
     }
@@ -183,7 +183,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Stereometer<'
     }
 
     fn layout(
-        &self,
+        &mut self,
         _tree: &mut Tree,
         _renderer: &iced::Renderer,
         limits: &layout::Limits,
@@ -209,6 +209,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Stereometer<'
                     bounds,
                     border: Default::default(),
                     shadow: Default::default(),
+                    snap: true,
                 },
                 Background::Color(theme.extended_palette().background.base.color),
             );

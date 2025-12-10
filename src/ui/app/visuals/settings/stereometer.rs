@@ -1,11 +1,13 @@
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32, set_if_changed};
+use super::widgets::{
+    SliderRange, labeled_pick_list, labeled_slider, section_title, set_f32, set_if_changed,
+};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::ui::settings::{ModuleSettings, SettingsHandle, StereometerMode, StereometerSettings};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
-use iced::widget::{column, text};
+use iced::widget::column;
 
 const MODE_OPTIONS: [StereometerMode; 2] = [StereometerMode::Lissajous, StereometerMode::DotCloud];
 
@@ -80,7 +82,7 @@ impl ModuleSettingsPane for StereometerSettingsPane {
                 |value| SettingsMessage::Stereometer(Message::Persistence(value)),
             ),
             column![
-                text("Colors").size(14),
+                section_title("Colors"),
                 self.palette
                     .view()
                     .map(|e| SettingsMessage::Stereometer(Message::Palette(e)))

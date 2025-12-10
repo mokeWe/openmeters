@@ -1,31 +1,29 @@
 //! Monochrome Iced theme.
 //!
-//! GPU palette colors are pre-converted to sRGB values that produce the desired
-//! visual appearance after the GPU pipeline's linear conversion.
+//! GPU palette colors are defined in sRGB. The sRGB framebuffer format handles
+//! gamma correction automatically, so colors are passed through without conversion.
 
 use iced::border::Border;
-use iced::theme::palette::{self, Extended, Pair};
-use iced::widget::{button, container};
+use iced::theme::palette::{self, Extended};
+use iced::widget::{button, container, slider, text};
 use iced::{Background, Color, Theme};
 
-// Core palette stops (sRGB for UI elements rendered by iced)
-pub const BG_BASE: Color = Color::from_rgb(0.059, 0.063, 0.071);
+// Core palette stops
+// Slightly neutralized base to reduce blue cast in derived weak tones.
+pub const BG_BASE: Color = Color::from_rgba(0.065, 0.065, 0.065, 1.0);
 
-const TEXT_PRIMARY: Color = Color::from_rgb(0.902, 0.910, 0.925);
-const TEXT_DARK: Color = Color::from_rgb(0.10, 0.10, 0.10);
-const TEXT_SECONDARY: Color = Color::from_rgb(0.655, 0.671, 0.698);
-const TEXT_SECONDARY_DARK: Color = Color::from_rgb(0.40, 0.40, 0.40);
+const TEXT_PRIMARY: Color = Color::from_rgba(0.902, 0.910, 0.925, 1.0);
+const TEXT_DARK: Color = Color::from_rgba(0.10, 0.10, 0.10, 1.0);
 
-const BORDER_SUBTLE: Color = Color::from_rgb(0.196, 0.204, 0.224);
-const BORDER_FOCUS: Color = Color::from_rgb(0.416, 0.424, 0.443);
+const BORDER_SUBTLE: Color = Color::from_rgba(0.280, 0.288, 0.304, 1.0);
+const BORDER_FOCUS: Color = Color::from_rgba(0.520, 0.536, 0.560, 1.0);
 
-// Accent colors (sRGB for UI elements)
-const ACCENT_PRIMARY: Color = Color::from_rgb(0.529, 0.549, 0.584);
-const ACCENT_SUCCESS: Color = Color::from_rgb(0.478, 0.557, 0.502);
-const ACCENT_DANGER: Color = Color::from_rgb(0.557, 0.478, 0.478);
+// Accent colors
+const ACCENT_PRIMARY: Color = Color::from_rgba(0.157, 0.157, 0.157, 1.0);
+const ACCENT_SUCCESS: Color = Color::from_rgba(0.478, 0.557, 0.502, 1.0);
+const ACCENT_DANGER: Color = Color::from_rgba(0.557, 0.478, 0.478, 1.0);
 
-// GPU palettes - sRGB values pre-calculated to produce correct appearance after linear conversion.
-// These were computed using linear_to_srgb() on the desired linear values.
+// GPU palettes
 
 pub const DEFAULT_SPECTROGRAM_PALETTE: [Color; 5] = [
     Color::from_rgba(0.000, 0.000, 0.000, 0.0),
@@ -66,144 +64,29 @@ pub const DEFAULT_LOUDNESS_PALETTE: [Color; 5] = [
     Color::from_rgba(0.735, 0.748, 0.774, 0.88),
 ];
 
-pub fn luminance(color: Color) -> f32 {
-    0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b
-}
-
-fn lighten(color: Color, amount: f32) -> Color {
-    Color {
-        r: (color.r + amount).min(1.0),
-        g: (color.g + amount).min(1.0),
-        b: (color.b + amount).min(1.0),
-        a: color.a,
-    }
-}
-
-fn darken(color: Color, amount: f32) -> Color {
-    Color {
-        r: (color.r - amount).max(0.0),
-        g: (color.g - amount).max(0.0),
-        b: (color.b - amount).max(0.0),
-        a: color.a,
-    }
-}
-
 pub fn theme(custom_bg: Option<Color>) -> Theme {
     Theme::custom_with_fn(
         "OpenMeters Monochrome".to_string(),
         palette(custom_bg),
-        extended_palette,
+        Extended::generate,
     )
 }
 
 fn palette(custom_bg: Option<Color>) -> palette::Palette {
     let background = custom_bg.unwrap_or(BG_BASE);
-    let is_light = luminance(background) > 0.5;
-    let text = if is_light { TEXT_DARK } else { TEXT_PRIMARY };
+    let text = if palette::is_dark(background) {
+        TEXT_PRIMARY
+    } else {
+        TEXT_DARK
+    };
 
     palette::Palette {
         background,
         text,
         primary: ACCENT_PRIMARY,
         success: ACCENT_SUCCESS,
+        warning: ACCENT_SUCCESS,
         danger: ACCENT_DANGER,
-    }
-}
-
-fn extended_palette(base: palette::Palette) -> Extended {
-    let is_light = luminance(base.background) > 0.5;
-    let text_secondary = if is_light {
-        TEXT_SECONDARY_DARK
-    } else {
-        TEXT_SECONDARY
-    };
-
-    // Adjust surface colors based on background luminance
-    // If light, darken. If dark, lighten.
-    let (surface, elevated) = if is_light {
-        (darken(base.background, 0.05), darken(base.background, 0.10))
-    } else {
-        (
-            lighten(base.background, 0.05),
-            lighten(base.background, 0.10),
-        )
-    };
-
-    Extended {
-        background: palette::Background {
-            base: Pair::new(base.background, base.text),
-            weak: Pair::new(surface, base.text),
-            strong: Pair::new(elevated, base.text),
-        },
-        primary: palette::Primary {
-            base: Pair::new(base.primary, TEXT_PRIMARY),
-            weak: Pair::new(
-                Color::new(
-                    base.primary.r * 0.7,
-                    base.primary.g * 0.7,
-                    base.primary.b * 0.7,
-                    1.0,
-                ),
-                text_secondary,
-            ),
-            strong: Pair::new(
-                Color::new(
-                    base.primary.r * 1.2,
-                    base.primary.g * 1.2,
-                    base.primary.b * 1.2,
-                    1.0,
-                ),
-                TEXT_PRIMARY,
-            ),
-        },
-        secondary: palette::Secondary {
-            base: Pair::new(surface, base.text),
-            weak: Pair::new(base.background, text_secondary),
-            strong: Pair::new(elevated, base.text),
-        },
-        success: palette::Success {
-            base: Pair::new(base.success, TEXT_PRIMARY),
-            weak: Pair::new(
-                Color::new(
-                    base.success.r * 0.7,
-                    base.success.g * 0.7,
-                    base.success.b * 0.7,
-                    1.0,
-                ),
-                text_secondary,
-            ),
-            strong: Pair::new(
-                Color::new(
-                    base.success.r * 1.2,
-                    base.success.g * 1.2,
-                    base.success.b * 1.2,
-                    1.0,
-                ),
-                TEXT_PRIMARY,
-            ),
-        },
-        danger: palette::Danger {
-            base: Pair::new(base.danger, TEXT_PRIMARY),
-            weak: Pair::new(
-                Color::new(
-                    base.danger.r * 0.7,
-                    base.danger.g * 0.7,
-                    base.danger.b * 0.7,
-                    1.0,
-                ),
-                text_secondary,
-            ),
-            strong: Pair::new(
-                Color::new(
-                    base.danger.r * 1.2,
-                    base.danger.g * 1.2,
-                    base.danger.b * 1.2,
-                    1.0,
-                ),
-                TEXT_PRIMARY,
-            ),
-        },
-        is_dark: !is_light,
     }
 }
 
@@ -237,12 +120,7 @@ pub fn button_style(theme: &Theme, base: Color, status: button::Status) -> butto
 
     match status {
         button::Status::Hovered => {
-            let is_light = luminance(base) > 0.5;
-            let hover = if is_light {
-                darken(base, 0.05)
-            } else {
-                lighten(base, 0.05)
-            };
+            let hover = palette::deviate(base, 0.05);
             style.background = Some(Background::Color(hover));
         }
         button::Status::Pressed => {
@@ -254,20 +132,32 @@ pub fn button_style(theme: &Theme, base: Color, status: button::Status) -> butto
     style
 }
 
-pub fn surface_button_style(theme: &Theme, status: button::Status) -> button::Style {
-    let palette = theme.extended_palette();
-    button_style(theme, palette.background.weak.color, status)
-}
-
 pub fn tab_button_style(theme: &Theme, active: bool, status: button::Status) -> button::Style {
     let palette = theme.extended_palette();
     let mut base = if active {
-        palette.background.strong.color
+        palette.primary.base.color
     } else {
-        palette.background.weak.color
+        // Hand-tuned neutral lift to avoid the bluish tint of the generated weak background.
+        mix_colors(palette.background.base.color, Color::WHITE, 0.08)
     };
     base.a = 1.0;
     button_style(theme, base, status)
+}
+
+pub fn weak_container(theme: &Theme) -> container::Style {
+    let palette = theme.extended_palette();
+    container::Style {
+        background: Some(Background::Color(palette.background.weak.color)),
+        text_color: Some(palette.background.base.text),
+        border: sharp_border(),
+        ..Default::default()
+    }
+}
+
+pub fn weak_text_style(theme: &Theme) -> text::Style {
+    text::Style {
+        color: Some(theme.extended_palette().secondary.weak.text),
+    }
 }
 
 pub fn opaque_container(theme: &Theme) -> container::Style {
@@ -286,7 +176,7 @@ pub fn accent_primary() -> Color {
 
 pub fn mix_colors(a: Color, b: Color, factor: f32) -> Color {
     let t = factor.clamp(0.0, 1.0);
-    Color::new(
+    Color::from_rgba(
         a.r + (b.r - a.r) * t,
         a.g + (b.g - a.g) * t,
         a.b + (b.b - a.b) * t,
@@ -301,18 +191,37 @@ pub fn with_alpha(color: Color, alpha: f32) -> Color {
     }
 }
 
-/// Converts a color into linear space `[f32; 4]` RGBA array for GPU pipelines.
-/// used in rendering as WGPU expects linear colors, iced does sRGB conversion automatically.
-#[inline]
-pub fn color_to_linear_rgba(color: Color) -> [f32; 4] {
-    color.into_linear()
+pub fn slider_style(_theme: &Theme, status: slider::Status) -> slider::Style {
+    // Neutral track sits above the base surface; filled rail leans slightly into the accent.
+    let palette = _theme.extended_palette();
+    let track = mix_colors(palette.background.base.color, Color::WHITE, 0.16);
+    let filled = mix_colors(palette.primary.base.color, Color::WHITE, 0.10);
+
+    let (handle_color, border_color, border_width) = match status {
+        slider::Status::Hovered => (filled, BORDER_FOCUS, 1.0),
+        slider::Status::Dragged => (filled, BORDER_FOCUS, 1.0),
+        _ => (filled, BORDER_SUBTLE, 1.0),
+    };
+
+    slider::Style {
+        rail: slider::Rail {
+            backgrounds: (Background::Color(filled), Background::Color(track)),
+            border: sharp_border(),
+            width: 2.0,
+        },
+        handle: slider::Handle {
+            shape: slider::HandleShape::Circle { radius: 7.0 },
+            background: Background::Color(handle_color),
+            border_color,
+            border_width,
+        },
+    }
 }
 
-/// Converts a color to linear RGBA, scaling alpha by the given opacity.
+/// Converts a color to `[f32; 4]` RGBA array for GPU pipelines.
 #[inline]
-pub fn color_to_linear_rgba_with_opacity(color: Color, opacity: f32) -> [f32; 4] {
-    let [r, g, b, a] = color.into_linear();
-    [r, g, b, a * opacity.clamp(0.0, 1.0)]
+pub fn color_to_rgba(color: Color) -> [f32; 4] {
+    [color.r, color.g, color.b, color.a]
 }
 
 /// Compares two colors for approximate equality.

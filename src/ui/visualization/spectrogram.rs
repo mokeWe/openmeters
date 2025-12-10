@@ -356,7 +356,7 @@ pub struct SpectrogramStyle {
 impl Default for SpectrogramStyle {
     fn default() -> Self {
         Self {
-            background: Color::from_rgba(0.0, 0.0, 0.0, 0.0),
+            background: theme::with_alpha(theme::BG_BASE, 0.0),
             floor_db: DEFAULT_DB_FLOOR,
             ceiling_db: DEFAULT_DB_CEILING,
             opacity: 0.95,
@@ -839,20 +839,26 @@ impl PaletteCache {
     fn new(style: &SpectrogramStyle, palette: &[Color; PALETTE_STOPS]) -> Self {
         Self {
             palette: Self::convert_palette(palette, style.opacity),
-            background: theme::color_to_linear_rgba_with_opacity(style.background, style.opacity),
+            background: Self::color_with_opacity(style.background, style.opacity),
         }
     }
 
     fn refresh(&mut self, style: &SpectrogramStyle, palette: &[Color; PALETTE_STOPS]) {
         self.palette = Self::convert_palette(palette, style.opacity);
-        self.background = theme::color_to_linear_rgba_with_opacity(style.background, style.opacity);
+        self.background = Self::color_with_opacity(style.background, style.opacity);
     }
 
     fn convert_palette(
         palette: &[Color; PALETTE_STOPS],
         opacity: f32,
     ) -> [[f32; 4]; PALETTE_STOPS] {
-        palette.map(|color| theme::color_to_linear_rgba_with_opacity(color, opacity))
+        palette.map(|color| Self::color_with_opacity(color, opacity))
+    }
+
+    fn color_with_opacity(color: Color, opacity: f32) -> [f32; 4] {
+        let mut rgba = theme::color_to_rgba(color);
+        rgba[3] *= opacity.clamp(0.0, 1.0);
+        rgba
     }
 }
 
@@ -919,12 +925,12 @@ impl<'a> Spectrogram<'a> {
 
         let text_size = RenderParagraph::with_text(text::Text {
             content: &tooltip_text,
-            bounds: Size::INFINITY,
+            bounds: Size::INFINITE,
             size: iced::Pixels(TOOLTIP_TEXT_SIZE),
             line_height: text::LineHeight::default(),
             font: iced::Font::default(),
-            horizontal_alignment: iced::alignment::Horizontal::Left,
-            vertical_alignment: iced::alignment::Vertical::Top,
+            align_x: iced::alignment::Horizontal::Left.into(),
+            align_y: iced::alignment::Vertical::Top,
             shaping: text::Shaping::Basic,
             wrapping: text::Wrapping::None,
         })
@@ -960,6 +966,7 @@ impl<'a> Spectrogram<'a> {
                 ),
                 border: Default::default(),
                 shadow: Default::default(),
+                snap: true,
             },
             Background::Color(theme::with_alpha(
                 palette.background.base.color,
@@ -972,6 +979,7 @@ impl<'a> Spectrogram<'a> {
                 bounds: tooltip_bounds,
                 border: theme::sharp_border(),
                 shadow: Default::default(),
+                snap: true,
             },
             Background::Color(palette.background.strong.color),
         );
@@ -986,8 +994,8 @@ impl<'a> Spectrogram<'a> {
                 bounds: Size::new(text_size.width, text_size.height),
                 size: iced::Pixels(TOOLTIP_TEXT_SIZE),
                 font: iced::Font::default(),
-                horizontal_alignment: iced::alignment::Horizontal::Left,
-                vertical_alignment: iced::alignment::Vertical::Top,
+                align_x: iced::alignment::Horizontal::Left.into(),
+                align_y: iced::alignment::Vertical::Top,
                 line_height: text::LineHeight::default(),
                 shaping: text::Shaping::Basic,
                 wrapping: text::Wrapping::None,
@@ -1013,7 +1021,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
     }
 
     fn layout(
-        &self,
+        &mut self,
         _tree: &mut Tree,
         _renderer: &iced::Renderer,
         limits: &layout::Limits,
@@ -1022,31 +1030,29 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
         layout::Node::new(size)
     }
 
-    fn on_event(
+    fn update(
         &mut self,
         tree: &mut Tree,
-        event: iced::Event,
+        event: &iced::Event,
         layout: Layout<'_>,
         _cursor: mouse::Cursor,
         _renderer: &iced::Renderer,
         _clipboard: &mut dyn iced::advanced::Clipboard,
         _shell: &mut iced::advanced::Shell<'_, Message>,
         _viewport: &Rectangle,
-    ) -> iced::advanced::graphics::core::event::Status {
+    ) {
         let state = tree.state.downcast_mut::<TooltipState>();
         let bounds = layout.bounds();
 
         match event {
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                state.cursor = bounds.contains(position).then_some(position);
+                state.cursor = bounds.contains(*position).then_some(*position);
             }
             iced::Event::Mouse(mouse::Event::CursorLeft) => {
                 state.cursor = None;
             }
             _ => {}
         }
-
-        iced::advanced::graphics::core::event::Status::Ignored
     }
 
     fn draw(
@@ -1067,6 +1073,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
                 bounds,
                 border: Default::default(),
                 shadow: Default::default(),
+                snap: true,
             },
             Background::Color(state.style.background),
         );

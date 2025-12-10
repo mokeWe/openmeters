@@ -6,7 +6,7 @@ pub use content::Content;
 pub use pane::Pane;
 pub use state::State;
 
-use iced_widget::core::event::{self, Event};
+use iced_widget::core::event::Event;
 use iced_widget::core::layout;
 use iced_widget::core::mouse;
 use iced_widget::core::overlay;
@@ -17,8 +17,8 @@ use iced_widget::core::widget::{
     tree::{self, Tree},
 };
 use iced_widget::core::{
-    self, Background, Clipboard, Color, Element, Layout, Length, Point, Rectangle, Shell, Size,
-    Vector, Widget,
+    self, Background, Clipboard, Element, Layout, Length, Point, Rectangle, Shell, Size, Vector,
+    Widget,
 };
 
 #[derive(Default)]
@@ -158,7 +158,7 @@ where
     }
 
     fn layout(
-        &self,
+        &mut self,
         tree: &mut Tree,
         renderer: &Renderer,
         limits: &layout::Limits,
@@ -289,7 +289,7 @@ where
 
         for (((_, content), child), width) in self
             .entries
-            .iter()
+            .iter_mut()
             .zip(tree.children.iter_mut())
             .zip(widths.into_iter())
         {
@@ -311,7 +311,7 @@ where
     }
 
     fn operate(
-        &self,
+        &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
         renderer: &Renderer,
@@ -319,7 +319,7 @@ where
     ) {
         for (((_, content), child), child_layout) in self
             .entries
-            .iter()
+            .iter_mut()
             .zip(tree.children.iter_mut())
             .zip(layout.children())
         {
@@ -327,19 +327,18 @@ where
         }
     }
 
-    fn on_event(
+    fn update(
         &mut self,
         tree: &mut Tree,
-        event: Event,
+        event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
-    ) -> event::Status {
+    ) {
         let interaction = tree.state.downcast_mut::<Interaction>();
-        let mut status = event::Status::Ignored;
 
         for (((_, content), child), child_layout) in self
             .entries
@@ -347,16 +346,16 @@ where
             .zip(tree.children.iter_mut())
             .zip(layout.children())
         {
-            status = status.merge(content.on_event(
+            content.update(
                 child,
-                event.clone(),
+                event,
                 child_layout,
                 cursor,
                 renderer,
                 clipboard,
                 shell,
                 viewport,
-            ));
+            );
         }
 
         if let Event::Mouse(mouse_event) = event {
@@ -371,7 +370,7 @@ where
                         interaction.dragging = Some(pane);
                         interaction.hovered = Some(pane);
                         shell.publish(on_drag(DragEvent::Picked { pane }));
-                        return event::Status::Captured;
+                        shell.capture_event();
                     }
                 }
                 mouse::Event::ButtonPressed(Button::Right) => {
@@ -380,16 +379,16 @@ where
                         && let Some(pane) = self.pane_at(layout, cursor_position)
                     {
                         shell.publish(on_context(pane));
-                        return event::Status::Captured;
+                        shell.capture_event();
                     }
                 }
                 mouse::Event::CursorMoved { position } => {
                     if interaction.dragging.is_some() {
-                        let hovered = self.pane_at(layout, position);
+                        let hovered = self.pane_at(layout, *position);
 
                         if interaction.hovered != hovered {
                             interaction.hovered = hovered;
-                            status = status.merge(event::Status::Captured);
+                            shell.capture_event();
                         }
                     }
                 }
@@ -397,7 +396,7 @@ where
                     if let Some(pane) = interaction.dragging.take() {
                         interaction.hovered = None;
                         if let Some(on_drag) = &self.on_drag {
-                            let event = cursor
+                            let drag_event = cursor
                                 .position()
                                 .and_then(|pos| self.pane_at(layout, pos))
                                 .map(|target| DragEvent::Dropped {
@@ -406,10 +405,10 @@ where
                                 })
                                 .unwrap_or(DragEvent::Canceled { pane });
 
-                            shell.publish(on_drag(event));
+                            shell.publish(on_drag(drag_event));
                         }
 
-                        return event::Status::Captured;
+                        shell.capture_event();
                     }
                 }
                 mouse::Event::CursorLeft => {
@@ -424,8 +423,6 @@ where
                 _ => {}
             }
         }
-
-        status
     }
 
     fn mouse_interaction(
@@ -494,8 +491,9 @@ where
         }
 
         if let Some(bounds) = highlight_bounds {
-            let fill = Color::from_rgba(0.95, 0.97, 0.99, 0.18);
-            let border = Color::from_rgba(0.80, 0.82, 0.86, 0.5);
+            let accent = crate::ui::theme::accent_primary();
+            let fill = crate::ui::theme::with_alpha(accent, 0.18);
+            let border = crate::ui::theme::with_alpha(accent, 0.5);
 
             renderer.fill_quad(
                 Quad {
@@ -506,6 +504,7 @@ where
                         color: border,
                     },
                     shadow: Default::default(),
+                    snap: true,
                 },
                 Background::Color(fill),
             );
@@ -517,6 +516,7 @@ where
         _tree: &'b mut Tree,
         _layout: Layout<'_>,
         _renderer: &Renderer,
+        _viewport: &Rectangle,
         _translation: Vector,
     ) -> Option<overlay::Element<'b, Message, Theme, Renderer>> {
         None

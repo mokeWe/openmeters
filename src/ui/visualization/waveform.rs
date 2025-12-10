@@ -189,7 +189,7 @@ impl WaveformState {
                     }
                     samples_buffer.push([min_value, max_value]);
                     let frequency = freq_slice[idx];
-                    colors_buffer.push(theme::color_to_linear_rgba(
+                    colors_buffer.push(theme::color_to_rgba(
                         self.style.color_for_frequency(frequency),
                     ));
                 }
@@ -230,8 +230,7 @@ impl WaveformState {
                         .copied()
                         .filter(|f| f.is_finite() && *f > 0.0)
                         .unwrap_or(*hint);
-                    let color =
-                        theme::color_to_linear_rgba(self.style.color_for_frequency(frequency));
+                    let color = theme::color_to_rgba(self.style.color_for_frequency(frequency));
                     buffer.push(PreviewSample {
                         min: min_value,
                         max: max_value,
@@ -432,7 +431,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Waveform<'a> 
     }
 
     fn layout(
-        &self,
+        &mut self,
         _tree: &mut Tree,
         _renderer: &iced::Renderer,
         limits: &layout::Limits,
@@ -460,6 +459,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Waveform<'a> 
                     bounds,
                     border: Default::default(),
                     shadow: Default::default(),
+                    snap: true,
                 },
                 Background::Color(theme.extended_palette().background.base.color),
             );

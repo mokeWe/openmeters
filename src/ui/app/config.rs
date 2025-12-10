@@ -11,7 +11,7 @@ use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
 use async_channel::Receiver as AsyncReceiver;
 use iced::alignment;
-use iced::widget::text::Style as TextStyle;
+use iced::widget::text::Wrapping;
 use iced::widget::{
     Column, Row, Rule, Space, button, container, pick_list, radio, rule, scrollable, text,
 };
@@ -223,13 +223,7 @@ impl ConfigPage {
 
         let content = Column::new()
             .spacing(12)
-            .push(
-                text(status_label)
-                    .size(12)
-                    .style(|theme: &iced::Theme| TextStyle {
-                        color: Some(theme.extended_palette().secondary.weak.text),
-                    }),
-            )
+            .push(text(status_label).size(12).style(theme::weak_text_style))
             .push(capture_controls)
             .push(primary_section);
 
@@ -255,13 +249,20 @@ impl ConfigPage {
         let summary_label = format!("{indicator} Applications{status_suffix}");
 
         let summary_button = button(
-            text(summary_label)
-                .width(Length::Fill)
-                .align_x(alignment::Horizontal::Left),
+            container(
+                text(summary_label)
+                    .wrapping(Wrapping::None)
+                    .align_x(alignment::Horizontal::Left),
+            )
+            .width(Length::Fill)
+            .clip(true),
         )
         .padding(8)
         .width(Length::Fill)
-        .style(header_button_style)
+        .style({
+            let expanded = self.applications_expanded;
+            move |theme, status| theme::tab_button_style(theme, !expanded, status)
+        })
         .on_press(ConfigMessage::ToggleApplicationsVisibility);
 
         let mut section = Column::new().spacing(8).push(summary_button);
@@ -347,9 +348,7 @@ impl ConfigPage {
         Column::new().spacing(8).push(picker).push(
             text("Direct device capture. Application routing disabled.")
                 .size(12)
-                .style(|theme: &iced::Theme| TextStyle {
-                    color: Some(theme.extended_palette().secondary.weak.text),
-                }),
+                .style(theme::weak_text_style),
         )
     }
 
@@ -403,9 +402,9 @@ impl ConfigPage {
         let content = self.bg_palette.view().map(ConfigMessage::BgPalette);
         let decorations_enabled = self.settings.borrow().settings().decorations;
 
-        let decorations_toggle =
-            iced::widget::checkbox("Enable Window Decorations", decorations_enabled)
-                .on_toggle(ConfigMessage::DecorationsToggled);
+        let decorations_toggle = iced::widget::checkbox(decorations_enabled)
+            .label("Enable Window Decorations")
+            .on_toggle(ConfigMessage::DecorationsToggled);
 
         self.section(
             "Global",
@@ -459,11 +458,11 @@ impl ConfigPage {
     }
 
     fn divider<'a>(&self) -> Rule<'a> {
-        Rule::horizontal(1).style(|theme: &iced::Theme| rule::Style {
+        rule::horizontal(1).style(|theme: &iced::Theme| rule::Style {
             color: theme::with_alpha(theme.extended_palette().secondary.weak.text, 0.2),
-            width: 1,
             radius: 0.0.into(),
             fill_mode: rule::FillMode::Percent(100.0),
+            snap: true,
         })
     }
 
@@ -520,7 +519,11 @@ where
         }
 
         for _ in chunk.len()..GRID_COLUMNS {
-            row = row.push(Space::new(Length::FillPortion(1), Length::Shrink));
+            row = row.push(
+                Space::new()
+                    .width(Length::FillPortion(1))
+                    .height(Length::Shrink),
+            );
         }
 
         grid = grid.push(row);
@@ -534,31 +537,13 @@ fn toggle_button<'a>(
     enabled: bool,
     message: ConfigMessage,
 ) -> iced::widget::Button<'a, ConfigMessage> {
-    button(text(label).width(Length::Fill))
-        .padding(12)
-        .width(Length::FillPortion(1))
-        .style(move |theme: &iced::Theme, status| {
-            let palette = theme.extended_palette();
-            let base_background = if enabled {
-                palette.background.weak.color
-            } else {
-                palette.background.strong.color
-            };
-
-            let mut style = theme::button_style(theme, base_background, status);
-
-            if !enabled {
-                style.text_color = palette.secondary.weak.text;
-            }
-
-            style
-        })
-        .on_press(message)
-}
-
-fn header_button_style(
-    theme: &iced::Theme,
-    status: iced::widget::button::Status,
-) -> iced::widget::button::Style {
-    theme::surface_button_style(theme, status)
+    button(
+        container(text(label).wrapping(Wrapping::None))
+            .width(Length::Fill)
+            .clip(true),
+    )
+    .padding(12)
+    .width(Length::FillPortion(1))
+    .style(move |theme: &iced::Theme, status| theme::tab_button_style(theme, enabled, status))
+    .on_press(message)
 }

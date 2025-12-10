@@ -1,6 +1,6 @@
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
-use iced_wgpu::primitive::{Primitive, Storage};
+use iced_wgpu::primitive::{self, Primitive};
 use iced_wgpu::wgpu;
 
 use crate::ui::render::common::{ClipTransform, InstanceBuffer, SdfVertex, create_sdf_pipeline};
@@ -114,38 +114,27 @@ impl OscilloscopePrimitive {
 }
 
 impl Primitive for OscilloscopePrimitive {
+    type Pipeline = Pipeline;
+
     fn prepare(
         &self,
+        pipeline: &mut Self::Pipeline,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        format: wgpu::TextureFormat,
-        storage: &mut Storage,
         _bounds: &Rectangle,
         viewport: &Viewport,
     ) {
-        if !storage.has::<Pipeline>() {
-            storage.store(Pipeline::new(device, format));
-        }
-
-        let pipeline = storage
-            .get_mut::<Pipeline>()
-            .expect("pipeline must exist after storage check");
-
         let vertices = self.build_vertices(viewport);
         pipeline.prepare(device, queue, &vertices);
     }
 
     fn render(
         &self,
+        pipeline: &Self::Pipeline,
         encoder: &mut wgpu::CommandEncoder,
-        storage: &Storage,
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
-        let Some(pipeline) = storage.get::<Pipeline>() else {
-            return;
-        };
-
         if pipeline.buffer.vertex_count == 0 {
             return;
         }
@@ -159,6 +148,7 @@ impl Primitive for OscilloscopePrimitive {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
+                depth_slice: None,
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
@@ -184,13 +174,13 @@ impl Primitive for OscilloscopePrimitive {
 }
 
 #[derive(Debug)]
-struct Pipeline {
+pub struct Pipeline {
     pipeline: wgpu::RenderPipeline,
     buffer: InstanceBuffer<SdfVertex>,
 }
 
-impl Pipeline {
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+impl primitive::Pipeline for Pipeline {
+    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         Self {
             pipeline: create_sdf_pipeline(
                 device,
@@ -201,7 +191,9 @@ impl Pipeline {
             buffer: InstanceBuffer::new(device, "Oscilloscope vertex buffer", 1024),
         }
     }
+}
 
+impl Pipeline {
     fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, vertices: &[SdfVertex]) {
         if vertices.is_empty() {
             self.buffer.vertex_count = 0;

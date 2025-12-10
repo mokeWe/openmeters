@@ -1,7 +1,7 @@
 use super::palette::{PaletteEditor, PaletteEvent};
 use super::widgets::{
     CONTROL_SPACING, LABEL_SIZE, SliderRange, VALUE_GAP, VALUE_SIZE, labeled_pick_list,
-    labeled_slider, set_f32, set_if_changed,
+    labeled_slider, section_title, set_f32, set_if_changed,
 };
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::oscilloscope::TriggerMode;
@@ -11,7 +11,8 @@ use crate::ui::settings::{
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
-use iced::widget::{column, row, slider, text};
+use iced::widget::text::Wrapping;
+use iced::widget::{column, container, row, slider, text};
 
 #[derive(Debug)]
 pub struct OscilloscopeSettingsPane {
@@ -108,10 +109,6 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
             );
         }
 
-        let secondary_weak = |theme: &iced::Theme| iced::widget::text::Style {
-            color: Some(theme.extended_palette().secondary.weak.text),
-        };
-
         items.extend(vec![
             labeled_pick_list(
                 "Channels",
@@ -126,17 +123,26 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
         let segment_duration_widget = match self.settings.trigger_mode {
             TriggerMode::Stable { .. } => column![
                 row![
-                    text("Segment duration").size(LABEL_SIZE),
-                    text("(fallback)")
-                        .size(VALUE_SIZE - 1)
-                        .style(secondary_weak),
-                    text(duration_value).size(VALUE_SIZE).style(secondary_weak),
+                    container(
+                        text("Segment duration")
+                            .size(LABEL_SIZE)
+                            .wrapping(Wrapping::None)
+                    )
+                    .clip(true),
+                    container(
+                        text("(fallback)")
+                            .size(VALUE_SIZE - 1)
+                            .wrapping(Wrapping::None)
+                    )
+                    .clip(true),
+                    container(text(duration_value).size(VALUE_SIZE)).clip(true),
                 ]
                 .spacing(VALUE_GAP),
                 slider::Slider::new(0.005..=0.1, self.settings.segment_duration, |value| {
                     SettingsMessage::Oscilloscope(Message::SegmentDuration(value))
                 })
-                .step(0.001),
+                .step(0.001)
+                .style(theme::slider_style),
             ]
             .spacing(CONTROL_SPACING),
             TriggerMode::FreeRun => labeled_slider(
@@ -162,7 +168,7 @@ impl ModuleSettingsPane for OscilloscopeSettingsPane {
 
         items.push(
             column![
-                text("Color").size(14),
+                section_title("Color"),
                 self.palette
                     .view()
                     .map(|e| SettingsMessage::Oscilloscope(Message::Palette(e)))

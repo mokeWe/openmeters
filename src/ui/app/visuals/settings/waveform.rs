@@ -1,5 +1,5 @@
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{SliderRange, labeled_slider};
+use super::widgets::{SliderRange, labeled_slider, section_title};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::waveform::{
     DownsampleStrategy, MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, WaveformConfig,
@@ -8,7 +8,7 @@ use crate::ui::settings::{ModuleSettings, PaletteSettings, SettingsHandle, Wavef
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
-use iced::widget::{column, pick_list, text};
+use iced::widget::{column, pick_list};
 use std::fmt;
 
 #[derive(Debug)]
@@ -68,7 +68,7 @@ impl ModuleSettingsPane for WaveformSettingsPane {
                 |v| SettingsMessage::Waveform(Message::ScrollSpeed(v)),
             ),
             column![
-                text("Downsampling strategy"),
+                section_title("Downsampling strategy"),
                 pick_list(
                     [DownsampleStrategy::MinMax, DownsampleStrategy::Average],
                     Some(self.config.downsample),
@@ -78,7 +78,7 @@ impl ModuleSettingsPane for WaveformSettingsPane {
             ]
             .spacing(8),
             column![
-                text("Colors").size(14),
+                section_title("Colors"),
                 self.palette
                     .view()
                     .map(|e| SettingsMessage::Waveform(Message::Palette(e)))

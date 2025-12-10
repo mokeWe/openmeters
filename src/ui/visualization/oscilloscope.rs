@@ -193,7 +193,7 @@ impl OscilloscopeState {
             .iter()
             .cycle()
             .take(channels)
-            .map(|c| theme::color_to_linear_rgba(*c))
+            .map(|c| theme::color_to_rgba(*c))
             .collect();
 
         Some(OscilloscopeParams {
@@ -245,7 +245,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Oscilloscope<
     }
 
     fn layout(
-        &self,
+        &mut self,
         _tree: &mut Tree,
         _renderer: &iced::Renderer,
         limits: &layout::Limits,
@@ -271,6 +271,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Oscilloscope<
                     bounds,
                     border: Default::default(),
                     shadow: Default::default(),
+                    snap: true,
                 },
                 Background::Color(theme.extended_palette().background.base.color),
             );

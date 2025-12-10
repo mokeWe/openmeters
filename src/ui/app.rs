@@ -17,18 +17,18 @@ use visuals::{VisualsMessage, VisualsPage, create_settings_panel};
 
 use iced::alignment::Horizontal;
 use iced::keyboard::{self, Key};
+use iced::widget::text::Wrapping;
 use iced::widget::{button, column, container, mouse_area, row, stack, text};
-use iced::{
-    Element, Length, Point, Result, Settings, Size, Subscription, Task, daemon, event, exit, mouse,
-    window,
-};
+use iced::{Element, Length, Result, Settings, Size, Subscription, Task, daemon, exit, window};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 pub use config::RoutingCommand;
 
 const APP_PADDING: f32 = 16.0;
+const MIN_WINDOW_SIZE: Size = Size::new(200.0, 150.0);
 
+#[derive(Clone)]
 pub struct UiConfig {
     routing_sender: mpsc::Sender<RoutingCommand>,
     registry_updates: Option<Arc<AsyncReceiver<RegistrySnapshot>>>,
@@ -58,11 +58,12 @@ pub fn run(config: UiConfig) -> Result {
         id: Some(String::from("openmeters-ui")),
         ..Settings::default()
     };
-    daemon(UiApp::title, update, view)
+    daemon(move || UiApp::new(config.clone()), update, view)
         .settings(settings)
         .subscription(|state: &UiApp| state.subscription())
-        .theme(|state, window| state.theme(window))
-        .run_with(move || UiApp::new(config))
+        .title(|state: &UiApp, window| state.title(window))
+        .theme(|state: &UiApp, window| state.theme(window))
+        .run()
 }
 
 #[derive(Debug)]
@@ -75,12 +76,11 @@ struct UiApp {
     audio_frames: Option<Arc<AsyncReceiver<Vec<f32>>>>,
     ui_visible: bool,
     rendering_paused: bool,
-    is_resizing: bool,
-    overlay_until: Option<Instant>,
+    overlay_until: Option<std::time::Instant>,
     main_window_id: window::Id,
     main_window_size: Size,
     settings_window: Option<SettingsWindow>,
-    exit_warning_until: Option<Instant>,
+    exit_warning_until: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -98,9 +98,7 @@ enum Message {
     ToggleChrome,
     TogglePause,
     QuitRequested,
-    ResizeStarted,
-    ResizeEnded,
-    CursorMoved(Point),
+    ResizeRequested,
     WindowOpened,
     WindowClosed(window::Id),
     WindowResized(window::Id, Size),
@@ -139,6 +137,7 @@ impl UiApp {
 
         let (main_window_id, open_main) = window::open(window::Settings {
             size: Size::new(420.0, 520.0),
+            min_size: Some(MIN_WINDOW_SIZE),
             resizable: true,
             decorations,
             transparent: true,
@@ -155,7 +154,6 @@ impl UiApp {
                 audio_frames,
                 ui_visible: true,
                 rendering_paused: false,
-                is_resizing: false,
                 overlay_until: None,
                 main_window_id,
                 main_window_size: Size::new(420.0, 520.0),
@@ -182,31 +180,24 @@ impl UiApp {
         subscriptions
             .push(window::resize_events().map(|(id, size)| Message::WindowResized(id, size)));
 
-        if self.is_resizing {
-            subscriptions.push(event::listen().map(|e| match e {
-                event::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                    Message::CursorMoved(position)
+        subscriptions.push(keyboard::listen().filter_map(|event| {
+            let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
+                return None;
+            };
+            match key {
+                Key::Character(ref v)
+                    if modifiers.control() && modifiers.shift() && v.eq_ignore_ascii_case("h") =>
+                {
+                    Some(Message::ToggleChrome)
                 }
-                event::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)) => {
-                    Message::ResizeEnded
+                Key::Character(ref v) if modifiers.is_empty() && v.eq_ignore_ascii_case("p") => {
+                    Some(Message::TogglePause)
                 }
-                _ => Message::CursorMoved(Point::ORIGIN),
-            }));
-        }
-
-        subscriptions.push(keyboard::on_key_press(|key, modifiers| match key {
-            Key::Character(ref v)
-                if modifiers.control() && modifiers.shift() && v.eq_ignore_ascii_case("h") =>
-            {
-                Some(Message::ToggleChrome)
+                Key::Character(ref v) if modifiers.is_empty() && v.eq_ignore_ascii_case("q") => {
+                    Some(Message::QuitRequested)
+                }
+                _ => None,
             }
-            Key::Character(ref v) if modifiers.is_empty() && v.eq_ignore_ascii_case("p") => {
-                Some(Message::TogglePause)
-            }
-            Key::Character(ref v) if modifiers.is_empty() && v.eq_ignore_ascii_case("q") => {
-                Some(Message::QuitRequested)
-            }
-            _ => None,
         }));
 
         Subscription::batch(subscriptions)
@@ -241,6 +232,7 @@ impl UiApp {
 
         let (id, open) = window::open(window::Settings {
             size: DEFAULT_SETTINGS_SIZE,
+            min_size: Some(MIN_WINDOW_SIZE),
             resizable: true,
             decorations: true,
             transparent: false,
@@ -400,7 +392,7 @@ impl UiApp {
             if !decorations {
                 stack![
                     content,
-                    container(resize_handle(Message::ResizeStarted))
+                    container(resize_handle(Message::ResizeRequested))
                         .width(Length::Fill)
                         .height(Length::Fill)
                         .align_x(Horizontal::Right)
@@ -423,7 +415,7 @@ impl UiApp {
             if !decorations {
                 stack![
                     content,
-                    container(resize_handle(Message::ResizeStarted))
+                    container(resize_handle(Message::ResizeRequested))
                         .width(Length::Fill)
                         .height(Length::Fill)
                         .align_x(Horizontal::Right)
@@ -441,6 +433,7 @@ impl UiApp {
         let old_main_id = self.main_window_id;
         let (new_main_id, open_main) = window::open(window::Settings {
             size: self.main_window_size,
+            min_size: Some(MIN_WINDOW_SIZE),
             resizable: true,
             decorations,
             transparent: true,
@@ -458,6 +451,7 @@ impl UiApp {
 
                 let (new_sw_id, open_sw) = window::open(window::Settings {
                     size: DEFAULT_SETTINGS_SIZE,
+                    min_size: Some(MIN_WINDOW_SIZE),
                     resizable: true,
                     decorations: true,
                     transparent: false,
@@ -533,20 +527,8 @@ fn update(app: &mut UiApp, message: Message) -> Task<Message> {
             app.exit_warning_until = Some(now + Duration::from_secs(2));
             Task::none()
         }
-        Message::ResizeStarted => {
-            app.is_resizing = true;
-            Task::none()
-        }
-        Message::ResizeEnded => {
-            app.is_resizing = false;
-            Task::none()
-        }
-        Message::CursorMoved(position) => {
-            if app.is_resizing && position != Point::ORIGIN {
-                window::resize(app.main_window_id, Size::new(position.x, position.y))
-            } else {
-                Task::none()
-            }
+        Message::ResizeRequested => {
+            window::drag_resize(app.main_window_id, window::Direction::SouthEast)
         }
         Message::AudioFrame(samples) => {
             if app.rendering_paused {
@@ -613,8 +595,12 @@ fn tab_button(
     current: Page,
 ) -> iced::widget::Button<'static, Message> {
     let active = current == target;
-    let mut btn = button(text(label))
-        .style(move |theme, status| theme::tab_button_style(theme, active, status));
+    let mut btn = button(
+        container(text(label).wrapping(Wrapping::None))
+            .width(Length::Fill)
+            .clip(true),
+    )
+    .style(move |theme, status| theme::tab_button_style(theme, active, status));
 
     if !active {
         btn = btn.on_press(Message::PageSelected(target));

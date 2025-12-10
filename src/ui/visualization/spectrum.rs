@@ -398,16 +398,16 @@ impl SpectrumState {
                 normalized_points: Arc::clone(&self.points.weighted),
                 secondary_points: Arc::clone(&self.points.unweighted),
                 instance_key: self.points.instance_key,
-                line_color: theme::color_to_linear_rgba(line_color),
+                line_color: theme::color_to_rgba(line_color),
                 line_width: self.style.line_thickness,
-                secondary_line_color: theme::color_to_linear_rgba(secondary_line_color),
+                secondary_line_color: theme::color_to_rgba(secondary_line_color),
                 secondary_line_width: self.style.unweighted_line_thickness,
                 highlight_threshold: self.style.highlight_threshold,
                 spectrum_palette: self
                     .style
                     .spectrum_palette
                     .iter()
-                    .map(|&c| theme::color_to_linear_rgba(c))
+                    .map(|&c| theme::color_to_rgba(c))
                     .collect(),
             },
             label: self
@@ -445,7 +445,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> 
     }
 
     fn layout(
-        &self,
+        &mut self,
         _tree: &mut Tree,
         _renderer: &iced::Renderer,
         limits: &layout::Limits,
@@ -472,6 +472,7 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrum<'a> 
                     bounds,
                     border: Default::default(),
                     shadow: Default::default(),
+                    snap: true,
                 },
                 Background::Color(theme.extended_palette().background.base.color),
             );
@@ -837,11 +838,11 @@ fn draw_grid_lines(
 
         let text_size = RenderParagraph::with_text(text::Text {
             content: line.label.as_str(),
-            bounds: Size::INFINITY,
+            bounds: Size::INFINITE,
             size: iced::Pixels(GRID_TEXT_SIZE),
             font: iced::Font::default(),
-            horizontal_alignment: iced::alignment::Horizontal::Left,
-            vertical_alignment: iced::alignment::Vertical::Top,
+            align_x: iced::alignment::Horizontal::Left.into(),
+            align_y: iced::alignment::Vertical::Top,
             line_height: text::LineHeight::default(),
             shaping: text::Shaping::Basic,
             wrapping: text::Wrapping::None,
@@ -889,6 +890,7 @@ fn draw_grid_lines(
                     bounds: candidate.line_bounds,
                     border: Default::default(),
                     shadow: Default::default(),
+                    snap: true,
                 },
                 Background::Color(line_color),
             );
@@ -900,8 +902,8 @@ fn draw_grid_lines(
                 bounds: candidate.text_size,
                 size: iced::Pixels(GRID_TEXT_SIZE),
                 font: iced::Font::default(),
-                horizontal_alignment: iced::alignment::Horizontal::Left,
-                vertical_alignment: iced::alignment::Vertical::Top,
+                align_x: iced::alignment::Horizontal::Left.into(),
+                align_y: iced::alignment::Vertical::Top,
                 line_height: text::LineHeight::default(),
                 shaping: text::Shaping::Basic,
                 wrapping: text::Wrapping::None,
@@ -1002,11 +1004,11 @@ fn draw_peak_label(
 
     let text_size = RenderParagraph::with_text(text::Text {
         content: label.text.as_str(),
-        bounds: Size::INFINITY,
+        bounds: Size::INFINITE,
         size: iced::Pixels(LABEL_TEXT_SIZE),
         font: iced::Font::default(),
-        horizontal_alignment: iced::alignment::Horizontal::Left,
-        vertical_alignment: iced::alignment::Vertical::Top,
+        align_x: iced::alignment::Horizontal::Left.into(),
+        align_y: iced::alignment::Vertical::Top,
         line_height: text::LineHeight::default(),
         shaping: text::Shaping::Basic,
         wrapping: text::Wrapping::None,
@@ -1047,6 +1049,7 @@ fn draw_peak_label(
             bounds: background_bounds,
             border,
             shadow: Default::default(),
+            snap: true,
         },
         Background::Color(theme::with_alpha(
             palette.background.strong.color,
@@ -1060,8 +1063,8 @@ fn draw_peak_label(
             bounds: text_size,
             size: iced::Pixels(LABEL_TEXT_SIZE),
             font: iced::Font::default(),
-            horizontal_alignment: iced::alignment::Horizontal::Left,
-            vertical_alignment: iced::alignment::Vertical::Top,
+            align_x: iced::alignment::Horizontal::Left.into(),
+            align_y: iced::alignment::Vertical::Top,
             line_height: text::LineHeight::default(),
             shaping: text::Shaping::Basic,
             wrapping: text::Wrapping::None,

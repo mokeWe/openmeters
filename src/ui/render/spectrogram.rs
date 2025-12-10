@@ -1,7 +1,7 @@
 use bytemuck::{Pod, Zeroable};
 use iced::Rectangle;
 use iced::advanced::graphics::Viewport;
-use iced_wgpu::primitive::{Primitive, Storage};
+use iced_wgpu::primitive::{self, Primitive};
 use iced_wgpu::wgpu;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -170,23 +170,17 @@ impl SpectrogramPrimitive {
 }
 
 impl Primitive for SpectrogramPrimitive {
+    type Pipeline = Pipeline;
+
     fn prepare(
         &self,
+        pipeline: &mut Self::Pipeline,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        format: wgpu::TextureFormat,
-        storage: &mut Storage,
         _bounds: &Rectangle,
         viewport: &Viewport,
     ) {
-        if !storage.has::<Pipeline>() {
-            storage.store(Pipeline::new(device, format));
-        }
-
         let params = &self.params;
-        let Some(pipeline) = storage.get_mut::<Pipeline>() else {
-            return;
-        };
 
         if params.texture_width == 0 || params.texture_height == 0 {
             pipeline.prepare_instance(device, queue, self.key(), None, params);
@@ -199,15 +193,11 @@ impl Primitive for SpectrogramPrimitive {
 
     fn render(
         &self,
+        pipeline: &Self::Pipeline,
         encoder: &mut wgpu::CommandEncoder,
-        storage: &Storage,
         target: &wgpu::TextureView,
         clip_bounds: &Rectangle<u32>,
     ) {
-        let Some(pipeline) = storage.get::<Pipeline>() else {
-            return;
-        };
-
         let Some(instance) = pipeline.instance(self.key()) else {
             return;
         };
@@ -229,6 +219,7 @@ impl Primitive for SpectrogramPrimitive {
                     load: wgpu::LoadOp::Load,
                     store: wgpu::StoreOp::Store,
                 },
+                depth_slice: None,
             })],
             depth_stencil_attachment: None,
             timestamp_writes: None,
@@ -293,15 +284,15 @@ impl SpectrogramUniforms {
 
 const VERTEX_LABEL: &str = "Spectrogram quad buffer";
 
-struct Pipeline {
+pub struct Pipeline {
     pipeline: wgpu::RenderPipeline,
     bind_group_layout: wgpu::BindGroupLayout,
     instances: HashMap<u64, Instance>,
     cache: CacheTracker,
 }
 
-impl Pipeline {
-    fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+impl primitive::Pipeline for Pipeline {
+    fn new(device: &wgpu::Device, _queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
         let shader = create_shader_module(
             device,
             "Spectrogram shader",
@@ -361,17 +352,19 @@ impl Pipeline {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[Vertex::layout()],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
                     blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList,
@@ -389,6 +382,7 @@ impl Pipeline {
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
+            cache: None,
         });
 
         Self {
@@ -398,7 +392,9 @@ impl Pipeline {
             cache: CacheTracker::default(),
         }
     }
+}
 
+impl Pipeline {
     fn prepare_instance(
         &mut self,
         device: &wgpu::Device,
@@ -600,13 +596,13 @@ impl GpuResources {
             });
 
             encoder.copy_texture_to_texture(
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: &old_texture,
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,
                     aspect: wgpu::TextureAspect::All,
                 },
-                wgpu::ImageCopyTexture {
+                wgpu::TexelCopyTextureInfo {
                     texture: self.magnitude.texture(),
                     mip_level: 0,
                     origin: wgpu::Origin3d::ZERO,

@@ -3,15 +3,17 @@
 use std::borrow::Cow;
 use std::fmt;
 
+use crate::ui::theme;
+use iced::Length;
 use iced::alignment::Vertical;
-use iced::widget::text::Style as TextStyle;
-use iced::widget::{column, pick_list, row, slider, text};
+use iced::widget::text::Wrapping;
+use iced::widget::{column, container, pick_list, row, slider, text};
 
 use super::SettingsMessage;
 
 pub const CONTROL_SPACING: f32 = 8.0;
-pub const LABEL_SIZE: u16 = 12;
-pub const VALUE_SIZE: u16 = 11;
+pub const LABEL_SIZE: u32 = 12;
+pub const VALUE_SIZE: u32 = 11;
 pub const VALUE_GAP: f32 = 6.0;
 pub struct SliderRange {
     pub min: f32,
@@ -91,15 +93,13 @@ pub fn labeled_slider<'a>(
     let SliderRange { min, max, step } = range;
     column![
         row![
-            text(label).size(LABEL_SIZE),
-            text(formatted)
-                .size(VALUE_SIZE)
-                .style(|theme: &iced::Theme| TextStyle {
-                    color: Some(theme.extended_palette().secondary.weak.text),
-                }),
+            container(text(label).size(LABEL_SIZE).wrapping(Wrapping::None)).clip(true),
+            container(text(formatted).size(VALUE_SIZE).wrapping(Wrapping::None)).clip(true),
         ]
         .spacing(VALUE_GAP),
-        slider::Slider::new(min..=max, value, on_change).step(step),
+        slider::Slider::new(min..=max, value, on_change)
+            .step(step)
+            .style(theme::slider_style),
     ]
     .spacing(CONTROL_SPACING)
 }
@@ -114,8 +114,15 @@ where
     T: Clone + PartialEq + fmt::Display + 'static,
 {
     row![
-        text(label).size(LABEL_SIZE),
+        container(text(label).size(LABEL_SIZE).wrapping(Wrapping::None))
+            .width(Length::Shrink)
+            .clip(true),
         pick_list(options.into(), selected, on_select),
     ]
     .align_y(Vertical::Center)
+}
+
+/// Section title that clips on overflow (e.g., "Colors", "Advanced").
+pub fn section_title(label: &'static str) -> container::Container<'static, SettingsMessage> {
+    container(text(label).size(14).wrapping(Wrapping::None)).clip(true)
 }

@@ -236,17 +236,19 @@ pub fn create_sdf_pipeline(
         layout: Some(&layout),
         vertex: wgpu::VertexState {
             module: &shader,
-            entry_point: "vs_main",
+            entry_point: Some("vs_main"),
             buffers: &[SdfVertex::layout()],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
         },
         fragment: Some(wgpu::FragmentState {
             module: &shader,
-            entry_point: "fs_main",
+            entry_point: Some("fs_main"),
             targets: &[Some(wgpu::ColorTargetState {
                 format,
                 blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                 write_mask: wgpu::ColorWrites::ALL,
             })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
         }),
         primitive: wgpu::PrimitiveState {
             topology,
@@ -264,6 +266,7 @@ pub fn create_sdf_pipeline(
             alpha_to_coverage_enabled: false,
         },
         multiview: None,
+        cache: None,
     })
 }
 
@@ -278,14 +281,14 @@ pub fn write_texture_region(
     data: &[u8],
 ) {
     queue.write_texture(
-        wgpu::ImageCopyTexture {
+        wgpu::TexelCopyTextureInfo {
             texture,
             mip_level: 0,
             origin,
             aspect: wgpu::TextureAspect::All,
         },
         data,
-        wgpu::ImageDataLayout {
+        wgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(bytes_per_row),
             rows_per_image: None,

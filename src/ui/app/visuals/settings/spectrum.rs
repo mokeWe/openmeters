@@ -1,5 +1,5 @@
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, set_f32};
+use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, section_title, set_f32};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
@@ -222,7 +222,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
 
         content = content.push(
             column![
-                iced::widget::text("Colors").size(14),
+                section_title("Colors"),
                 self.palette
                     .view()
                     .map(|e| SettingsMessage::Spectrum(Message::Palette(e)))

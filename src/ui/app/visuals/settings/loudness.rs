@@ -1,12 +1,12 @@
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{CONTROL_SPACING, labeled_pick_list};
+use super::widgets::{CONTROL_SPACING, labeled_pick_list, section_title};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::ui::settings::{LoudnessSettings, ModuleSettings, PaletteSettings, SettingsHandle};
 use crate::ui::theme;
 use crate::ui::visualization::loudness::{LOUDNESS_PALETTE_SIZE, MeterMode};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
-use iced::widget::{column, text};
+use iced::widget::column;
 
 #[derive(Debug)]
 pub struct LoudnessSettingsPane {
@@ -87,7 +87,7 @@ impl ModuleSettingsPane for LoudnessSettingsPane {
         column![
             left_mode,
             right_mode,
-            column![text("Colors").size(14), palette_controls].spacing(8)
+            column![section_title("Colors"), palette_controls].spacing(8)
         ]
         .spacing(16)
         .into()

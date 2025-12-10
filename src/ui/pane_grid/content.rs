@@ -1,4 +1,4 @@
-use iced_widget::core::event::{self, Event};
+use iced_widget::core::event::Event;
 use iced_widget::core::layout;
 use iced_widget::core::mouse;
 use iced_widget::core::renderer;
@@ -51,16 +51,16 @@ where
     }
 
     pub(super) fn layout(
-        &self,
+        &mut self,
         tree: &mut Tree,
         renderer: &Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        self.body.as_widget().layout(tree, renderer, limits)
+        self.body.as_widget_mut().layout(tree, renderer, limits)
     }
 
     pub(super) fn operate(
-        &self,
+        &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
         renderer: &Renderer,
@@ -70,29 +70,28 @@ where
         Theme: 'a,
     {
         self.body
-            .as_widget()
+            .as_widget_mut()
             .operate(tree, layout, renderer, operation);
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn on_event(
+    pub(super) fn update(
         &mut self,
         tree: &mut Tree,
-        event: Event,
+        event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         renderer: &Renderer,
         clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, Message>,
         viewport: &Rectangle,
-    ) -> event::Status
-    where
+    ) where
         Message: 'a,
         Theme: 'a,
     {
-        self.body.as_widget_mut().on_event(
+        self.body.as_widget_mut().update(
             tree, event, layout, cursor, renderer, clipboard, shell, viewport,
-        )
+        );
     }
 
     #[allow(clippy::too_many_arguments)]

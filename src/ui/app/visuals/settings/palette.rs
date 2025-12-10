@@ -2,11 +2,12 @@
 
 use crate::ui::theme;
 use iced::alignment::{Horizontal, Vertical};
+use iced::widget::text::Wrapping;
 use iced::widget::{Button, Column, Row, Space, container, slider, text};
 use iced::{Background, Color, Element, Length};
 
 const SWATCH_SIZE: (f32, f32) = (56.0, 28.0);
-const LABEL_SIZE: u16 = 11;
+const LABEL_SIZE: u32 = 11;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PaletteEvent {
@@ -114,10 +115,12 @@ impl PaletteEditor {
         }
 
         col.push(
-            Button::new(text("Reset to defaults").size(12))
-                .padding([6, 10])
-                .style(button_style)
-                .on_press_maybe((!self.is_default()).then_some(PaletteEvent::Reset)),
+            Button::new(
+                container(text("Reset to defaults").size(12).wrapping(Wrapping::None)).clip(true),
+            )
+            .padding([6, 10])
+            .style(|theme, status| theme::tab_button_style(theme, false, status))
+            .on_press_maybe((!self.is_default()).then_some(PaletteEvent::Reset)),
         )
         .into()
     }
@@ -131,17 +134,19 @@ impl PaletteEditor {
                 .width(Length::Shrink)
                 .spacing(4.0)
                 .align_x(Horizontal::Center)
-                .push(text(label).size(LABEL_SIZE))
+                .push(container(text(label).size(LABEL_SIZE).wrapping(Wrapping::None)).clip(true))
                 .push(
-                    container(Space::new(Length::Fill, Length::Fill))
+                    container(Space::new().width(Length::Fill).height(Length::Fill))
                         .width(Length::Fixed(w))
                         .height(Length::Fixed(h))
                         .style(move |_| swatch_style(c, is_active)),
                 )
-                .push(text(to_hex(c)).size(LABEL_SIZE)),
+                .push(
+                    container(text(to_hex(c)).size(LABEL_SIZE).wrapping(Wrapping::None)).clip(true),
+                ),
         )
         .padding([6, 8])
-        .style(button_style)
+        .style(|theme, status| theme::tab_button_style(theme, false, status))
         .on_press(PaletteEvent::Open(i))
         .into()
     }
@@ -152,13 +157,15 @@ impl PaletteEditor {
             Row::new()
                 .spacing(8.0)
                 .align_y(Vertical::Center)
-                .push(text(label).size(12))
-                .push(Space::new(Length::Fill, Length::Shrink))
+                .push(container(text(label).size(12).wrapping(Wrapping::None)).clip(true))
+                .push(Space::new().width(Length::Fill).height(Length::Shrink))
                 .push(
-                    Button::new(text("Done").size(12))
-                        .padding([6, 10])
-                        .style(button_style)
-                        .on_press(PaletteEvent::Close),
+                    Button::new(
+                        container(text("Done").size(12).wrapping(Wrapping::None)).clip(true),
+                    )
+                    .padding([6, 10])
+                    .style(|theme, status| theme::tab_button_style(theme, false, status))
+                    .on_press(PaletteEvent::Close),
                 ),
         );
 
@@ -193,28 +200,30 @@ impl PaletteEditor {
                 Row::new()
                     .spacing(8.0)
                     .align_y(Vertical::Center)
-                    .push(text(channel_label).size(12).width(Length::Fixed(32.0)))
+                    .push(
+                        container(text(channel_label).size(12).wrapping(Wrapping::None))
+                            .width(Length::Fixed(32.0))
+                            .clip(true),
+                    )
                     .push(
                         slider::Slider::new(0.0..=1.0, value, move |nv| PaletteEvent::Adjust {
                             index: i,
                             color: setter(c, nv),
                         })
                         .step(0.01)
+                        .style(theme::slider_style)
                         .width(Length::Fill),
                     )
-                    .push(text(display_fn(value)).size(12)),
+                    .push(
+                        container(text(display_fn(value)).size(12).wrapping(Wrapping::None))
+                            .clip(true),
+                    ),
             );
         }
 
         container(col)
             .padding(12)
-            .style(|theme: &iced::Theme| container::Style {
-                background: Some(Background::Color(
-                    theme.extended_palette().background.weak.color,
-                )),
-                border: theme::sharp_border(),
-                ..Default::default()
-            })
+            .style(theme::weak_container)
             .into()
     }
 }
@@ -276,11 +285,4 @@ fn set_a(mut c: Color, v: f32) -> Color {
     // Snap to 0.0 if very close to ensure clean transparency
     c.a = if v < 0.005 { 0.0 } else { v };
     c
-}
-
-fn button_style(
-    theme: &iced::Theme,
-    status: iced::widget::button::Status,
-) -> iced::widget::button::Style {
-    theme::surface_button_style(theme, status)
 }

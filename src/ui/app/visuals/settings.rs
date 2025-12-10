@@ -11,8 +11,9 @@ mod widgets;
 
 use crate::ui::settings::SettingsHandle;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
+use iced::Element;
+use iced::widget::text::Wrapping;
 use iced::widget::{container, text};
-use iced::{Element, Length};
 
 #[derive(Debug, Clone)]
 pub enum SettingsMessage {
@@ -97,9 +98,13 @@ impl ModuleSettingsPane for UnsupportedSettingsPane {
     }
 
     fn view(&self) -> Element<'_, SettingsMessage> {
-        container(text("No adjustable settings available yet.").size(14))
-            .width(Length::Shrink)
-            .into()
+        container(
+            text("No adjustable settings available yet.")
+                .size(14)
+                .wrapping(Wrapping::None),
+        )
+        .clip(true)
+        .into()
     }
 
     fn handle(

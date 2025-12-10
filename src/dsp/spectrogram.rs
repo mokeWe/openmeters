@@ -45,9 +45,9 @@ const CONFIDENCE_FLOOR: f32 = 0.01;
 const CHIRP_SAFETY_MARGIN: f32 = 2.0;
 
 const GAUSSIAN_KERNEL_3X3: [[f32; 3]; 3] = {
-    const CENTER: f32 = 1.0;              // exp(-0) = 1
-    const EDGE: f32 = 0.324_652_5;        // exp(-1) for d=1
-    const CORNER: f32 = 0.105_399_2;      // exp(-2) for d=sqrt(2)
+    const CENTER: f32 = 1.0; // exp(-0) = 1
+    const EDGE: f32 = 0.324_652_5; // exp(-1) for d=1
+    const CORNER: f32 = 0.105_399_2; // exp(-2) for d=sqrt(2)
     const SUM: f32 = CENTER + 4.0 * EDGE + 4.0 * CORNER;
     [
         [CORNER / SUM, EDGE / SUM, CORNER / SUM],
@@ -1214,7 +1214,8 @@ impl SpectrogramProcessor {
         let v_confidence_floor = f32x8::splat(CONFIDENCE_FLOOR);
 
         // Chirp limit from uncertainty principle: |c| <= pi/sigma_t^2 in rad/sample^2.
-        let v_max_chirp = f32x8::splat(self.reassignment.max_chirp_hz_per_sample * CHIRP_SAFETY_MARGIN);
+        let v_max_chirp =
+            f32x8::splat(self.reassignment.max_chirp_hz_per_sample * CHIRP_SAFETY_MARGIN);
         let v_inv_sigma_t = f32x8::splat(self.reassignment.inv_sigma_t);
 
         let v_display_min_hz = f32x8::splat(self.reassignment_2d.min_hz);
