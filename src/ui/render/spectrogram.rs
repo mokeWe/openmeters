@@ -50,7 +50,6 @@ impl ColumnBufferPool {
     pub fn acquire(&self, len: usize) -> Vec<f32> {
         let mut buffers = self.buffers.lock().unwrap();
 
-        // Find a buffer with exact or close capacity to avoid reallocations
         let pos = buffers.iter().rposition(|b| b.capacity() >= len);
 
         if let Some(idx) = pos {
@@ -68,7 +67,6 @@ impl ColumnBufferPool {
     }
 
     pub fn release(&self, mut buffer: Vec<f32>) {
-        // Only keep buffers with reasonable capacity to avoid memory bloat
         const MAX_POOL_SIZE: usize = 64;
         const MAX_BUFFER_CAPACITY: usize = 16_384;
 

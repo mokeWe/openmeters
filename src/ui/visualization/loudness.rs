@@ -321,7 +321,6 @@ impl<'a, Message> Widget<Message, Theme, iced::Renderer> for LoudnessMeter<'a> {
         let bounds = layout.bounds();
         let params = self.state.render_params();
 
-        // Draw the meter bars via custom primitive
         renderer.draw_primitive(bounds, LoudnessMeterPrimitive::new(params.clone()));
 
         let palette = theme.extended_palette();

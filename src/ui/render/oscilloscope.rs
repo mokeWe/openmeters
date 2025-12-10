@@ -82,7 +82,6 @@ impl OscilloscopePrimitive {
                 })
                 .collect();
 
-            // Build fill vertices (solid, no AA needed)
             let mut fill_vertices = Vec::with_capacity(positions.len() * 2);
             let fill_color = [color[0], color[1], color[2], self.params.fill_alpha];
 
@@ -97,7 +96,6 @@ impl OscilloscopePrimitive {
 
             append_strip(&mut vertices, fill_vertices);
 
-            // Build antialiased line strip using geometry helper
             let line_color = [color[0], color[1], color[2], LINE_ALPHA];
             let line_strip = geometry::build_aa_line_strip(
                 &positions,

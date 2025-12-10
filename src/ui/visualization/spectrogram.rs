@@ -1082,7 +1082,6 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
             renderer.draw_primitive(bounds, SpectrogramPrimitive::new(params));
         }
 
-        // Draw tooltip if cursor is over the widget
         let tooltip_state = tree.state.downcast_ref::<TooltipState>();
         if let Some(cursor_pos) = tooltip_state.cursor
             && bounds.contains(cursor_pos)

@@ -184,13 +184,11 @@ impl WaveformPrimitive {
                 continue;
             }
 
-            // Apply line alpha to all colors
             let line_colors_alpha: Vec<_> = line_colors
                 .iter()
                 .map(|base| [base[0], base[1], base[2], self.params.line_alpha])
                 .collect();
 
-            // Build antialiased line strip using geometry helper
             let line_strip = geometry::build_aa_line_strip_colored(
                 &positions,
                 &line_colors_alpha,

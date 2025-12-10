@@ -159,7 +159,6 @@ impl RoutingManager {
     fn apply_snapshot(&mut self, snapshot: &pw_registry::RegistrySnapshot, log_sink_missing: bool) {
         self.cleanup_stale_nodes(snapshot);
 
-        // Compute and apply desired links
         let desired_links = self.compute_desired_links(snapshot);
         self.ensure_links(desired_links);
 
@@ -195,7 +194,6 @@ impl RoutingManager {
         target: &pw_registry::NodeInfo,
         desired: RouteTarget,
     ) {
-        // Only route if this is a new node or the target has changed
         if self.routed_nodes.get(&node.id) == Some(&desired) {
             return;
         }
@@ -250,10 +248,8 @@ impl RoutingManager {
             return Vec::new();
         };
 
-        // Determine source and target nodes based on capture mode
         let (source_node, target_node) = match (self.capture_mode, self.device_target) {
             (CaptureMode::Applications, _) => {
-                // Forward: openmeters.sink -> default hardware sink
                 self.device_missing_warned = false;
                 let Some(hardware_sink) = self.resolve_default_sink_node(snapshot) else {
                     return Vec::new();
@@ -261,7 +257,6 @@ impl RoutingManager {
                 (openmeters_sink, hardware_sink)
             }
             (CaptureMode::Device, DeviceSelection::Default) => {
-                // Capture from default: default hardware sink -> openmeters.sink
                 self.device_missing_warned = false;
                 let Some(hardware_sink) = self.resolve_default_sink_node(snapshot) else {
                     return Vec::new();
@@ -269,7 +264,6 @@ impl RoutingManager {
                 (hardware_sink, openmeters_sink)
             }
             (CaptureMode::Device, DeviceSelection::Node(id)) => {
-                // Capture from specific node
                 let source = snapshot.nodes.iter().find(|n| n.id == id);
                 match source {
                     Some(node) => {
@@ -290,7 +284,6 @@ impl RoutingManager {
             }
         };
 
-        // Compute port pairs
         let source_ports = source_node.output_ports_for_loopback();
         let target_ports = target_node.input_ports_for_loopback();
 
@@ -328,14 +321,12 @@ impl RoutingManager {
         &mut self,
         snapshot: &'a pw_registry::RegistrySnapshot,
     ) -> Option<&'a pw_registry::NodeInfo> {
-        // Try to resolve from metadata defaults
         if let Some(target) = snapshot.defaults.audio_sink.as_ref()
             && let Some(node) = snapshot.resolve_default_target(target)
         {
             return Some(node);
         }
 
-        // Fall back to cached target
         if let Some((id, label)) = &self.cached_target
             && let Some(node) = snapshot
                 .nodes

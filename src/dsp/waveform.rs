@@ -371,7 +371,6 @@ impl WaveformProcessor {
             self.sample_count += 1;
             self.bucket_elapsed_seconds += sample_period;
 
-            // Flush bucket when period is complete
             if self.bucket_elapsed_seconds
                 >= (self.column_period_seconds as f64 - sample_period * 0.5).max(0.0)
                 && self.sample_count > 0
