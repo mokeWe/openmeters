@@ -95,7 +95,6 @@ impl ModuleSettings {
             VisualKind::WAVEFORM => self.validate::<WaveformSettings>(),
             VisualKind::LOUDNESS => self.validate::<LoudnessSettings>(),
             VisualKind::STEREOMETER => self.validate::<StereometerSettings>(),
-            _ => true,
         }
     }
 

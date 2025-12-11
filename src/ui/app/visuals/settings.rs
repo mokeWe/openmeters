@@ -12,8 +12,6 @@ mod widgets;
 use crate::ui::settings::SettingsHandle;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::Element;
-use iced::widget::text::Wrapping;
-use iced::widget::{container, text};
 
 #[derive(Debug, Clone)]
 pub enum SettingsMessage {
@@ -43,11 +41,6 @@ pub struct ActiveSettings {
 
 impl ActiveSettings {
     pub fn new(pane: Box<dyn ModuleSettingsPane>) -> Self {
-        Self { pane }
-    }
-
-    pub fn unsupported(visual_id: VisualId) -> Self {
-        let pane = Box::new(UnsupportedSettingsPane { visual_id });
         Self { pane }
     }
 
@@ -81,37 +74,7 @@ pub fn create_panel(
         VisualKind::SPECTRUM => Box::new(spectrum::create(visual_id, visual_manager)),
         VisualKind::STEREOMETER => Box::new(stereometer::create(visual_id, visual_manager)),
         VisualKind::WAVEFORM => Box::new(waveform::create(visual_id, visual_manager)),
-        _ => return ActiveSettings::unsupported(visual_id),
     };
 
     ActiveSettings::new(pane)
-}
-
-#[derive(Debug)]
-struct UnsupportedSettingsPane {
-    visual_id: VisualId,
-}
-
-impl ModuleSettingsPane for UnsupportedSettingsPane {
-    fn visual_id(&self) -> VisualId {
-        self.visual_id
-    }
-
-    fn view(&self) -> Element<'_, SettingsMessage> {
-        container(
-            text("No adjustable settings available yet.")
-                .size(14)
-                .wrapping(Wrapping::None),
-        )
-        .clip(true)
-        .into()
-    }
-
-    fn handle(
-        &mut self,
-        _message: &SettingsMessage,
-        _visual_manager: &VisualManagerHandle,
-        _settings: &SettingsHandle,
-    ) {
-    }
 }

@@ -4,75 +4,40 @@ use crate::audio::meter_tap::{self, MeterFormat};
 use crate::dsp::ProcessorUpdate;
 use crate::dsp::oscilloscope::OscilloscopeConfig;
 use crate::dsp::waveform::{MAX_COLUMN_CAPACITY, MIN_COLUMN_CAPACITY};
-use crate::ui::render::spectrogram::SPECTROGRAM_PALETTE_SIZE;
 use crate::ui::settings::{
     LoudnessSettings, ModuleSettings, OscilloscopeSettings, PaletteSettings, SpectrogramSettings,
     SpectrumSettings, StereometerSettings, VisualSettings, WaveformSettings,
 };
 use crate::ui::theme;
-use crate::ui::visualization::loudness::{
-    LOUDNESS_PALETTE_SIZE, LoudnessMeterProcessor, LoudnessMeterState,
-};
+use crate::ui::visualization::loudness::{LoudnessMeterProcessor, LoudnessMeterState};
 use crate::ui::visualization::oscilloscope::{OscilloscopeProcessor, OscilloscopeState};
 use crate::ui::visualization::spectrogram::{SpectrogramProcessor, SpectrogramState};
 use crate::ui::visualization::spectrum::{SpectrumProcessor, SpectrumState};
 use crate::ui::visualization::stereometer::{StereometerProcessor, StereometerState};
 use crate::ui::visualization::waveform::{WaveformProcessor as WaveformUiProcessor, WaveformState};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
-use serde::de::{self, Deserializer};
-use serde::ser::Serializer;
 use serde::{Deserialize, Serialize};
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
-
 /// Identifiers for visual kinds.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct VisualKind(&'static str);
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VisualKind {
+    Loudness,
+    Oscilloscope,
+    Spectrogram,
+    Spectrum,
+    Stereometer,
+    Waveform,
+}
 
 impl VisualKind {
-    pub const LOUDNESS: Self = Self("loudness");
-    pub const OSCILLOSCOPE: Self = Self("oscilloscope");
-    pub const SPECTROGRAM: Self = Self("spectrogram");
-    pub const SPECTRUM: Self = Self("spectrum");
-    pub const STEREOMETER: Self = Self("stereometer");
-    pub const WAVEFORM: Self = Self("waveform");
-}
-
-impl Serialize for VisualKind {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for VisualKind {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let token = String::deserialize(deserializer)?;
-        match token.as_str() {
-            "loudness" => Ok(Self::LOUDNESS),
-            "oscilloscope" => Ok(Self::OSCILLOSCOPE),
-            "spectrogram" => Ok(Self::SPECTROGRAM),
-            "spectrum" => Ok(Self::SPECTRUM),
-            "stereometer" => Ok(Self::STEREOMETER),
-            "waveform" => Ok(Self::WAVEFORM),
-            _ => Err(de::Error::unknown_variant(
-                &token,
-                &[
-                    "loudness",
-                    "oscilloscope",
-                    "spectrogram",
-                    "spectrum",
-                    "stereometer",
-                    "waveform",
-                ],
-            )),
-        }
-    }
+    pub const LOUDNESS: Self = Self::Loudness;
+    pub const OSCILLOSCOPE: Self = Self::Oscilloscope;
+    pub const SPECTROGRAM: Self = Self::Spectrogram;
+    pub const SPECTRUM: Self = Self::Spectrum;
+    pub const STEREOMETER: Self = Self::Stereometer;
+    pub const WAVEFORM: Self = Self::Waveform;
 }
 
 /// Unique identifier for instantiated visual slots.
@@ -99,6 +64,18 @@ pub struct VisualMetadata {
     pub max_width: f32,
 }
 
+impl VisualMetadata {
+    const DEFAULT: Self = Self {
+        display_name: "",
+        preferred_width: 200.0,
+        preferred_height: 200.0,
+        fill_horizontal: true,
+        fill_vertical: true,
+        min_width: 100.0,
+        max_width: f32::INFINITY,
+    };
+}
+
 /// Aggregate snapshot of all visual slots.
 #[derive(Debug, Clone)]
 pub struct VisualSnapshot {
@@ -113,6 +90,18 @@ pub struct VisualSlotSnapshot {
     pub enabled: bool,
     pub metadata: VisualMetadata,
     pub content: VisualContent,
+}
+
+impl From<&VisualEntry> for VisualSlotSnapshot {
+    fn from(entry: &VisualEntry) -> Self {
+        Self {
+            id: entry.id,
+            kind: entry.kind,
+            enabled: entry.enabled,
+            metadata: entry.metadata,
+            content: entry.cached_content.clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -149,7 +138,6 @@ trait VisualModule {
 struct VisualDescriptor {
     kind: VisualKind,
     metadata: VisualMetadata,
-    default_enabled: bool,
     build: fn() -> Box<dyn VisualModule>,
 }
 
@@ -169,98 +157,88 @@ impl VisualEntry {
         Self {
             id,
             kind: descriptor.kind,
-            enabled: descriptor.default_enabled,
+            enabled: false,
             metadata: descriptor.metadata,
             module,
             cached_content,
         }
     }
+
+    fn apply_settings(&mut self, settings: &ModuleSettings) {
+        if let Some(enabled) = settings.enabled {
+            self.enabled = enabled;
+        }
+        self.module.apply_settings(settings);
+        self.cached_content = self.module.content();
+    }
 }
 
-// describe all available visuals here
 const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
     VisualDescriptor {
-        kind: VisualKind::LOUDNESS,
+        kind: VisualKind::Loudness,
         metadata: VisualMetadata {
             display_name: "Loudness Meter",
             preferred_width: 140.0,
             preferred_height: 300.0,
-            fill_horizontal: true,
-            fill_vertical: true,
             min_width: 80.0,
             max_width: 140.0,
+            ..VisualMetadata::DEFAULT
         },
-        default_enabled: false,
         build: build_module::<LoudnessVisual>,
     },
     VisualDescriptor {
-        kind: VisualKind::OSCILLOSCOPE,
+        kind: VisualKind::Oscilloscope,
         metadata: VisualMetadata {
             display_name: "Oscilloscope",
             preferred_width: 220.0,
             preferred_height: 160.0,
-            fill_horizontal: true,
-            fill_vertical: true,
             min_width: 160.0,
-            max_width: f32::INFINITY,
+            ..VisualMetadata::DEFAULT
         },
-        default_enabled: false,
         build: build_module::<OscilloscopeVisual>,
     },
     VisualDescriptor {
-        kind: VisualKind::WAVEFORM,
+        kind: VisualKind::Waveform,
         metadata: VisualMetadata {
             display_name: "Waveform",
             preferred_width: 220.0,
             preferred_height: 180.0,
-            fill_horizontal: true,
-            fill_vertical: true,
             min_width: 220.0,
-            max_width: f32::INFINITY,
+            ..VisualMetadata::DEFAULT
         },
-        default_enabled: false,
         build: build_module::<WaveformVisual>,
     },
     VisualDescriptor {
-        kind: VisualKind::SPECTROGRAM,
+        kind: VisualKind::Spectrogram,
         metadata: VisualMetadata {
             display_name: "Spectrogram",
             preferred_width: 320.0,
             preferred_height: 220.0,
-            fill_horizontal: true,
-            fill_vertical: true,
             min_width: 300.0,
-            max_width: f32::INFINITY,
+            ..VisualMetadata::DEFAULT
         },
-        default_enabled: false,
         build: build_module::<SpectrogramVisual>,
     },
     VisualDescriptor {
-        kind: VisualKind::SPECTRUM,
+        kind: VisualKind::Spectrum,
         metadata: VisualMetadata {
             display_name: "Spectrum analyzer",
             preferred_width: 320.0,
             preferred_height: 180.0,
-            fill_horizontal: true,
-            fill_vertical: true,
             min_width: 320.0,
-            max_width: f32::INFINITY,
+            ..VisualMetadata::DEFAULT
         },
-        default_enabled: false,
         build: build_module::<SpectrumVisual>,
     },
     VisualDescriptor {
-        kind: VisualKind::STEREOMETER,
+        kind: VisualKind::Stereometer,
         metadata: VisualMetadata {
             display_name: "Stereometer",
             preferred_width: 220.0,
             preferred_height: 220.0,
-            fill_horizontal: true,
-            fill_vertical: true,
             min_width: 200.0,
-            max_width: f32::INFINITY,
+            ..VisualMetadata::DEFAULT
         },
-        default_enabled: false,
         build: build_module::<StereometerVisual>,
     },
 ];
@@ -270,6 +248,20 @@ where
     M: VisualModule + Default + 'static,
 {
     Box::new(M::default())
+}
+
+fn resolve_palette<const N: usize>(
+    palette: &Option<PaletteSettings>,
+    default: &[iced::Color; N],
+) -> [iced::Color; N] {
+    palette
+        .as_ref()
+        .and_then(|p| p.to_array::<N>())
+        .unwrap_or(*default)
+}
+
+fn rc_cell<T>(value: T) -> Rc<RefCell<T>> {
+    Rc::new(RefCell::new(value))
 }
 
 struct LoudnessVisual {
@@ -299,15 +291,12 @@ impl VisualModule for LoudnessVisual {
     }
 
     fn apply_settings(&mut self, settings: &ModuleSettings) {
-        if let Some(loudness_settings) = settings.config::<LoudnessSettings>() {
-            self.state
-                .set_modes(loudness_settings.left_mode, loudness_settings.right_mode);
-
-            if let Some(palette) = loudness_settings.palette_array::<LOUDNESS_PALETTE_SIZE>() {
-                self.state.set_palette(&palette);
-            } else {
-                self.state.set_palette(&theme::DEFAULT_LOUDNESS_PALETTE);
-            }
+        if let Some(stored) = settings.config::<LoudnessSettings>() {
+            self.state.set_modes(stored.left_mode, stored.right_mode);
+            self.state.set_palette(&resolve_palette(
+                &stored.palette,
+                &theme::DEFAULT_LOUDNESS_PALETTE,
+            ));
         }
     }
 
@@ -333,7 +322,7 @@ impl Default for OscilloscopeVisual {
                 sample_rate: DEFAULT_SAMPLE_RATE,
                 ..Default::default()
             }),
-            state: Rc::new(RefCell::new(OscilloscopeState::new())),
+            state: rc_cell(OscilloscopeState::new()),
         }
     }
 }
@@ -358,15 +347,12 @@ impl VisualModule for OscilloscopeVisual {
             config.trigger_mode = stored.trigger_mode;
             self.processor.update_config(config);
 
-            let palette = stored
-                .palette
-                .as_ref()
-                .and_then(|p| p.to_array::<{ theme::DEFAULT_OSCILLOSCOPE_PALETTE.len() }>())
-                .unwrap_or(theme::DEFAULT_OSCILLOSCOPE_PALETTE);
-
             let mut state = self.state.borrow_mut();
             state.update_view_settings(stored.persistence, stored.channel_mode);
-            state.set_palette(&palette);
+            state.set_palette(&resolve_palette(
+                &stored.palette,
+                &theme::DEFAULT_OSCILLOSCOPE_PALETTE,
+            ));
         }
     }
 
@@ -398,7 +384,7 @@ impl Default for WaveformVisual {
     fn default() -> Self {
         Self {
             processor: WaveformUiProcessor::new(DEFAULT_SAMPLE_RATE),
-            state: Rc::new(RefCell::new(WaveformState::new())),
+            state: rc_cell(WaveformState::new()),
         }
     }
 }
@@ -423,15 +409,10 @@ impl VisualModule for WaveformVisual {
             stored.apply_to(&mut config);
             self.processor.update_config(config);
             self.ensure_capacity();
-
-            let mut state = self.state.borrow_mut();
-            if let Some(palette) =
-                stored.palette_array::<{ theme::DEFAULT_WAVEFORM_PALETTE.len() }>()
-            {
-                state.set_palette(&palette);
-            } else {
-                state.set_palette(&theme::DEFAULT_WAVEFORM_PALETTE);
-            }
+            self.state.borrow_mut().set_palette(&resolve_palette(
+                &stored.palette,
+                &theme::DEFAULT_WAVEFORM_PALETTE,
+            ));
         }
     }
 
@@ -447,17 +428,16 @@ impl VisualModule for WaveformVisual {
 
 impl WaveformVisual {
     fn ensure_capacity(&mut self) {
+        let target = self
+            .state
+            .borrow()
+            .desired_columns()
+            .clamp(MIN_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY);
         let mut config = self.processor.config();
-        let target = self.target_capacity();
         if config.max_columns != target {
             config.max_columns = target;
             self.processor.update_config(config);
         }
-    }
-
-    fn target_capacity(&self) -> usize {
-        let desired = self.state.borrow().desired_columns();
-        desired.clamp(MIN_COLUMN_CAPACITY, MAX_COLUMN_CAPACITY)
     }
 }
 
@@ -470,7 +450,7 @@ impl Default for SpectrogramVisual {
     fn default() -> Self {
         Self {
             processor: SpectrogramProcessor::new(DEFAULT_SAMPLE_RATE),
-            state: Rc::new(RefCell::new(SpectrogramState::new())),
+            state: rc_cell(SpectrogramState::new()),
         }
     }
 }
@@ -493,13 +473,10 @@ impl VisualModule for SpectrogramVisual {
             let mut config = self.processor.config();
             stored.apply_to(&mut config);
             self.processor.update_config(config);
-
-            let mut state = self.state.borrow_mut();
-            if let Some(palette) = stored.palette_array::<SPECTROGRAM_PALETTE_SIZE>() {
-                state.set_palette(palette);
-            } else {
-                state.set_palette(theme::DEFAULT_SPECTROGRAM_PALETTE);
-            }
+            self.state.borrow_mut().set_palette(resolve_palette(
+                &stored.palette,
+                &theme::DEFAULT_SPECTROGRAM_PALETTE,
+            ));
         }
     }
 
@@ -521,7 +498,7 @@ impl Default for SpectrumVisual {
     fn default() -> Self {
         Self {
             processor: SpectrumProcessor::new(DEFAULT_SAMPLE_RATE),
-            state: Rc::new(RefCell::new(SpectrumState::new())),
+            state: rc_cell(SpectrumState::new()),
         }
     }
 }
@@ -545,12 +522,11 @@ impl VisualModule for SpectrumVisual {
             stored.apply_to(&mut config);
             self.processor.update_config(config);
 
-            let palette = stored
-                .palette_array::<5>()
-                .unwrap_or(theme::DEFAULT_SPECTRUM_PALETTE);
-
             let mut state = self.state.borrow_mut();
-            state.set_palette(&palette);
+            state.set_palette(&resolve_palette(
+                &stored.palette,
+                &theme::DEFAULT_SPECTRUM_PALETTE,
+            ));
 
             let updated = self.processor.config();
             let style = state.style_mut();
@@ -585,7 +561,7 @@ impl Default for StereometerVisual {
     fn default() -> Self {
         Self {
             processor: StereometerProcessor::new(DEFAULT_SAMPLE_RATE),
-            state: Rc::new(RefCell::new(StereometerState::new())),
+            state: rc_cell(StereometerState::new()),
         }
     }
 }
@@ -610,16 +586,10 @@ impl VisualModule for StereometerVisual {
 
             let mut state = self.state.borrow_mut();
             state.update_view_settings(&stored);
-
-            if let Some(palette) = stored
-                .palette
-                .as_ref()
-                .and_then(|p| p.to_array::<{ theme::DEFAULT_STEREOMETER_PALETTE.len() }>())
-            {
-                state.set_palette(&palette);
-            } else {
-                state.set_palette(&theme::DEFAULT_STEREOMETER_PALETTE);
-            }
+            state.set_palette(&resolve_palette(
+                &stored.palette,
+                &theme::DEFAULT_STEREOMETER_PALETTE,
+            ));
         }
     }
 
@@ -645,23 +615,14 @@ pub struct VisualManager {
 impl VisualManager {
     pub fn new() -> Self {
         let mut manager = Self {
-            entries: Vec::new(),
+            entries: Vec::with_capacity(VISUAL_DESCRIPTORS.len()),
             next_id: 1,
         };
-        manager.bootstrap_defaults();
-        manager
-    }
-
-    fn bootstrap_defaults(&mut self) {
-        self.entries.reserve(VISUAL_DESCRIPTORS.len());
         for descriptor in VISUAL_DESCRIPTORS {
-            self.insert_entry(descriptor);
+            let id = VisualId::next(&mut manager.next_id);
+            manager.entries.push(VisualEntry::new(id, descriptor));
         }
-    }
-
-    fn insert_entry(&mut self, descriptor: &VisualDescriptor) {
-        let id = VisualId::next(&mut self.next_id);
-        self.entries.push(VisualEntry::new(id, descriptor));
+        manager
     }
 
     fn entry_mut_by_kind(&mut self, kind: VisualKind) -> Option<&mut VisualEntry> {
@@ -674,17 +635,7 @@ impl VisualManager {
 
     pub fn snapshot(&self) -> VisualSnapshot {
         VisualSnapshot {
-            slots: self
-                .entries
-                .iter()
-                .map(|entry| VisualSlotSnapshot {
-                    id: entry.id,
-                    kind: entry.kind,
-                    enabled: entry.enabled,
-                    metadata: entry.metadata,
-                    content: entry.cached_content.clone(),
-                })
-                .collect(),
+            slots: self.entries.iter().map(VisualSlotSnapshot::from).collect(),
         }
     }
 
@@ -698,17 +649,9 @@ impl VisualManager {
         })
     }
 
-    pub fn apply_module_settings(
-        &mut self,
-        kind: VisualKind,
-        module_settings: &ModuleSettings,
-    ) -> bool {
+    pub fn apply_module_settings(&mut self, kind: VisualKind, settings: &ModuleSettings) -> bool {
         if let Some(entry) = self.entry_mut_by_kind(kind) {
-            if let Some(enabled) = module_settings.enabled {
-                entry.enabled = enabled;
-            }
-            entry.module.apply_settings(module_settings);
-            entry.cached_content = entry.module.content();
+            entry.apply_settings(settings);
             true
         } else {
             false
@@ -726,22 +669,16 @@ impl VisualManager {
     pub fn apply_visual_settings(&mut self, settings: &VisualSettings) {
         for entry in &mut self.entries {
             if let Some(module_settings) = settings.modules.get(&entry.kind) {
-                if let Some(enabled) = module_settings.enabled {
-                    entry.enabled = enabled;
-                }
-                entry.module.apply_settings(module_settings);
-                entry.cached_content = entry.module.content();
+                entry.apply_settings(module_settings);
             }
         }
 
         if !settings.order.is_empty() {
-            let mut ordered_ids = Vec::with_capacity(settings.order.len());
-            for kind in &settings.order {
-                if let Some(entry) = self.entry_by_kind(*kind) {
-                    ordered_ids.push(entry.id);
-                }
-            }
-
+            let ordered_ids: Vec<_> = settings
+                .order
+                .iter()
+                .filter_map(|kind| self.entry_by_kind(*kind).map(|e| e.id))
+                .collect();
             if !ordered_ids.is_empty() {
                 self.reorder(&ordered_ids);
             }
@@ -787,7 +724,7 @@ pub struct VisualManagerHandle {
 impl VisualManagerHandle {
     pub fn new(manager: VisualManager) -> Self {
         Self {
-            inner: Rc::new(RefCell::new(manager)),
+            inner: rc_cell(manager),
         }
     }
 
@@ -834,9 +771,9 @@ mod tests {
                     )
                 });
 
-            assert_eq!(
-                slot.enabled, descriptor.default_enabled,
-                "{} default enabled state mismatch",
+            assert!(
+                !slot.enabled,
+                "{} should be disabled by default",
                 descriptor.metadata.display_name
             );
         }
