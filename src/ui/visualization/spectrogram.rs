@@ -1,5 +1,3 @@
-//! UI wrapper for the spectrogram DSP processor and renderer.
-
 use crate::audio::meter_tap::MeterFormat;
 use crate::dsp::spectrogram::{
     FrequencyScale, SpectrogramColumn, SpectrogramConfig,
@@ -11,75 +9,60 @@ use crate::ui::render::spectrogram::{
     SpectrogramParams, SpectrogramPrimitive,
 };
 use crate::ui::theme;
-use crate::util::audio::DEFAULT_SAMPLE_RATE;
 use crate::util::audio::musical::MusicalNote;
-use crate::util::audio::{hz_to_mel, mel_to_hz};
-use iced::advanced::Renderer as _;
+use crate::util::audio::{DEFAULT_SAMPLE_RATE, hz_to_mel, mel_to_hz};
+use iced::advanced::graphics::text::Paragraph;
 use iced::advanced::renderer::{self, Quad};
-use iced::advanced::text::Renderer as TextRenderer;
+use iced::advanced::text::{self, Paragraph as _, Renderer as TextRenderer};
 use iced::advanced::widget::{Tree, tree};
-use iced::advanced::{Layout, Widget, layout, mouse};
+use iced::advanced::{Layout, Renderer as _, Widget, layout, mouse};
 use iced::{Background, Color, Element, Length, Point, Rectangle, Size};
 use iced_wgpu::primitive::Renderer as _;
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::fmt;
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
 use std::time::Instant;
 
-const DEFAULT_CHANNELS: usize = 2;
-const DEFAULT_DB_FLOOR: f32 = -96.0;
-const DEFAULT_DB_CEILING: f32 = 0.0;
-const PALETTE_STOPS: usize = SPECTROGRAM_PALETTE_SIZE;
-const MIN_INCREMENTAL_UPDATES: u32 = 16;
-
-const TOOLTIP_TEXT_SIZE: f32 = 14.0;
-const TOOLTIP_PADDING: f32 = 8.0;
-const TOOLTIP_OFFSET: f32 = 12.0;
-const TOOLTIP_SHADOW_OFFSET: f32 = 1.0;
-const TOOLTIP_SHADOW_OPACITY: f32 = 0.3;
-
+const DB_FLOOR: f32 = -120.0;
+const DB_CEILING: f32 = 0.0;
 const MAX_TEXTURE_BINS: usize = 8_192;
+const TOOLTIP_SIZE: f32 = 14.0;
+const TOOLTIP_PAD: f32 = 8.0;
 
-static NEXT_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
-
-fn next_instance_id() -> u64 {
-    NEXT_INSTANCE_ID.fetch_add(1, Ordering::Relaxed)
+fn norm_to_freq(inv: f32, nyquist: f32, min_freq: f32, scale: FrequencyScale) -> f32 {
+    match scale {
+        FrequencyScale::Linear => nyquist * inv,
+        FrequencyScale::Logarithmic => min_freq * (nyquist / min_freq).max(1.0).powf(inv),
+        FrequencyScale::Mel => {
+            mel_to_hz(hz_to_mel(min_freq) + (hz_to_mel(nyquist) - hz_to_mel(min_freq)) * inv)
+        }
+    }
 }
+
+static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 pub struct SpectrogramProcessor {
     inner: CoreSpectrogramProcessor,
     channels: usize,
-    cached_sample_rate: f32,
-}
-
-impl fmt::Debug for SpectrogramProcessor {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("SpectrogramProcessor")
-            .field("channels", &self.channels)
-            .field("cached_sample_rate", &self.cached_sample_rate)
-            .finish_non_exhaustive()
-    }
+    sample_rate: f32,
 }
 
 impl SpectrogramProcessor {
     pub fn new(sample_rate: f32) -> Self {
-        let config = SpectrogramConfig {
-            sample_rate,
-            use_reassignment: true,
-            ..Default::default()
-        };
         Self {
-            inner: CoreSpectrogramProcessor::new(config),
-            channels: DEFAULT_CHANNELS,
-            cached_sample_rate: sample_rate,
+            inner: CoreSpectrogramProcessor::new(SpectrogramConfig {
+                sample_rate,
+                use_reassignment: true,
+                ..Default::default()
+            }),
+            channels: 2,
+            sample_rate,
         }
     }
 
-    #[inline]
     pub fn ingest(
         &mut self,
         samples: &[f32],
@@ -88,259 +71,29 @@ impl SpectrogramProcessor {
         if samples.is_empty() {
             return ProcessorUpdate::None;
         }
-
-        let channels = format.channels.max(1);
-        if self.channels != channels {
-            self.channels = channels;
+        self.channels = format.channels.max(1);
+        let rate = format.sample_rate.max(1.0);
+        if (self.sample_rate - rate).abs() > f32::EPSILON {
+            self.sample_rate = rate;
+            let mut cfg = self.inner.config();
+            cfg.sample_rate = rate;
+            self.inner.update_config(cfg);
         }
-
-        let sample_rate = format.sample_rate.max(1.0);
-        if (self.cached_sample_rate - sample_rate).abs() > f32::EPSILON {
-            self.cached_sample_rate = sample_rate;
-            let mut config = self.inner.config();
-            config.sample_rate = sample_rate;
-            self.inner.update_config(config);
-        }
-
-        let block = AudioBlock {
+        self.inner.process_block(&AudioBlock {
             samples,
             channels: self.channels,
-            sample_rate: self.cached_sample_rate,
+            sample_rate: self.sample_rate,
             timestamp: Instant::now(),
-        };
-
-        self.inner.process_block(&block)
+        })
     }
 
     pub fn update_config(&mut self, config: SpectrogramConfig) {
-        self.cached_sample_rate = config.sample_rate;
+        self.sample_rate = config.sample_rate;
         self.inner.update_config(config);
     }
 
     pub fn config(&self) -> SpectrogramConfig {
         self.inner.config()
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct SpectrogramState {
-    buffer: RefCell<SpectrogramBuffer>,
-    style: SpectrogramStyle,
-    palette: [Color; PALETTE_STOPS],
-    palette_cache: RefCell<PaletteCache>,
-    history: VecDeque<SpectrogramColumn>,
-    fft_size: usize,
-    hop_size: usize,
-    sample_rate: f32,
-    frequency_scale: FrequencyScale,
-    history_length: usize,
-    display_bins_hz: Option<Arc<[f32]>>,
-    instance_id: u64,
-}
-
-impl SpectrogramState {
-    pub fn new() -> Self {
-        let style = SpectrogramStyle::default();
-        let palette = theme::DEFAULT_SPECTROGRAM_PALETTE;
-        let default_cfg = SpectrogramConfig::default();
-        let palette_cache = RefCell::new(PaletteCache::new(&style, &palette));
-
-        Self {
-            buffer: RefCell::new(SpectrogramBuffer::new()),
-            style,
-            palette,
-            palette_cache,
-            history: VecDeque::new(),
-            fft_size: default_cfg.fft_size,
-            hop_size: default_cfg.hop_size,
-            sample_rate: default_cfg.sample_rate,
-            frequency_scale: default_cfg.frequency_scale,
-            history_length: default_cfg.history_length,
-            display_bins_hz: None,
-            instance_id: next_instance_id(),
-        }
-    }
-
-    pub fn set_palette(&mut self, palette: [Color; PALETTE_STOPS]) {
-        if self.palette == palette {
-            return;
-        }
-
-        self.palette = palette;
-        self.palette_cache
-            .borrow_mut()
-            .refresh(&self.style, &palette);
-        self.buffer.borrow_mut().mark_dirty();
-    }
-
-    pub fn palette(&self) -> [Color; PALETTE_STOPS] {
-        self.palette
-    }
-
-    pub fn apply_update(&mut self, update: &SpectrogramUpdate) {
-        if update.new_columns.is_empty() && !update.reset {
-            return;
-        }
-
-        let history_length_changed = self.history_length != update.history_length;
-        let fft_size_changed = self.fft_size != update.fft_size;
-        let hop_size_changed = self.hop_size != update.hop_size;
-        let sample_rate_changed = (self.sample_rate - update.sample_rate).abs() > f32::EPSILON;
-
-        let mut needs_rebuild = update.reset
-            || history_length_changed
-            || fft_size_changed
-            || hop_size_changed
-            || sample_rate_changed;
-
-        if update.reset {
-            self.history.clear();
-        }
-
-        let display_bins =
-            Self::validate_display_bins(&update.new_columns, &update.display_bins_hz);
-        let has_display_bins = display_bins.is_some();
-
-        let incoming_height = Self::pending_height(&update.new_columns);
-        let existing_height = Self::history_height(&self.history);
-        if incoming_height
-            .zip(existing_height)
-            .is_some_and(|(incoming, existing)| incoming != existing)
-        {
-            needs_rebuild = true;
-        }
-
-        Self::push_history(
-            &mut self.history,
-            &update.new_columns,
-            update.history_length,
-        );
-
-        self.display_bins_hz = display_bins;
-        let display_bins = self.display_bins_hz.as_deref();
-
-        let desired_height = Self::history_height(&self.history)
-            .map(|len| len as u32)
-            .unwrap_or(0);
-
-        let mut buffer = self.buffer.borrow_mut();
-
-        if !needs_rebuild {
-            needs_rebuild = buffer.requires_rebuild(update, has_display_bins, desired_height);
-        }
-
-        buffer.clear_pending();
-
-        if needs_rebuild {
-            buffer.rebuild_from_history(
-                &self.history,
-                RebuildContext {
-                    style: &self.style,
-                    history_length: update.history_length,
-                    sample_rate: update.sample_rate,
-                    fft_size: update.fft_size,
-                    frequency_scale: update.frequency_scale,
-                    has_display_bins,
-                    display_bins_hz: display_bins,
-                },
-            );
-        } else if !update.new_columns.is_empty() {
-            buffer.append_columns(
-                &update.new_columns,
-                &self.style,
-                has_display_bins,
-                display_bins,
-            );
-        }
-
-        drop(buffer);
-
-        self.history_length = update.history_length;
-        self.fft_size = update.fft_size;
-        self.hop_size = update.hop_size;
-        self.sample_rate = update.sample_rate;
-        self.frequency_scale = update.frequency_scale;
-    }
-
-    pub fn visual_params(&self, bounds: Rectangle) -> Option<SpectrogramParams> {
-        let (palette, background) = self.cached_palette_and_background();
-
-        let mut buffer = self.buffer.borrow_mut();
-
-        let width = buffer.texture_width();
-        let height = buffer.texture_height();
-        let column_count = buffer.column_count();
-
-        if width == 0 || height == 0 || column_count == 0 {
-            buffer.clear_pending();
-            return None;
-        }
-
-        Some(SpectrogramParams {
-            instance_id: self.instance_id,
-            bounds,
-            texture_width: width,
-            texture_height: height,
-            column_count,
-            latest_column: buffer.latest_column(),
-            base_data: buffer.take_base_data(),
-            column_updates: buffer.take_updates(),
-            palette,
-            background,
-            contrast: self.style.contrast,
-        })
-    }
-
-    fn cached_palette_and_background(&self) -> ([[f32; 4]; PALETTE_STOPS], [f32; 4]) {
-        let cache = self.palette_cache.borrow();
-        (cache.palette, cache.background)
-    }
-
-    fn validate_display_bins(
-        columns: &[SpectrogramColumn],
-        bins: &Option<Arc<[f32]>>,
-    ) -> Option<Arc<[f32]>> {
-        let bins = bins.as_ref().filter(|b| !b.is_empty())?;
-        let compatible = columns
-            .iter()
-            .all(|col| col.magnitudes_db.len() == bins.len());
-        compatible.then(|| Arc::clone(bins))
-    }
-
-    fn column_height(column: &SpectrogramColumn) -> usize {
-        column.magnitudes_db.len().min(MAX_TEXTURE_BINS)
-    }
-
-    fn first_height(
-        columns: impl IntoIterator<Item = impl std::borrow::Borrow<SpectrogramColumn>>,
-    ) -> Option<usize> {
-        columns
-            .into_iter()
-            .map(|col| Self::column_height(col.borrow()))
-            .find(|&h| h > 0)
-    }
-
-    fn history_height(history: &VecDeque<SpectrogramColumn>) -> Option<usize> {
-        Self::first_height(history)
-    }
-
-    fn pending_height(columns: &[SpectrogramColumn]) -> Option<usize> {
-        Self::first_height(columns)
-    }
-
-    fn push_history(
-        history: &mut VecDeque<SpectrogramColumn>,
-        columns: &[SpectrogramColumn],
-        capacity: usize,
-    ) {
-        if capacity == 0 {
-            history.clear();
-        } else if !columns.is_empty() {
-            history.extend(columns.iter().cloned());
-            if history.len() > capacity {
-                history.drain(0..history.len() - capacity);
-            }
-        }
     }
 }
 
@@ -357,517 +110,324 @@ impl Default for SpectrogramStyle {
     fn default() -> Self {
         Self {
             background: theme::with_alpha(theme::BG_BASE, 0.0),
-            floor_db: DEFAULT_DB_FLOOR,
-            ceiling_db: DEFAULT_DB_CEILING,
+            floor_db: DB_FLOOR,
+            ceiling_db: DB_CEILING,
             opacity: 0.95,
             contrast: 1.4,
         }
     }
 }
 
-#[derive(Debug, Clone)]
-struct SpectrogramBuffer {
-    capacity: u32,
-    height: u32,
-    values: Vec<f32>,
-    write_index: u32,
-    column_count: u32,
-    pending_base: Option<Arc<Vec<f32>>>,
-    pending_updates: Arc<Vec<SpectrogramColumnUpdate>>,
-    sample_rate: f32,
-    fft_size: usize,
-    frequency_scale: FrequencyScale,
-    row_bin_positions: Arc<Vec<f32>>,
-    row_lower_bins: Arc<Vec<usize>>,
-    row_upper_bins: Arc<Vec<usize>>,
-    row_interp_weights: Arc<Vec<f32>>,
-    has_display_bins: bool,
-    grid_bin_frequencies: Arc<Vec<f32>>,
-    update_buffer_pool: ColumnBufferPool,
+#[derive(Clone, Debug, Default)]
+struct BinMapping {
+    lower: Vec<usize>,
+    upper: Vec<usize>,
+    weight: Vec<f32>,
 }
 
-struct RebuildContext<'a> {
-    style: &'a SpectrogramStyle,
-    history_length: usize,
+impl BinMapping {
+    fn new(
+        height: usize,
+        fft_size: usize,
+        sample_rate: f32,
+        scale: FrequencyScale,
+        passthrough: bool,
+    ) -> Self {
+        if height == 0 {
+            return Self::default();
+        }
+        if passthrough {
+            let idx: Vec<usize> = (0..height).collect();
+            return Self {
+                lower: idx.clone(),
+                upper: idx,
+                weight: vec![0.0; height],
+            };
+        }
+        let (bins, max_bin, denom) = (
+            fft_size / 2 + 1,
+            (fft_size / 2) as f32,
+            (height - 1).max(1) as f32,
+        );
+        let (nyq, min_f) = (
+            (sample_rate / 2.0).max(1.0),
+            (sample_rate / fft_size as f32).max(20.0),
+        );
+        let (mut lower, mut upper, mut weight) = (
+            Vec::with_capacity(height),
+            Vec::with_capacity(height),
+            Vec::with_capacity(height),
+        );
+        for row in 0..height {
+            let pos = ((norm_to_freq(1.0 - row as f32 / denom, nyq, min_f, scale)
+                * fft_size as f32)
+                / sample_rate)
+                .clamp(0.0, max_bin);
+            let lo = pos.floor() as usize;
+            lower.push(lo);
+            upper.push((lo + 1).min(bins - 1));
+            weight.push(pos - lo as f32);
+        }
+        Self {
+            lower,
+            upper,
+            weight,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+struct SpectrogramBuffer {
+    values: Vec<f32>,
+    capacity: u32,
+    height: u32,
+    write_idx: u32,
+    col_count: u32,
+    pending_base: Option<Arc<Vec<f32>>>,
+    pending_cols: Vec<SpectrogramColumnUpdate>,
+    mapping: BinMapping,
+    #[allow(clippy::default_trait_access)]
     sample_rate: f32,
     fft_size: usize,
-    frequency_scale: FrequencyScale,
-    has_display_bins: bool,
-    display_bins_hz: Option<&'a [f32]>,
+    scale: FrequencyScale,
+    display_freqs: Arc<[f32]>,
+    pool: ColumnBufferPool,
 }
 
 impl SpectrogramBuffer {
     fn new() -> Self {
         Self {
-            capacity: 0,
-            height: 0,
-            values: Vec::new(),
-            write_index: 0,
-            column_count: 0,
-            pending_base: None,
-            pending_updates: Arc::new(Vec::new()),
             sample_rate: DEFAULT_SAMPLE_RATE,
-            fft_size: 0,
-            frequency_scale: FrequencyScale::default(),
-            row_bin_positions: Arc::new(Vec::new()),
-            row_lower_bins: Arc::new(Vec::new()),
-            row_upper_bins: Arc::new(Vec::new()),
-            row_interp_weights: Arc::new(Vec::new()),
-            has_display_bins: false,
-            grid_bin_frequencies: Arc::new(Vec::new()),
-            update_buffer_pool: ColumnBufferPool::new(),
+            display_freqs: Arc::from([]),
+            ..Default::default()
         }
     }
 
-    fn texture_width(&self) -> u32 {
-        self.capacity
-    }
-
-    fn texture_height(&self) -> u32 {
-        self.height
-    }
-
-    fn column_count(&self) -> u32 {
-        self.column_count
-    }
-
-    fn has_dimensions(&self) -> bool {
-        self.capacity != 0 && self.height != 0
-    }
-
-    fn column_values(column: &SpectrogramColumn) -> &[f32] {
-        &column.magnitudes_db
-    }
-
-    fn latest_column(&self) -> u32 {
-        if self.column_count == 0 {
-            0
-        } else {
-            (self.write_index + self.capacity - 1) % self.capacity.max(1)
+    fn rebuild(
+        &mut self,
+        history: &VecDeque<SpectrogramColumn>,
+        upd: &SpectrogramUpdate,
+        style: &SpectrogramStyle,
+    ) {
+        (self.pending_base, self.pending_cols) = (None, Vec::new());
+        (self.capacity, self.sample_rate, self.fft_size, self.scale) = (
+            upd.history_length as u32,
+            upd.sample_rate.max(1.0),
+            upd.fft_size.max(1),
+            upd.frequency_scale,
+        );
+        self.height = history
+            .iter()
+            .map(|c| c.magnitudes_db.len().min(MAX_TEXTURE_BINS) as u32)
+            .find(|&h| h > 0)
+            .unwrap_or(0);
+        if self.capacity == 0 || self.height == 0 {
+            (self.values, self.write_idx, self.col_count, self.mapping) =
+                (vec![], 0, 0, BinMapping::default());
+            return;
         }
-    }
-
-    fn take_base_data(&mut self) -> Option<Arc<Vec<f32>>> {
-        self.pending_base.take()
-    }
-
-    fn take_updates(&mut self) -> Vec<SpectrogramColumnUpdate> {
-        if self.pending_updates.is_empty() {
-            Vec::new()
-        } else {
-            let updates = Arc::make_mut(&mut self.pending_updates);
-            std::mem::take(updates)
+        let passthrough = upd.display_bins_hz.as_ref().is_some_and(|b| {
+            !b.is_empty() && history.iter().all(|c| c.magnitudes_db.len() == b.len())
+        });
+        self.display_freqs = upd
+            .display_bins_hz
+            .clone()
+            .filter(|b| passthrough && b.len() >= self.height as usize)
+            .map(|b| Arc::from(&b[..self.height as usize]))
+            .unwrap_or_else(|| Arc::from([]));
+        self.mapping = BinMapping::new(
+            self.height as usize,
+            self.fft_size,
+            self.sample_rate,
+            self.scale,
+            passthrough,
+        );
+        self.values = vec![0.0; self.capacity as usize * self.height as usize];
+        (self.write_idx, self.col_count) = (0, 0);
+        let h = self.height as usize;
+        for col in history {
+            if col.magnitudes_db.len() >= h {
+                self.push_column(&col.magnitudes_db, style);
+            }
         }
-    }
-
-    fn clear_pending(&mut self) {
-        self.pending_base = None;
-        if !self.pending_updates.is_empty() {
-            self.pending_updates = Arc::new(Vec::new());
-        }
-    }
-
-    fn queue_full_refresh(&mut self) {
-        self.clear_pending();
-        if !self.values.is_empty() {
+        if self.col_count > 0 {
             self.pending_base = Some(Arc::new(self.values.clone()));
         }
     }
 
-    fn requires_rebuild(
-        &self,
-        update: &SpectrogramUpdate,
-        has_display_bins: bool,
-        desired_height: u32,
-    ) -> bool {
-        if !self.has_dimensions() {
-            return true;
-        }
-
-        self.has_display_bins != has_display_bins
-            || (desired_height > 0 && self.texture_height() != desired_height)
-            || self.capacity != update.history_length as u32
-            || (self.sample_rate - update.sample_rate).abs() > f32::EPSILON
-            || self.fft_size != update.fft_size
-    }
-
-    fn mark_dirty(&mut self) {
-        if !self.values.is_empty()
-            && (self.pending_base.is_none() || !self.pending_updates.is_empty())
-        {
-            self.queue_full_refresh();
-        } else {
-            self.clear_pending();
-        }
-    }
-
-    fn rebuild_from_history(
-        &mut self,
-        history: &VecDeque<SpectrogramColumn>,
-        params: RebuildContext<'_>,
-    ) {
-        let RebuildContext {
-            style,
-            history_length,
-            sample_rate,
-            fft_size,
-            frequency_scale,
-            has_display_bins,
-            display_bins_hz,
-        } = params;
-
-        self.clear_pending();
-
-        self.capacity = history_length as u32;
-        self.sample_rate = if sample_rate <= 0.0 {
-            DEFAULT_SAMPLE_RATE
-        } else {
-            sample_rate
-        };
-        self.fft_size = fft_size.max(1);
-        self.frequency_scale = frequency_scale;
-        self.has_display_bins = has_display_bins;
-
-        self.height = history
-            .iter()
-            .map(|column| {
-                SpectrogramBuffer::column_values(column)
-                    .len()
-                    .min(MAX_TEXTURE_BINS) as u32
-            })
-            .find(|&h| h > 0)
-            .unwrap_or(0);
-
-        if !self.has_dimensions() {
-            self.values = Vec::new();
-            self.write_index = 0;
-            self.column_count = 0;
-            self.row_bin_positions = Arc::new(Vec::new());
-            self.row_lower_bins = Arc::new(Vec::new());
-            self.row_upper_bins = Arc::new(Vec::new());
-            self.row_interp_weights = Arc::new(Vec::new());
-            self.has_display_bins = false;
-            self.grid_bin_frequencies = Arc::new(Vec::new());
-            self.clear_pending();
+    fn append(&mut self, columns: &[SpectrogramColumn], style: &SpectrogramStyle) {
+        if self.capacity == 0 || self.height == 0 {
             return;
         }
-
-        self.sync_grid_frequencies(display_bins_hz);
-
-        self.values = Vec::with_capacity(self.capacity as usize * self.height as usize);
-        self.values
-            .resize(self.capacity as usize * self.height as usize, 0.0);
-        self.write_index = 0;
-        self.column_count = 0;
-        self.rebuild_row_positions();
-
-        for column in history.iter() {
-            let values = SpectrogramBuffer::column_values(column);
-            if values.len() < self.height as usize {
-                continue;
-            }
-            self.push_column(values, style);
-        }
-
-        if self.column_count > 0 {
-            self.queue_full_refresh();
-        } else {
-            self.clear_pending();
-        }
-    }
-
-    fn append_columns(
-        &mut self,
-        columns: &[SpectrogramColumn],
-        style: &SpectrogramStyle,
-        has_display_bins: bool,
-        display_bins_hz: Option<&[f32]>,
-    ) {
-        if !self.has_dimensions() {
-            return;
-        }
-
-        self.ensure_row_mapping(has_display_bins);
-        self.sync_grid_frequencies(display_bins_hz);
-
-        for column in columns {
-            let values = SpectrogramBuffer::column_values(column);
-
-            if values.len() < self.height as usize {
-                continue;
-            }
-
-            let physical_index = self.push_column(values, style);
-            let start = (physical_index as usize) * (self.height as usize);
-            let mut buffer = self.update_buffer_pool.acquire(self.height as usize);
-            buffer.copy_from_slice(&self.values[start..start + self.height as usize]);
-            let values = Arc::new(ColumnBuffer::new(buffer, self.update_buffer_pool.clone()));
-            Arc::make_mut(&mut self.pending_updates).push(SpectrogramColumnUpdate {
-                column_index: physical_index,
-                values,
+        let h = self.height as usize;
+        for col in columns.iter().filter(|c| c.magnitudes_db.len() >= h) {
+            let idx = self.push_column(&col.magnitudes_db, style);
+            let start = idx as usize * h;
+            let mut buf = self.pool.acquire(h);
+            buf.copy_from_slice(&self.values[start..start + h]);
+            self.pending_cols.push(SpectrogramColumnUpdate {
+                column_index: idx,
+                values: Arc::new(ColumnBuffer::new(buf, self.pool.clone())),
             });
         }
-
-        if self.pending_updates.len() as u32 >= self.max_incremental_updates() {
-            self.queue_full_refresh();
+        if self.pending_cols.len() as u32 >= (self.capacity / 2).max(16) {
+            self.pending_cols.clear();
+            self.pending_base = Some(Arc::new(self.values.clone()));
         }
     }
 
-    fn push_column(&mut self, magnitudes_db: &[f32], style: &SpectrogramStyle) -> u32 {
-        if !self.has_dimensions() || magnitudes_db.is_empty() {
-            return 0;
-        }
-
-        let height = self.height as usize;
-        let column = self.write_index;
-        let start = (column as usize) * height;
-
-        if self.needs_row_sampling_refresh() {
-            self.rebuild_row_positions();
-        }
-
-        if self.values.len() != (self.capacity as usize * height) {
-            self.values.resize(self.capacity as usize * height, 0.0);
-        }
-
-        let inv_range = 1.0 / (style.ceiling_db - style.floor_db).max(f32::EPSILON);
-        let floor_db = style.floor_db;
-        let ceiling_db = style.ceiling_db;
-        let bin_count = magnitudes_db.len();
-        let bin_count_minus_1 = bin_count.saturating_sub(1);
-
-        let lower_bins = self.row_lower_bins.as_slice();
-        let upper_bins = self.row_upper_bins.as_slice();
-        let interp_weights = self.row_interp_weights.as_slice();
-        let output_slice = &mut self.values[start..start + height];
-
-        for row in 0..height {
-            let lower_idx = lower_bins[row].min(bin_count_minus_1);
-            let upper_idx = upper_bins[row].min(bin_count_minus_1);
-            let frac = interp_weights[row];
-
-            let lower_val = magnitudes_db[lower_idx];
-            let upper_val = magnitudes_db[upper_idx];
-            let sample = frac.mul_add(upper_val - lower_val, lower_val);
-
-            let normalized =
-                ((sample.clamp(floor_db, ceiling_db) - floor_db) * inv_range).clamp(0.0, 1.0);
-
-            output_slice[row] = normalized;
-        }
-
-        if self.column_count < self.capacity {
-            self.column_count += 1;
-        }
-        self.write_index = (self.write_index + 1) % self.capacity.max(1);
-        column
-    }
-
-    fn rebuild_row_positions(&mut self) {
-        let height = self.height as usize;
-        if height == 0 {
-            self.row_bin_positions = Arc::new(Vec::new());
-            self.row_lower_bins = Arc::new(Vec::new());
-            self.row_upper_bins = Arc::new(Vec::new());
-            self.row_interp_weights = Arc::new(Vec::new());
-            return;
-        }
-
-        let mut positions = Vec::with_capacity(height);
-        let mut lower_bins = Vec::with_capacity(height);
-        let mut upper_bins = Vec::with_capacity(height);
-        let mut weights = Vec::with_capacity(height);
-
-        if self.has_display_bins {
-            positions.extend((0..height).map(|i| i as f32));
-            lower_bins.extend(0..height);
-            upper_bins.extend(0..height);
-            weights.resize(height, 0.0);
-
-            self.row_bin_positions = Arc::new(positions);
-            self.row_lower_bins = Arc::new(lower_bins);
-            self.row_upper_bins = Arc::new(upper_bins);
-            self.row_interp_weights = Arc::new(weights);
-            return;
-        }
-
-        let bin_count = self.fft_size / 2 + 1;
-        if bin_count == 0 || self.sample_rate <= 0.0 {
-            self.row_bin_positions = Arc::new(Vec::new());
-            self.row_lower_bins = Arc::new(Vec::new());
-            self.row_upper_bins = Arc::new(Vec::new());
-            self.row_interp_weights = Arc::new(Vec::new());
-            return;
-        }
-
-        let max_bin = (bin_count - 1) as f32;
-        let height_denom = (height - 1).max(1) as f32;
-
-        for row in 0..height {
-            let normalized_y = row as f32 / height_denom;
-            let frequency = calculate_frequency(
-                normalized_y,
-                self.sample_rate,
-                self.fft_size,
-                self.frequency_scale,
+    fn push_column(&mut self, mags: &[f32], style: &SpectrogramStyle) -> u32 {
+        let (h, col, n) = (self.height as usize, self.write_idx, mags.len());
+        let inv = 1.0 / (style.ceiling_db - style.floor_db).max(f32::EPSILON);
+        let out = &mut self.values[col as usize * h..(col as usize + 1) * h];
+        for (i, v) in out.iter_mut().enumerate() {
+            let (lo, hi, w) = (
+                self.mapping.lower[i].min(n - 1),
+                self.mapping.upper[i].min(n - 1),
+                self.mapping.weight[i],
             );
-            let bin_position =
-                ((frequency * self.fft_size as f32) / self.sample_rate).clamp(0.0, max_bin);
-
-            positions.push(bin_position);
-            let lower = bin_position.floor() as usize;
-            let upper = (lower + 1).min(bin_count - 1);
-            lower_bins.push(lower);
-            upper_bins.push(upper);
-            weights.push((bin_position - lower as f32).clamp(0.0, 1.0));
+            *v = ((mags[lo] + w * (mags[hi] - mags[lo])).clamp(style.floor_db, style.ceiling_db)
+                - style.floor_db)
+                * inv;
         }
-
-        self.row_bin_positions = Arc::new(positions);
-        self.row_lower_bins = Arc::new(lower_bins);
-        self.row_upper_bins = Arc::new(upper_bins);
-        self.row_interp_weights = Arc::new(weights);
-    }
-
-    fn needs_row_sampling_refresh(&self) -> bool {
-        let height = self.height as usize;
-        self.row_lower_bins.len() != height
-            || self.row_upper_bins.len() != height
-            || self.row_interp_weights.len() != height
-    }
-
-    fn max_incremental_updates(&self) -> u32 {
-        let capacity = self.capacity.max(1);
-        let dynamic = capacity / 2;
-        dynamic.max(MIN_INCREMENTAL_UPDATES)
-    }
-
-    fn ensure_row_mapping(&mut self, has_display_bins: bool) {
-        if !self.has_dimensions() {
-            return;
+        if self.col_count < self.capacity {
+            self.col_count += 1;
         }
-
-        let needs_refresh =
-            self.has_display_bins != has_display_bins || self.needs_row_sampling_refresh();
-        if needs_refresh {
-            self.has_display_bins = has_display_bins;
-            self.rebuild_row_positions();
-        }
+        self.write_idx = (self.write_idx + 1) % self.capacity;
+        col
     }
 
-    fn sync_grid_frequencies(&mut self, display_bins_hz: Option<&[f32]>) {
-        match display_bins_hz {
-            Some(freqs) if !freqs.is_empty() => {
-                let limit = self.height.min(freqs.len() as u32) as usize;
-                let mut new_freqs = Vec::with_capacity(limit);
-                new_freqs.extend_from_slice(&freqs[..limit]);
-                self.grid_bin_frequencies = Arc::new(new_freqs);
-            }
-            _ => {
-                if !self.grid_bin_frequencies.is_empty() {
-                    self.grid_bin_frequencies = Arc::new(Vec::new());
-                }
-            }
+    fn needs_rebuild(&self, upd: &SpectrogramUpdate, new_height: Option<u32>) -> bool {
+        self.capacity == 0
+            || self.height == 0
+            || self.capacity != upd.history_length as u32
+            || new_height.is_some_and(|h| h > 0 && h != self.height)
+            || (self.sample_rate - upd.sample_rate).abs() > f32::EPSILON
+            || self.fft_size != upd.fft_size
+    }
+
+    fn latest_column(&self) -> u32 {
+        if self.col_count == 0 {
+            0
+        } else {
+            (self.write_idx + self.capacity - 1) % self.capacity
         }
     }
 }
 
-fn calculate_frequency(
-    normalized_y: f32,
-    sample_rate: f32,
-    fft_size: usize,
-    scale: FrequencyScale,
-) -> f32 {
-    let nyquist = (sample_rate / 2.0).max(1.0);
-    let inv_y = 1.0 - normalized_y;
-
-    match scale {
-        FrequencyScale::Linear => nyquist * inv_y,
-        FrequencyScale::Logarithmic | FrequencyScale::Mel => {
-            let min_freq = (sample_rate / fft_size as f32).max(20.0);
-
-            if matches!(scale, FrequencyScale::Logarithmic) {
-                let ratio = (nyquist / min_freq).max(1.0);
-                min_freq * ratio.powf(inv_y)
-            } else {
-                let min_mel = hz_to_mel(min_freq);
-                let max_mel = hz_to_mel(nyquist);
-                mel_to_hz(min_mel + (max_mel - min_mel) * inv_y)
-            }
-        }
-    }
+#[derive(Clone, Debug)]
+pub struct SpectrogramState {
+    buffer: RefCell<SpectrogramBuffer>,
+    style: SpectrogramStyle,
+    palette: [Color; SPECTROGRAM_PALETTE_SIZE],
+    history: VecDeque<SpectrogramColumn>,
+    instance_id: u64,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn row_positions_follow_log_profile() {
-        let mut buffer = SpectrogramBuffer::new();
-        buffer.height = 8;
-        buffer.sample_rate = DEFAULT_SAMPLE_RATE;
-        buffer.fft_size = 2048;
-        buffer.rebuild_row_positions();
-
-        assert_eq!(buffer.row_bin_positions.len(), 8);
-        let mut last = f32::INFINITY;
-        for (idx, value) in buffer.row_bin_positions.iter().enumerate() {
-            assert!(
-                value.is_finite(),
-                "row {idx} produced a non-finite bin index"
-            );
-            assert!(
-                *value <= last + 1e-4,
-                "row positions should be non-increasing"
-            );
-            last = *value;
-        }
-
-        let first = buffer.row_bin_positions.first().copied().unwrap();
-        let last = buffer.row_bin_positions.last().copied().unwrap();
-        assert!(first > last, "top row should map to higher-frequency bins");
-    }
-}
-
-#[derive(Debug, Clone)]
-struct PaletteCache {
-    palette: [[f32; 4]; PALETTE_STOPS],
-    background: [f32; 4],
-}
-
-impl PaletteCache {
-    fn new(style: &SpectrogramStyle, palette: &[Color; PALETTE_STOPS]) -> Self {
+impl SpectrogramState {
+    pub fn new() -> Self {
         Self {
-            palette: Self::convert_palette(palette, style.opacity),
-            background: Self::color_with_opacity(style.background, style.opacity),
+            buffer: RefCell::new(SpectrogramBuffer::new()),
+            style: SpectrogramStyle::default(),
+            palette: theme::DEFAULT_SPECTROGRAM_PALETTE,
+            history: VecDeque::new(),
+            instance_id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
         }
     }
 
-    fn refresh(&mut self, style: &SpectrogramStyle, palette: &[Color; PALETTE_STOPS]) {
-        self.palette = Self::convert_palette(palette, style.opacity);
-        self.background = Self::color_with_opacity(style.background, style.opacity);
+    pub fn set_palette(&mut self, palette: [Color; SPECTROGRAM_PALETTE_SIZE]) {
+        if self.palette != palette {
+            self.palette = palette;
+            self.buffer.borrow_mut().pending_base =
+                Some(Arc::new(self.buffer.borrow().values.clone()));
+        }
     }
 
-    fn convert_palette(
-        palette: &[Color; PALETTE_STOPS],
-        opacity: f32,
-    ) -> [[f32; 4]; PALETTE_STOPS] {
-        palette.map(|color| Self::color_with_opacity(color, opacity))
+    pub fn palette(&self) -> [Color; SPECTROGRAM_PALETTE_SIZE] {
+        self.palette
     }
 
-    fn color_with_opacity(color: Color, opacity: f32) -> [f32; 4] {
-        let mut rgba = theme::color_to_rgba(color);
-        rgba[3] *= opacity.clamp(0.0, 1.0);
-        rgba
+    pub fn apply_update(&mut self, upd: &SpectrogramUpdate) {
+        if upd.new_columns.is_empty() && !upd.reset {
+            return;
+        }
+        if upd.reset {
+            self.history.clear();
+        }
+        self.history.extend(upd.new_columns.iter().cloned());
+        if self.history.len() > upd.history_length {
+            self.history
+                .drain(0..self.history.len() - upd.history_length);
+        }
+        let new_h = upd
+            .new_columns
+            .iter()
+            .map(|c| c.magnitudes_db.len().min(MAX_TEXTURE_BINS) as u32)
+            .find(|&h| h > 0);
+        let mut buf = self.buffer.borrow_mut();
+        if upd.reset || buf.needs_rebuild(upd, new_h) {
+            buf.rebuild(&self.history, upd, &self.style);
+        } else if !upd.new_columns.is_empty() {
+            buf.append(&upd.new_columns, &self.style);
+        }
+    }
+
+    pub fn visual_params(&self, bounds: Rectangle) -> Option<SpectrogramParams> {
+        let buf = self.buffer.borrow();
+        if buf.capacity == 0 || buf.height == 0 || buf.col_count == 0 {
+            return None;
+        }
+        let op = self.style.opacity.clamp(0.0, 1.0);
+        let to_rgba = |c: Color| [c.r, c.g, c.b, c.a * op];
+        Some(SpectrogramParams {
+            instance_id: self.instance_id,
+            bounds,
+            texture_width: buf.capacity,
+            texture_height: buf.height,
+            column_count: buf.col_count,
+            latest_column: buf.latest_column(),
+            base_data: buf.pending_base.clone(),
+            column_updates: buf.pending_cols.clone(),
+            palette: self.palette.map(to_rgba),
+            background: to_rgba(self.style.background),
+            contrast: self.style.contrast,
+        })
+    }
+
+    fn frequency_at_y(&self, y: f32, bounds: Rectangle) -> Option<f32> {
+        if bounds.height <= 0.0 || y < bounds.y || y > bounds.y + bounds.height {
+            return None;
+        }
+        let norm = (y - bounds.y) / bounds.height;
+        let buf = self.buffer.borrow();
+        if !buf.display_freqs.is_empty() {
+            return buf
+                .display_freqs
+                .get((norm * buf.display_freqs.len() as f32).floor() as usize)
+                .copied();
+        }
+        if buf.fft_size == 0 || buf.sample_rate <= 0.0 {
+            return None;
+        }
+        let (nyq, min_f) = (
+            (buf.sample_rate / 2.0).max(1.0),
+            (buf.sample_rate / buf.fft_size as f32).max(20.0),
+        );
+        let freq = norm_to_freq(1.0 - norm, nyq, min_f, buf.scale);
+        (freq.is_finite() && freq > 0.0).then_some(freq)
+    }
+
+    fn clear_pending(&self) {
+        let mut buf = self.buffer.borrow_mut();
+        (buf.pending_base, buf.pending_cols) = (None, vec![]);
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 struct TooltipState {
     cursor: Option<Point>,
 }
 
-#[derive(Debug)]
 pub struct Spectrogram<'a> {
     state: &'a RefCell<SpectrogramState>,
 }
@@ -877,132 +437,90 @@ impl<'a> Spectrogram<'a> {
         Self { state }
     }
 
-    fn frequency_at_y(&self, y: f32, bounds: Rectangle) -> Option<f32> {
-        if bounds.height <= 0.0 || !bounds.contains(Point::new(bounds.x, y)) {
-            return None;
-        }
-
-        let normalized_y = (y - bounds.y) / bounds.height;
-        let state = self.state.borrow();
-
-        if let Some(bins) = state.display_bins_hz.as_deref() {
-            let bin_index = (normalized_y * bins.len() as f32).floor() as usize;
-            return bins.get(bin_index).copied();
-        }
-
-        if state.fft_size == 0 || state.sample_rate <= 0.0 {
-            return None;
-        }
-
-        let frequency = calculate_frequency(
-            normalized_y,
-            state.sample_rate,
-            state.fft_size,
-            state.frequency_scale,
-        );
-
-        (frequency.is_finite() && frequency > 0.0).then_some(frequency)
-    }
-
     fn draw_tooltip(
         &self,
         renderer: &mut iced::Renderer,
         theme: &iced::Theme,
         bounds: Rectangle,
-        cursor_pos: Point,
+        cursor: Point,
     ) {
-        use iced::advanced::graphics::text::Paragraph as RenderParagraph;
-        use iced::advanced::text::{self, Paragraph as _};
-
-        let Some(freq_hz) = self.frequency_at_y(cursor_pos.y, bounds) else {
+        let state = self.state.borrow();
+        let Some(freq) = state.frequency_at_y(cursor.y, bounds) else {
             return;
         };
-
-        let tooltip_text = match MusicalNote::from_frequency(freq_hz) {
-            Some(note) => format!("{:.1} Hz | {}", freq_hz, note.format()),
-            None => format!("{:.1} Hz", freq_hz),
-        };
-
-        let text_size = RenderParagraph::with_text(text::Text {
-            content: &tooltip_text,
+        let content = MusicalNote::from_frequency(freq)
+            .map(|n| format!("{:.1} Hz | {}", freq, n.format()))
+            .unwrap_or_else(|| format!("{:.1} Hz", freq));
+        let (font, line_h, align_x, align_y, shaping, wrap) = (
+            iced::Font::default(),
+            text::LineHeight::default(),
+            iced::alignment::Horizontal::Left.into(),
+            iced::alignment::Vertical::Top,
+            text::Shaping::Basic,
+            text::Wrapping::None,
+        );
+        let tsz = Paragraph::with_text(text::Text {
+            content: content.as_str(),
             bounds: Size::INFINITE,
-            size: iced::Pixels(TOOLTIP_TEXT_SIZE),
-            line_height: text::LineHeight::default(),
-            font: iced::Font::default(),
-            align_x: iced::alignment::Horizontal::Left.into(),
-            align_y: iced::alignment::Vertical::Top,
-            shaping: text::Shaping::Basic,
-            wrapping: text::Wrapping::None,
+            size: iced::Pixels(TOOLTIP_SIZE),
+            line_height: line_h,
+            font,
+            align_x,
+            align_y,
+            shaping,
+            wrapping: wrap,
         })
         .min_bounds();
-
-        let tooltip_size = Size::new(
-            text_size.width + TOOLTIP_PADDING * 2.0,
-            text_size.height + TOOLTIP_PADDING * 2.0,
+        let sz = Size::new(
+            tsz.width + TOOLTIP_PAD * 2.0,
+            tsz.height + TOOLTIP_PAD * 2.0,
         );
-
-        let tooltip_x =
-            if cursor_pos.x + TOOLTIP_OFFSET + tooltip_size.width <= bounds.x + bounds.width {
-                cursor_pos.x + TOOLTIP_OFFSET
-            } else {
-                (cursor_pos.x - TOOLTIP_OFFSET - tooltip_size.width).max(bounds.x)
-            };
-
-        let tooltip_y = (cursor_pos.y - tooltip_size.height * 0.5)
-            .clamp(bounds.y, bounds.y + bounds.height - tooltip_size.height);
-
-        let tooltip_bounds = Rectangle::new(Point::new(tooltip_x, tooltip_y), tooltip_size);
-
-        let palette = theme.extended_palette();
-
-        renderer.fill_quad(
-            Quad {
-                bounds: Rectangle::new(
-                    Point::new(
-                        tooltip_bounds.x + TOOLTIP_SHADOW_OFFSET,
-                        tooltip_bounds.y + TOOLTIP_SHADOW_OFFSET,
-                    ),
-                    tooltip_size,
-                ),
-                border: Default::default(),
-                shadow: Default::default(),
-                snap: true,
-            },
-            Background::Color(theme::with_alpha(
-                palette.background.base.color,
-                TOOLTIP_SHADOW_OPACITY,
-            )),
+        let x = if cursor.x + 12.0 + sz.width <= bounds.x + bounds.width {
+            cursor.x + 12.0
+        } else {
+            (cursor.x - 12.0 - sz.width).max(bounds.x)
+        };
+        let tb = Rectangle::new(
+            Point::new(
+                x,
+                (cursor.y - sz.height * 0.5).clamp(bounds.y, bounds.y + bounds.height - sz.height),
+            ),
+            sz,
         );
-
-        renderer.fill_quad(
-            Quad {
-                bounds: tooltip_bounds,
-                border: theme::sharp_border(),
-                shadow: Default::default(),
-                snap: true,
-            },
-            Background::Color(palette.background.strong.color),
+        let pal = theme.extended_palette();
+        let mut q = |b, brd, bg| {
+            renderer.fill_quad(
+                Quad {
+                    bounds: b,
+                    border: brd,
+                    shadow: Default::default(),
+                    snap: true,
+                },
+                Background::Color(bg),
+            )
+        };
+        q(
+            Rectangle::new(Point::new(tb.x + 1.0, tb.y + 1.0), sz),
+            Default::default(),
+            theme::with_alpha(pal.background.base.color, 0.3),
         );
-
-        let text_origin = Point::new(
-            tooltip_bounds.x + TOOLTIP_PADDING,
-            tooltip_bounds.y + TOOLTIP_PADDING,
-        );
+        q(tb, theme::sharp_border(), pal.background.strong.color);
+        let pos = Point::new(tb.x + TOOLTIP_PAD, tb.y + TOOLTIP_PAD);
         renderer.fill_text(
             text::Text {
-                content: tooltip_text,
-                bounds: Size::new(text_size.width, text_size.height),
-                size: iced::Pixels(TOOLTIP_TEXT_SIZE),
-                font: iced::Font::default(),
-                align_x: iced::alignment::Horizontal::Left.into(),
-                align_y: iced::alignment::Vertical::Top,
-                line_height: text::LineHeight::default(),
-                shaping: text::Shaping::Basic,
-                wrapping: text::Wrapping::None,
+                content,
+                bounds: tsz,
+                size: iced::Pixels(TOOLTIP_SIZE),
+                line_height: line_h,
+                font,
+                align_x,
+                align_y,
+                shaping,
+                wrapping: wrap,
             },
-            text_origin,
-            palette.background.base.text,
-            Rectangle::new(text_origin, text_size),
+            pos,
+            pal.background.base.text,
+            Rectangle::new(pos, tsz),
         );
     }
 }
@@ -1011,23 +529,20 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<TooltipState>()
     }
-
     fn state(&self) -> tree::State {
         tree::State::new(TooltipState::default())
     }
-
     fn size(&self) -> Size<Length> {
         Size::new(Length::Fill, Length::Fill)
     }
 
     fn layout(
         &mut self,
-        _tree: &mut Tree,
-        _renderer: &iced::Renderer,
+        _: &mut Tree,
+        _: &iced::Renderer,
         limits: &layout::Limits,
     ) -> layout::Node {
-        let size = limits.resolve(Length::Fill, Length::Fill, Size::new(0.0, 0.0));
-        layout::Node::new(size)
+        layout::Node::new(limits.resolve(Length::Fill, Length::Fill, Size::ZERO))
     }
 
     fn update(
@@ -1035,22 +550,19 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
         tree: &mut Tree,
         event: &iced::Event,
         layout: Layout<'_>,
-        _cursor: mouse::Cursor,
-        _renderer: &iced::Renderer,
-        _clipboard: &mut dyn iced::advanced::Clipboard,
-        _shell: &mut iced::advanced::Shell<'_, Message>,
-        _viewport: &Rectangle,
+        _: mouse::Cursor,
+        _: &iced::Renderer,
+        _: &mut dyn iced::advanced::Clipboard,
+        _: &mut iced::advanced::Shell<'_, Message>,
+        _: &Rectangle,
     ) {
-        let state = tree.state.downcast_mut::<TooltipState>();
-        let bounds = layout.bounds();
-
+        let st = tree.state.downcast_mut::<TooltipState>();
+        let b = layout.bounds();
         match event {
             iced::Event::Mouse(mouse::Event::CursorMoved { position }) => {
-                state.cursor = bounds.contains(*position).then_some(*position);
+                st.cursor = b.contains(*position).then_some(*position)
             }
-            iced::Event::Mouse(mouse::Event::CursorLeft) => {
-                state.cursor = None;
-            }
+            iced::Event::Mouse(mouse::Event::CursorLeft) => st.cursor = None,
             _ => {}
         }
     }
@@ -1060,14 +572,13 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
         tree: &Tree,
         renderer: &mut iced::Renderer,
         theme: &iced::Theme,
-        _style: &renderer::Style,
+        _: &renderer::Style,
         layout: Layout<'_>,
-        _cursor: mouse::Cursor,
-        _viewport: &Rectangle,
+        _: mouse::Cursor,
+        _: &Rectangle,
     ) {
         let bounds = layout.bounds();
         let state = self.state.borrow();
-
         renderer.fill_quad(
             Quad {
                 bounds,
@@ -1077,28 +588,25 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
             },
             Background::Color(state.style.background),
         );
-
-        if let Some(params) = state.visual_params(bounds) {
-            renderer.draw_primitive(bounds, SpectrogramPrimitive::new(params));
+        if let Some(p) = state.visual_params(bounds) {
+            renderer.draw_primitive(bounds, SpectrogramPrimitive::new(p));
         }
-
-        let tooltip_state = tree.state.downcast_ref::<TooltipState>();
-        if let Some(cursor_pos) = tooltip_state.cursor
-            && bounds.contains(cursor_pos)
+        state.clear_pending();
+        drop(state);
+        if let Some(c) = tree.state.downcast_ref::<TooltipState>().cursor
+            && bounds.contains(c)
         {
-            renderer.with_layer(bounds, |renderer| {
-                self.draw_tooltip(renderer, theme, bounds, cursor_pos);
-            });
+            renderer.with_layer(bounds, |r| self.draw_tooltip(r, theme, bounds, c));
         }
     }
 
     fn mouse_interaction(
         &self,
-        _tree: &Tree,
+        _: &Tree,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        _viewport: &Rectangle,
-        _renderer: &iced::Renderer,
+        _: &Rectangle,
+        _: &iced::Renderer,
     ) -> mouse::Interaction {
         if cursor.is_over(layout.bounds()) {
             mouse::Interaction::Crosshair
@@ -1108,9 +616,23 @@ impl<'a, Message> Widget<Message, iced::Theme, iced::Renderer> for Spectrogram<'
     }
 }
 
-pub fn widget<'a, Message>(state: &'a RefCell<SpectrogramState>) -> Element<'a, Message>
-where
-    Message: 'a,
-{
+pub fn widget<'a, Message: 'a>(state: &'a RefCell<SpectrogramState>) -> Element<'a, Message> {
     Element::new(Spectrogram::new(state))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn bin_mapping_log_profile() {
+        let m = BinMapping::new(
+            8,
+            2048,
+            DEFAULT_SAMPLE_RATE,
+            FrequencyScale::Logarithmic,
+            false,
+        );
+        assert_eq!(m.lower.len(), 8);
+        assert!(m.lower[0] as f32 + m.weight[0] > m.lower[7] as f32 + m.weight[7]);
+    }
 }

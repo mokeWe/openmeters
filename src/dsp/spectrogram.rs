@@ -824,7 +824,6 @@ pub struct SpectrogramColumn {
 #[derive(Debug, Clone)]
 pub struct SpectrogramUpdate {
     pub fft_size: usize,
-    pub hop_size: usize,
     pub sample_rate: f32,
     pub frequency_scale: FrequencyScale,
     pub history_length: usize,
@@ -1373,7 +1372,6 @@ impl AudioProcessor for SpectrogramProcessor {
             let reset = std::mem::take(&mut self.pending_reset);
             ProcessorUpdate::Snapshot(SpectrogramUpdate {
                 fft_size: self.fft_size,
-                hop_size: self.config.hop_size,
                 sample_rate: self.config.sample_rate,
                 frequency_scale: self.config.frequency_scale,
                 history_length: self.config.history_length,
