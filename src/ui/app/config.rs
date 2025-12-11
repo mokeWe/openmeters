@@ -5,7 +5,6 @@ use crate::audio::pw_registry::RegistrySnapshot;
 use crate::ui::app::visuals::settings::palette::{PaletteEditor, PaletteEvent};
 use crate::ui::application_row::ApplicationRow;
 use crate::ui::channel_subscription::channel_subscription;
-use crate::ui::hardware_sink::HardwareSinkCache;
 use crate::ui::settings::SettingsHandle;
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualKind, VisualManagerHandle};
@@ -74,7 +73,8 @@ pub struct ConfigPage {
     settings: SettingsHandle,
     preferences: HashMap<u32, bool>,
     applications: Vec<ApplicationRow>,
-    hardware_sink: HardwareSinkCache,
+    hardware_sink_label: String,
+    hardware_sink_last_known: Option<String>,
     registry_ready: bool,
     applications_expanded: bool,
     capture_mode: CaptureMode,
@@ -109,7 +109,8 @@ impl ConfigPage {
             settings,
             preferences: HashMap::new(),
             applications: Vec::new(),
-            hardware_sink: HardwareSinkCache::new(),
+            hardware_sink_label: String::from("(detecting hardware sink...)"),
+            hardware_sink_last_known: None,
             registry_ready: false,
             applications_expanded: false,
             capture_mode,
@@ -307,7 +308,7 @@ impl ConfigPage {
     fn capture_status_label(&self) -> String {
         match self.capture_mode {
             CaptureMode::Applications => {
-                format!("Default hardware sink: {}", self.hardware_sink.label())
+                format!("Default hardware sink: {}", self.hardware_sink_label)
             }
             CaptureMode::Device => format!("Capturing from: {}", self.selected_device_label()),
         }
@@ -358,7 +359,7 @@ impl ConfigPage {
             .find(|opt| opt.1 == self.selected_device)
             .map(|opt| opt.0.clone())
             .unwrap_or_else(|| match self.selected_device {
-                DeviceSelection::Default => format!("Default ({})", self.hardware_sink.label()),
+                DeviceSelection::Default => format!("Default ({})", &self.hardware_sink_label),
                 DeviceSelection::Node(id) => format!("Node #{id}"),
             })
     }
@@ -367,7 +368,7 @@ impl ConfigPage {
         let mut choices = Vec::new();
 
         // Use the cached hardware sink label which has fallback to last known value
-        let default_label = format!("Default sink - {}", self.hardware_sink.label());
+        let default_label = format!("Default sink - {}", &self.hardware_sink_label);
         choices.push(DeviceOption(default_label, DeviceSelection::Default));
 
         let mut nodes: Vec<_> = snapshot
@@ -466,8 +467,21 @@ impl ConfigPage {
         })
     }
 
+    fn update_hardware_sink_label(&mut self, snapshot: &RegistrySnapshot) {
+        let summary = snapshot.describe_default_target(snapshot.defaults.audio_sink.as_ref());
+
+        if summary.display != "(none)" || summary.raw != "(none)" {
+            self.hardware_sink_last_known = Some(summary.display.clone());
+            self.hardware_sink_label = summary.display;
+        } else if let Some(previous) = &self.hardware_sink_last_known {
+            self.hardware_sink_label = previous.clone();
+        } else {
+            self.hardware_sink_label = summary.display;
+        }
+    }
+
     fn apply_snapshot(&mut self, snapshot: RegistrySnapshot) {
-        self.hardware_sink.update(&snapshot);
+        self.update_hardware_sink_label(&snapshot);
         let choices = self.build_device_choices(&snapshot);
         if !choices.iter().any(|opt| opt.1 == self.selected_device) {
             self.selected_device = DeviceSelection::Default;
