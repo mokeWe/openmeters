@@ -137,7 +137,7 @@ pub fn tab_button_style(theme: &Theme, active: bool, status: button::Status) -> 
     let mut base = if active {
         palette.primary.base.color
     } else {
-        mix_colors(palette.background.base.color, Color::WHITE, 0.08)
+        mix_colors(palette.background.base.color, Color::WHITE, 0.2)
     };
     base.a = 1.0;
     button_style(theme, base, status)
