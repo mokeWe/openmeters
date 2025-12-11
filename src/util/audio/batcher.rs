@@ -25,14 +25,6 @@ impl SampleBatcher {
         self.total_samples >= self.target_samples
     }
 
-    pub fn clear(&mut self) {
-        let drained: Vec<_> = self.chunks.drain(..).collect();
-        for chunk in drained {
-            Self::stash_recycle(&mut self.recycle, chunk);
-        }
-        self.total_samples = 0;
-    }
-
     pub fn take(&mut self) -> Option<Vec<f32>> {
         if self.total_samples == 0 {
             return None;

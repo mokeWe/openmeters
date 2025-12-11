@@ -57,7 +57,7 @@ pub fn spawn_registry() -> Result<AudioRegistryHandle> {
         });
     }
 
-    let runtime = RegistryRuntime::new();
+    let runtime = RegistryRuntime::default();
 
     match RUNTIME.set(runtime.clone()) {
         Ok(()) => {
@@ -88,16 +88,8 @@ pub struct AudioRegistryHandle {
 }
 
 impl AudioRegistryHandle {
-    pub fn snapshot(&self) -> RegistrySnapshot {
-        self.runtime.snapshot()
-    }
-
     pub fn subscribe(&self) -> RegistryUpdates {
-        let mut updates = self.runtime.subscribe();
-        if updates.initial.is_none() {
-            updates.initial = Some(self.snapshot());
-        }
-        updates
+        self.runtime.subscribe()
     }
 
     pub fn send_command(&self, command: RegistryCommand) -> bool {
@@ -125,13 +117,6 @@ pub struct RegistryUpdates {
 }
 
 impl RegistryUpdates {
-    pub fn recv(&mut self) -> Option<RegistrySnapshot> {
-        if let Some(snapshot) = self.initial.take() {
-            return Some(snapshot);
-        }
-        self.receiver.recv().ok()
-    }
-
     pub fn recv_timeout(
         &mut self,
         timeout: Duration,
@@ -145,14 +130,6 @@ impl RegistryUpdates {
             Err(mpsc::RecvTimeoutError::Timeout) => Ok(None),
             Err(err) => Err(err),
         }
-    }
-}
-
-impl Iterator for RegistryUpdates {
-    type Item = RegistrySnapshot;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.recv()
     }
 }
 
@@ -217,10 +194,8 @@ pub struct NodeInfo {
     pub name: Option<String>,
     pub description: Option<String>,
     pub media_class: Option<String>,
-    pub media_role: Option<String>,
     pub direction: NodeDirection,
     pub is_virtual: bool,
-    pub parent_device: Option<u32>,
     pub properties: HashMap<String, String>,
     pub ports: Vec<GraphPort>,
 }
@@ -237,9 +212,7 @@ impl NodeInfo {
             .or_else(|| name.clone());
 
         let media_class = props.get(*pw::keys::MEDIA_CLASS).cloned();
-        let media_role = props.get(*pw::keys::MEDIA_ROLE).cloned();
         let direction = derive_node_direction(media_class.as_deref(), &props);
-        let parent_device = props.get("device.id").and_then(|id| id.parse::<u32>().ok());
         let is_virtual = props
             .get("node.virtual")
             .map(|value| value == "true")
@@ -250,10 +223,8 @@ impl NodeInfo {
             name,
             description,
             media_class,
-            media_role,
             direction,
             is_virtual,
-            parent_device,
             properties: props,
             ports: Vec::new(),
         }
@@ -317,22 +288,14 @@ impl NodeInfo {
         F: Fn(&GraphPort) -> bool,
         G: Fn(&GraphPort) -> bool,
     {
-        let primary_ports: Vec<_> = self.ports.iter().filter(|p| primary(p)).cloned().collect();
-        if !primary_ports.is_empty() {
-            return primary_ports;
-        }
+        let try_filter = |pred: &dyn Fn(&GraphPort) -> bool| -> Option<Vec<GraphPort>> {
+            let ports: Vec<_> = self.ports.iter().filter(|p| pred(p)).cloned().collect();
+            (!ports.is_empty()).then_some(ports)
+        };
 
-        let secondary_ports: Vec<_> = self
-            .ports
-            .iter()
-            .filter(|p| secondary(p))
-            .cloned()
-            .collect();
-        if !secondary_ports.is_empty() {
-            return secondary_ports;
-        }
-
-        self.ports.clone()
+        try_filter(&primary)
+            .or_else(|| try_filter(&secondary))
+            .unwrap_or_else(|| self.ports.clone())
     }
 }
 
@@ -372,7 +335,7 @@ impl RegistryState {
 
         if needs_update {
             self.nodes.insert(info.id, info);
-            self.reconcile_defaults();
+            self.metadata_defaults.reconcile_with_nodes(&self.nodes);
             self.bump_serial();
         }
 
@@ -382,9 +345,8 @@ impl RegistryState {
     fn remove_node(&mut self, id: u32) -> bool {
         if let Some(info) = self.nodes.remove(&id) {
             let fallback = info.name.or(info.description);
-            let defaults_changed = self.metadata_defaults.clear_node(id, fallback);
-            if defaults_changed {
-                self.reconcile_defaults();
+            if self.metadata_defaults.clear_node(id, fallback) {
+                self.metadata_defaults.reconcile_with_nodes(&self.nodes);
             }
             self.bump_serial();
             true
@@ -399,25 +361,18 @@ impl RegistryState {
     }
 
     fn upsert_port(&mut self, port: GraphPort) -> bool {
-        let node_id = port.node_id;
-        let port_id = port.port_id;
-        let global_id = port.global_id;
+        let (node_id, port_id, global_id) = (port.node_id, port.port_id, port.global_id);
 
         let Some(node) = self.nodes.get_mut(&node_id) else {
             return false;
         };
 
-        let existing_idx = node.ports.iter().position(|p| p.port_id == port_id);
-
-        let changed = match existing_idx {
-            Some(idx) => {
-                if node.ports[idx] != port {
-                    node.ports[idx] = port;
-                    true
-                } else {
-                    false
-                }
+        let changed = match node.ports.iter().position(|p| p.port_id == port_id) {
+            Some(idx) if node.ports[idx] != port => {
+                node.ports[idx] = port;
+                true
             }
+            Some(_) => false,
             None => {
                 node.ports.push(port);
                 true
@@ -437,13 +392,13 @@ impl RegistryState {
             return false;
         };
 
-        if let Some(node) = self.nodes.get_mut(&node_id) {
-            node.ports.retain(|p| p.port_id != port_id);
-            self.bump_serial();
-            true
-        } else {
-            false
-        }
+        let Some(node) = self.nodes.get_mut(&node_id) else {
+            return false;
+        };
+
+        node.ports.retain(|p| p.port_id != port_id);
+        self.bump_serial();
+        true
     }
 
     fn apply_metadata_property(
@@ -463,7 +418,7 @@ impl RegistryState {
         };
 
         if changed {
-            self.reconcile_defaults();
+            self.metadata_defaults.reconcile_with_nodes(&self.nodes);
             self.bump_serial();
         }
 
@@ -472,7 +427,7 @@ impl RegistryState {
 
     fn clear_metadata_defaults(&mut self, metadata_id: u32) -> bool {
         if self.metadata_defaults.clear_metadata(metadata_id) {
-            self.reconcile_defaults();
+            self.metadata_defaults.reconcile_with_nodes(&self.nodes);
             self.bump_serial();
             true
         } else {
@@ -482,10 +437,6 @@ impl RegistryState {
 
     fn bump_serial(&mut self) {
         self.serial = self.serial.wrapping_add(1);
-    }
-
-    fn reconcile_defaults(&mut self) {
-        self.metadata_defaults.reconcile_with_nodes(&self.nodes);
     }
 }
 
@@ -584,10 +535,6 @@ struct RegistryRuntime {
 }
 
 impl RegistryRuntime {
-    fn new() -> Self {
-        Self::default()
-    }
-
     fn set_command_sender(&self, sender: mpsc::Sender<RegistryCommand>) {
         *self.commands.write() = Some(sender);
     }
@@ -597,17 +544,15 @@ impl RegistryRuntime {
     }
 
     fn send_command(&self, command: RegistryCommand) -> bool {
-        if let Some(sender) = self.commands.read().as_ref() {
-            if sender.send(command).is_err() {
-                warn!("[registry] failed to send command; channel closed");
-                false
-            } else {
-                true
-            }
-        } else {
+        let Some(sender) = self.commands.read().as_ref().cloned() else {
             warn!("[registry] command channel not initialised");
-            false
+            return false;
+        };
+        if sender.send(command).is_err() {
+            warn!("[registry] failed to send command; channel closed");
+            return false;
         }
+        true
     }
 
     fn snapshot(&self) -> RegistrySnapshot {
@@ -909,11 +854,10 @@ fn handle_global_removed(
     runtime: &RegistryRuntime,
     metadata_bindings: &Rc<RefCell<HashMap<u32, MetadataBinding>>>,
 ) {
-    if runtime.mutate(|state| state.remove_port(id)) {
-        return;
-    }
-
-    if runtime.mutate(|state| state.remove_node(id)) {
+    // Try removing as port, then node, then metadata binding
+    if runtime.mutate(|state| state.remove_port(id))
+        || runtime.mutate(|state| state.remove_node(id))
+    {
         return;
     }
 
