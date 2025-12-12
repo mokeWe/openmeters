@@ -1,21 +1,13 @@
-//! page for configuring visuals.
-//! to be ingested into main app as a tab.
-
 use crate::ui::pane_grid::{self, Content as PaneContent, Pane};
 use crate::ui::settings::SettingsHandle;
 use crate::ui::visualization::visual_manager::{
     VisualContent, VisualId, VisualKind, VisualManagerHandle, VisualMetadata, VisualSlotSnapshot,
     VisualSnapshot,
 };
-use crate::ui::visualization::{
-    loudness, oscilloscope, spectrogram, spectrum, stereometer, waveform,
-};
 pub mod settings;
-
 pub use settings::{ActiveSettings, SettingsMessage, create_panel as create_settings_panel};
 
-use iced::alignment::{Horizontal, Vertical};
-use iced::widget::{column, container, mouse_area, text};
+use iced::widget::{container, mouse_area, text};
 use iced::{Element, Length, Subscription, Task};
 use std::collections::HashMap;
 
@@ -23,6 +15,7 @@ use std::collections::HashMap;
 pub enum VisualsMessage {
     PaneDragged(pane_grid::DragEvent),
     PaneContextRequested(Pane),
+    PaneHovered(Option<Pane>),
     SettingsRequested {
         visual_id: VisualId,
         kind: VisualKind,
@@ -39,106 +32,16 @@ struct VisualPane {
 }
 
 impl VisualPane {
-    fn from_snapshot(snapshot: &VisualSlotSnapshot) -> Self {
+    fn from_snapshot(s: &VisualSlotSnapshot) -> Self {
         Self {
-            id: snapshot.id,
-            kind: snapshot.kind,
-            metadata: snapshot.metadata,
-            content: snapshot.content.clone(),
+            id: s.id,
+            kind: s.kind,
+            metadata: s.metadata,
+            content: s.content.clone(),
         }
     }
-
     fn view(&self) -> PaneContent<'_, VisualsMessage> {
-        let content: Element<'_, VisualsMessage> = match &self.content {
-            VisualContent::LoudnessMeter { state } => {
-                let meter = loudness::widget_with_layout(
-                    state,
-                    self.metadata.preferred_width,
-                    self.metadata.preferred_height,
-                );
-                Element::from(
-                    container(meter)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .align_x(Horizontal::Center)
-                        .align_y(Vertical::Bottom),
-                )
-            }
-            VisualContent::Oscilloscope { state } => {
-                let scope = oscilloscope::widget(state);
-                Element::from(
-                    container(scope)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .center_x(Length::Fill),
-                )
-            }
-            VisualContent::Spectrogram { state } => {
-                let spec = spectrogram::widget(state);
-                Element::from(
-                    container(spec)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .center_x(Length::Fill),
-                )
-            }
-            VisualContent::Spectrum { state } => {
-                let spec = spectrum::widget(state);
-                Element::from(
-                    container(spec)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .center_x(Length::Fill),
-                )
-            }
-            VisualContent::Stereometer { state } => {
-                let stereo = stereometer::widget(state);
-                Element::from(
-                    container(stereo)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .center_x(Length::Fill),
-                )
-            }
-            VisualContent::Waveform { state } => {
-                let wave = waveform::widget(state);
-                Element::from(
-                    container(wave)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .center_x(Length::Fill),
-                )
-            }
-        };
-
-        let target_width = self.metadata.preferred_width;
-        let target_height = self.metadata.preferred_height;
-
-        let width = if self.metadata.fill_horizontal {
-            Length::Fill
-        } else {
-            Length::Fixed(target_width)
-        };
-
-        let height = if self.metadata.fill_vertical {
-            Length::Fill
-        } else {
-            Length::Fixed(target_height)
-        };
-
-        let framed = container(content)
-            .width(width)
-            .height(height)
-            .align_x(Horizontal::Center)
-            .align_y(Vertical::Center);
-
-        let element = container(framed)
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .align_x(Horizontal::Center)
-            .align_y(Vertical::Center);
-
-        PaneContent::new(element).with_width_hint(
+        PaneContent::new(self.content.render(self.metadata)).with_width_hint(
             self.metadata.min_width,
             self.metadata.preferred_width,
             self.metadata.max_width,
@@ -152,6 +55,7 @@ pub struct VisualsPage {
     settings: SettingsHandle,
     panes: Option<pane_grid::State<VisualPane>>,
     order: Vec<VisualId>,
+    hovered_pane: Option<Pane>,
 }
 
 impl VisualsPage {
@@ -161,6 +65,7 @@ impl VisualsPage {
             settings,
             panes: None,
             order: Vec::new(),
+            hovered_pane: None,
         };
         page.sync_with_manager();
         page
@@ -172,124 +77,114 @@ impl VisualsPage {
 
     pub fn update(&mut self, message: VisualsMessage) -> Task<VisualsMessage> {
         match message {
-            VisualsMessage::PaneDragged(event) => {
-                if let Some(panes) = self.panes.as_mut()
-                    && let pane_grid::DragEvent::Dropped {
-                        pane,
-                        target: pane_grid::Target::Pane(target),
-                    } = event
-                {
+            VisualsMessage::PaneDragged(pane_grid::DragEvent::Dropped {
+                pane,
+                target: pane_grid::Target::Pane(target),
+            }) => {
+                if let Some(panes) = self.panes.as_mut() {
                     panes.swap(pane, target);
-                    let new_order: Vec<VisualId> = panes.iter().map(|(_, pane)| pane.id).collect();
-                    self.order = new_order.clone();
-                    self.visual_manager.borrow_mut().reorder(&new_order);
-
-                    let kind_order: Vec<VisualKind> =
-                        panes.iter().map(|(_, pane)| pane.kind).collect();
-                    self.settings
-                        .update(|settings| settings.set_visual_order(&kind_order));
+                    self.order = panes.iter().map(|(_, p)| p.id).collect();
+                    self.visual_manager.borrow_mut().reorder(&self.order);
+                    let kinds: Vec<_> = panes.iter().map(|(_, p)| p.kind).collect();
+                    self.settings.update(|s| s.set_visual_order(&kinds));
                 }
             }
+            VisualsMessage::PaneDragged(_) => {}
             VisualsMessage::PaneContextRequested(pane) => {
-                if let Some(panes) = self.panes.as_ref()
-                    && let Some(pane_state) = panes.get(pane)
-                {
+                if let Some(p) = self.panes.as_ref().and_then(|ps| ps.get(pane)) {
                     return Task::done(VisualsMessage::SettingsRequested {
-                        visual_id: pane_state.id,
-                        kind: pane_state.kind,
+                        visual_id: p.id,
+                        kind: p.kind,
                     });
                 }
             }
-            VisualsMessage::SettingsRequested { .. } => {}
-            VisualsMessage::WindowDragRequested => {}
+            VisualsMessage::PaneHovered(pane) => self.hovered_pane = pane,
+            VisualsMessage::SettingsRequested { .. } | VisualsMessage::WindowDragRequested => {}
         }
-
         Task::none()
+    }
+
+    pub fn hovered_visual(&self) -> Option<(VisualId, VisualKind)> {
+        self.panes
+            .as_ref()?
+            .get(self.hovered_pane?)
+            .map(|p| (p.id, p.kind))
     }
 
     pub fn view(&self, controls_visible: bool) -> Element<'_, VisualsMessage> {
         let spacing = if controls_visible { 16.0 } else { 0.0 };
-
-        let body: Element<'_, VisualsMessage> = if let Some(panes) = &self.panes {
-            let mut grid = pane_grid::PaneGrid::new(panes, |_, pane_state| pane_state.view())
-                .width(Length::Fill)
-                .height(Length::Fill)
-                .spacing(spacing)
-                .on_context_request(VisualsMessage::PaneContextRequested);
-
-            if controls_visible {
-                grid = grid.on_drag(VisualsMessage::PaneDragged);
-                container(grid)
-                    .width(Length::Fill)
-                    .height(Length::Fill)
-                    .into()
-            } else {
-                mouse_area(container(grid).width(Length::Fill).height(Length::Fill))
-                    .on_press(VisualsMessage::WindowDragRequested)
-                    .interaction(iced::mouse::Interaction::Grab)
-                    .into()
-            }
-        } else {
-            container(text("enable one or more visual modules to get started"))
+        let Some(panes) = &self.panes else {
+            return container(text("enable one or more visual modules to get started"))
                 .width(Length::Fill)
                 .height(Length::Fill)
                 .center_x(Length::Fill)
                 .center_y(Length::Fill)
-                .into()
+                .into();
         };
 
-        container(column![body].spacing(spacing).width(Length::Fill))
+        let mut grid = pane_grid::PaneGrid::new(panes, |_, p| p.view())
             .width(Length::Fill)
             .height(Length::Fill)
-            .into()
+            .spacing(spacing)
+            .on_context_request(VisualsMessage::PaneContextRequested)
+            .on_hover(VisualsMessage::PaneHovered);
+
+        if controls_visible {
+            grid = grid.on_drag(VisualsMessage::PaneDragged);
+            container(grid)
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .into()
+        } else {
+            mouse_area(container(grid).width(Length::Fill).height(Length::Fill))
+                .on_press(VisualsMessage::WindowDragRequested)
+                .interaction(iced::mouse::Interaction::Grab)
+                .into()
+        }
     }
 
     pub fn sync_with_manager(&mut self) {
-        let snapshot = self.visual_manager.snapshot();
-        self.apply_snapshot(snapshot);
+        self.apply_snapshot_excluding(self.visual_manager.snapshot(), &[]);
     }
 
-    pub fn apply_snapshot(&mut self, snapshot: VisualSnapshot) {
-        let enabled_slots: Vec<_> = snapshot.slots.iter().filter(|slot| slot.enabled).collect();
-        let new_order: Vec<_> = enabled_slots.iter().map(|slot| slot.id).collect();
+    pub fn apply_snapshot_excluding(&mut self, snapshot: VisualSnapshot, exclude: &[VisualId]) {
+        let exclude_set: std::collections::HashSet<_> = exclude.iter().copied().collect();
+        let slots: Vec<_> = snapshot
+            .slots
+            .iter()
+            .filter(|s| s.enabled && !exclude_set.contains(&s.id))
+            .collect();
+        let new_order: Vec<_> = slots.iter().map(|s| s.id).collect();
 
-        if enabled_slots.is_empty() {
+        if slots.is_empty() {
             self.order.clear();
             self.panes = None;
             return;
         }
-
         if self.panes.is_none() || new_order != self.order {
-            self.order = new_order.clone();
-            self.panes = Self::build_panes(&enabled_slots);
+            self.order = new_order;
+            self.panes = Self::build_panes(&slots);
             return;
         }
-
         if let Some(panes) = self.panes.as_mut() {
-            let slot_map: HashMap<VisualId, &VisualSlotSnapshot> =
-                enabled_slots.iter().map(|slot| (slot.id, *slot)).collect();
-
-            panes.for_each_mut(|_, pane_state| {
-                if let Some(slot) = slot_map.get(&pane_state.id) {
-                    pane_state.content = slot.content.clone();
-                    pane_state.metadata = slot.metadata;
+            let map: HashMap<_, _> = slots.iter().map(|s| (s.id, *s)).collect();
+            panes.for_each_mut(|_, p| {
+                if let Some(s) = map.get(&p.id) {
+                    p.content = s.content.clone();
+                    p.metadata = s.metadata;
                 }
             });
         }
     }
 
     fn build_panes(slots: &[&VisualSlotSnapshot]) -> Option<pane_grid::State<VisualPane>> {
-        let mut iter = slots.iter();
-        let first = *iter.next()?;
-
-        let (mut state, mut last_pane) = pane_grid::State::new(VisualPane::from_snapshot(first));
-
-        for slot in iter {
-            if let Some(pane) = state.insert_after(last_pane, VisualPane::from_snapshot(slot)) {
-                last_pane = pane;
+        let (first, rest) = slots.split_first()?;
+        let (mut state, mut last) = pane_grid::State::new(VisualPane::from_snapshot(first));
+        for s in rest {
+            if let Some(p) = state.insert_after(last, VisualPane::from_snapshot(s)) {
+                last = p;
             }
         }
-
         Some(state)
     }
 }

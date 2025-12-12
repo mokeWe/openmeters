@@ -9,13 +9,18 @@ use crate::ui::settings::{
     SpectrumSettings, StereometerSettings, VisualSettings, WaveformSettings,
 };
 use crate::ui::theme;
-use crate::ui::visualization::loudness::{LoudnessMeterProcessor, LoudnessMeterState};
-use crate::ui::visualization::oscilloscope::{OscilloscopeProcessor, OscilloscopeState};
-use crate::ui::visualization::spectrogram::{SpectrogramProcessor, SpectrogramState};
-use crate::ui::visualization::spectrum::{SpectrumProcessor, SpectrumState};
-use crate::ui::visualization::stereometer::{StereometerProcessor, StereometerState};
-use crate::ui::visualization::waveform::{WaveformProcessor as WaveformUiProcessor, WaveformState};
+use crate::ui::visualization::loudness::{self, LoudnessMeterProcessor, LoudnessMeterState};
+use crate::ui::visualization::oscilloscope::{self, OscilloscopeProcessor, OscilloscopeState};
+use crate::ui::visualization::spectrogram::{self, SpectrogramProcessor, SpectrogramState};
+use crate::ui::visualization::spectrum::{self, SpectrumProcessor, SpectrumState};
+use crate::ui::visualization::stereometer::{self, StereometerProcessor, StereometerState};
+use crate::ui::visualization::waveform::{
+    self, WaveformProcessor as WaveformUiProcessor, WaveformState,
+};
 use crate::util::audio::DEFAULT_SAMPLE_RATE;
+use iced::alignment::{Horizontal, Vertical};
+use iced::widget::container;
+use iced::{Element, Length};
 use serde::{Deserialize, Serialize};
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
@@ -124,6 +129,75 @@ pub enum VisualContent {
     Waveform {
         state: Rc<RefCell<WaveformState>>,
     },
+}
+
+impl VisualContent {
+    /// Renders this visual content into an Element, framed according to metadata.
+    pub fn render<M: 'static>(&self, metadata: VisualMetadata) -> Element<'_, M> {
+        let inner: Element<'_, M> = match self {
+            Self::LoudnessMeter { state } => container(loudness::widget_with_layout(
+                state,
+                metadata.preferred_width,
+                metadata.preferred_height,
+            ))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .align_x(Horizontal::Center)
+            .align_y(Vertical::Bottom)
+            .into(),
+            Self::Oscilloscope { state } => container(oscilloscope::widget(state))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .into(),
+            Self::Spectrogram { state } => container(spectrogram::widget(state))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .into(),
+            Self::Spectrum { state } => container(spectrum::widget(state))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .into(),
+            Self::Stereometer { state } => container(stereometer::widget(state))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .into(),
+            Self::Waveform { state } => container(waveform::widget(state))
+                .width(Length::Fill)
+                .height(Length::Fill)
+                .center_x(Length::Fill)
+                .into(),
+        };
+
+        let (w, h) = (
+            if metadata.fill_horizontal {
+                Length::Fill
+            } else {
+                Length::Fixed(metadata.preferred_width)
+            },
+            if metadata.fill_vertical {
+                Length::Fill
+            } else {
+                Length::Fixed(metadata.preferred_height)
+            },
+        );
+
+        container(
+            container(inner)
+                .width(w)
+                .height(h)
+                .align_x(Horizontal::Center)
+                .align_y(Vertical::Center),
+        )
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .align_x(Horizontal::Center)
+        .align_y(Vertical::Center)
+        .into()
+    }
 }
 
 trait VisualModule {
@@ -702,6 +776,23 @@ impl VisualManager {
                 self.entries.swap(position, current_index);
             }
         }
+    }
+
+    /// Moves a visual to a specific index in the order.
+    /// The index is clamped to valid bounds.
+    pub fn restore_position(&mut self, visual_id: VisualId, target_index: usize) {
+        let Some(current_index) = self.entries.iter().position(|e| e.id == visual_id) else {
+            return;
+        };
+
+        let target = target_index.min(self.entries.len().saturating_sub(1));
+
+        if current_index == target {
+            return;
+        }
+
+        let entry = self.entries.remove(current_index);
+        self.entries.insert(target, entry);
     }
 
     pub fn ingest_samples(&mut self, samples: &[f32]) {

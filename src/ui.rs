@@ -4,7 +4,6 @@ pub mod channel_subscription;
 pub mod pane_grid;
 pub mod render;
 pub mod settings;
-pub mod settings_window;
 pub mod theme;
 pub mod visualization;
 

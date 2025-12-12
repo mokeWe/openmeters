@@ -25,6 +25,8 @@ use iced_widget::core::{
 struct Interaction {
     dragging: Option<Pane>,
     hovered: Option<Pane>,
+    /// Pane under cursor (tracked even when not dragging)
+    cursor_over: Option<Pane>,
 }
 
 /// Event emitted when a drag interaction occurs.
@@ -55,6 +57,7 @@ where
     spacing: f32,
     on_drag: Option<Box<dyn Fn(DragEvent) -> Message + 'a>>,
     on_context: Option<Box<dyn Fn(Pane) -> Message + 'a>>,
+    on_hover: Option<Box<dyn Fn(Option<Pane>) -> Message + 'a>>,
 }
 
 impl<'a, Message, Theme, Renderer> PaneGrid<'a, Message, Theme, Renderer>
@@ -79,6 +82,7 @@ where
             spacing: 0.0,
             on_drag: None,
             on_context: None,
+            on_hover: None,
         }
     }
 
@@ -104,6 +108,11 @@ where
 
     pub fn on_context_request(mut self, callback: impl Fn(Pane) -> Message + 'a) -> Self {
         self.on_context = Some(Box::new(callback));
+        self
+    }
+
+    pub fn on_hover(mut self, callback: impl Fn(Option<Pane>) -> Message + 'a) -> Self {
+        self.on_hover = Some(Box::new(callback));
         self
     }
 
@@ -383,8 +392,17 @@ where
                     }
                 }
                 mouse::Event::CursorMoved { position } => {
+                    let pane_under_cursor = self.pane_at(layout, *position);
+
+                    if interaction.cursor_over != pane_under_cursor {
+                        interaction.cursor_over = pane_under_cursor;
+                        if let Some(on_hover) = &self.on_hover {
+                            shell.publish(on_hover(pane_under_cursor));
+                        }
+                    }
+
                     if interaction.dragging.is_some() {
-                        let hovered = self.pane_at(layout, *position);
+                        let hovered = pane_under_cursor;
 
                         if interaction.hovered != hovered {
                             interaction.hovered = hovered;
@@ -419,6 +437,13 @@ where
                     }
 
                     interaction.hovered = None;
+
+                    if interaction.cursor_over.is_some() {
+                        interaction.cursor_over = None;
+                        if let Some(on_hover) = &self.on_hover {
+                            shell.publish(on_hover(None));
+                        }
+                    }
                 }
                 _ => {}
             }

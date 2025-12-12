@@ -6,19 +6,23 @@ pub mod visuals;
 use crate::audio::pw_registry::RegistrySnapshot;
 use crate::ui::channel_subscription::channel_subscription;
 use crate::ui::settings::SettingsHandle;
-use crate::ui::settings_window::{DEFAULT_SETTINGS_SIZE, SettingsWindow};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{
-    VisualId, VisualKind, VisualManager, VisualManagerHandle, VisualSnapshot,
+    VisualContent, VisualId, VisualKind, VisualManager, VisualManagerHandle, VisualMetadata,
+    VisualSnapshot,
 };
 use async_channel::Receiver as AsyncReceiver;
 use config::{ConfigMessage, ConfigPage};
-use visuals::{VisualsMessage, VisualsPage, create_settings_panel};
+use rustc_hash::FxHashMap;
+use visuals::{
+    ActiveSettings, SettingsMessage, VisualsMessage, VisualsPage, create_settings_panel,
+};
 
 use iced::alignment::Horizontal;
+use iced::event::{self, Event};
 use iced::keyboard::{self, Key};
 use iced::widget::text::Wrapping;
-use iced::widget::{button, column, container, mouse_area, row, stack, text};
+use iced::widget::{button, column, container, mouse_area, row, scrollable, stack, text};
 use iced::{Element, Length, Result, Settings, Size, Subscription, Task, daemon, exit, window};
 use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
@@ -27,6 +31,58 @@ pub use config::RoutingCommand;
 
 const APP_PADDING: f32 = 16.0;
 const MIN_WINDOW_SIZE: Size = Size::new(200.0, 150.0);
+
+fn open_window(size: Size, decorations: bool, transparent: bool) -> (window::Id, Task<window::Id>) {
+    window::open(window::Settings {
+        size,
+        min_size: Some(MIN_WINDOW_SIZE),
+        resizable: true,
+        decorations,
+        transparent,
+        ..Default::default()
+    })
+}
+
+fn empty_view<M: 'static>() -> Element<'static, M> {
+    container(text(""))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
+}
+
+#[derive(Debug)]
+struct PopoutWindow {
+    visual_id: VisualId,
+    kind: VisualKind,
+    original_index: usize,
+    cached: Option<(VisualMetadata, VisualContent)>,
+}
+
+impl PopoutWindow {
+    fn sync(&mut self, snapshot: &VisualSnapshot) {
+        self.cached = snapshot
+            .slots
+            .iter()
+            .find(|s| s.id == self.visual_id && s.enabled)
+            .map(|s| (s.metadata, s.content.clone()));
+    }
+
+    fn view(&self) -> Element<'_, VisualsMessage> {
+        let Some((meta, content)) = &self.cached else {
+            return empty_view();
+        };
+        mouse_area(
+            container(content.render(*meta))
+                .width(Length::Fill)
+                .height(Length::Fill),
+        )
+        .on_right_press(VisualsMessage::SettingsRequested {
+            visual_id: self.visual_id,
+            kind: self.kind,
+        })
+        .into()
+    }
+}
 
 #[derive(Clone)]
 pub struct UiConfig {
@@ -79,7 +135,9 @@ struct UiApp {
     overlay_until: Option<std::time::Instant>,
     main_window_id: window::Id,
     main_window_size: Size,
-    settings_window: Option<SettingsWindow>,
+    settings_window: Option<(window::Id, ActiveSettings)>,
+    popout_windows: FxHashMap<window::Id, PopoutWindow>,
+    focused_window: Option<window::Id>,
     exit_warning_until: Option<std::time::Instant>,
 }
 
@@ -97,11 +155,13 @@ enum Message {
     AudioFrame(Vec<f32>),
     ToggleChrome,
     TogglePause,
+    PopOutOrDock,
     QuitRequested,
     ResizeRequested,
     WindowOpened,
     WindowClosed(window::Id),
     WindowResized(window::Id, Size),
+    WindowFocused(window::Id),
     WindowDragged(window::Id),
     SettingsWindow(window::Id, visuals::SettingsMessage),
 }
@@ -158,6 +218,8 @@ impl UiApp {
                 main_window_id,
                 main_window_size: Size::new(420.0, 520.0),
                 settings_window: None,
+                popout_windows: FxHashMap::default(),
+                focused_window: Some(main_window_id),
                 exit_warning_until: None,
             },
             open_main.map(|_| Message::WindowOpened),
@@ -180,6 +242,11 @@ impl UiApp {
         subscriptions
             .push(window::resize_events().map(|(id, size)| Message::WindowResized(id, size)));
 
+        subscriptions.push(event::listen_with(|evt, _status, window_id| match evt {
+            Event::Window(window::Event::Focused) => Some(Message::WindowFocused(window_id)),
+            _ => None,
+        }));
+
         subscriptions.push(keyboard::listen().filter_map(|event| {
             let keyboard::Event::KeyPressed { key, modifiers, .. } = event else {
                 return None;
@@ -189,6 +256,9 @@ impl UiApp {
                     if modifiers.control() && modifiers.shift() && v.eq_ignore_ascii_case("h") =>
                 {
                     Some(Message::ToggleChrome)
+                }
+                Key::Named(keyboard::key::Named::Space) if modifiers.control() => {
+                    Some(Message::PopOutOrDock)
                 }
                 Key::Character(ref v) if modifiers.is_empty() && v.eq_ignore_ascii_case("p") => {
                     Some(Message::TogglePause)
@@ -219,94 +289,154 @@ impl UiApp {
 
     fn open_settings_window(&mut self, visual_id: VisualId, kind: VisualKind) -> Task<Message> {
         let panel = create_settings_panel(visual_id, kind, &self.visual_manager);
-
-        let mut tasks = Vec::new();
-
-        if let Some(existing) = self.settings_window.take() {
-            if existing.panel.visual_id() == visual_id {
-                self.settings_window = Some(SettingsWindow::new(existing.id, panel));
-                return Task::none();
-            }
-            tasks.push(window::close(existing.id));
+        let old = self.settings_window.take();
+        if old
+            .as_ref()
+            .is_some_and(|(_, p)| p.visual_id() == visual_id)
+        {
+            self.settings_window = old.map(|(id, _)| (id, panel));
+            return Task::none();
         }
+        let (id, open) = open_window(Size::new(480.0, 600.0), true, false);
+        self.settings_window = Some((id, panel));
+        if let Some((old_id, _)) = old {
+            Task::batch([window::close(old_id), open.map(|_| Message::WindowOpened)])
+        } else {
+            open.map(|_| Message::WindowOpened)
+        }
+    }
 
-        let (id, open) = window::open(window::Settings {
-            size: DEFAULT_SETTINGS_SIZE,
-            min_size: Some(MIN_WINDOW_SIZE),
-            resizable: true,
-            decorations: true,
-            transparent: false,
-            ..window::Settings::default()
-        });
-
-        self.settings_window = Some(SettingsWindow::new(id, panel));
-        tasks.push(open.map(|_| Message::WindowOpened));
-
-        Task::batch(tasks)
+    fn open_popout_window(&mut self, visual_id: VisualId, kind: VisualKind) -> Task<Message> {
+        if self
+            .popout_windows
+            .values()
+            .any(|w| w.visual_id == visual_id)
+        {
+            return Task::none();
+        }
+        let snapshot = self.visual_manager.snapshot();
+        let Some((idx, slot)) = snapshot
+            .slots
+            .iter()
+            .enumerate()
+            .find(|(_, s)| s.id == visual_id)
+        else {
+            return Task::none();
+        };
+        let size = Size::new(
+            slot.metadata.preferred_width.max(400.0),
+            slot.metadata.preferred_height.max(300.0),
+        );
+        let (id, open) = open_window(size, true, true);
+        let mut popout = PopoutWindow {
+            visual_id,
+            kind,
+            original_index: idx,
+            cached: None,
+        };
+        popout.sync(&snapshot);
+        self.popout_windows.insert(id, popout);
+        open.map(|_| Message::WindowOpened)
     }
 
     fn on_window_closed(&mut self, id: window::Id) -> Task<Message> {
         if id == self.main_window_id {
             return exit();
         }
-
-        if self.settings_window.as_ref().is_some_and(|w| w.id == id) {
+        if self
+            .settings_window
+            .as_ref()
+            .is_some_and(|(wid, _)| *wid == id)
+        {
             self.settings_window = None;
         }
-
+        self.popout_windows.remove(&id);
         Task::none()
     }
 
-    fn sync_settings_window_with_snapshot(
-        &mut self,
-        snapshot: &VisualSnapshot,
-    ) -> Option<Task<Message>> {
-        let settings_window = self.settings_window.as_ref()?;
-        let visual_id = settings_window.panel.visual_id();
+    fn popped_out_ids(&self) -> Vec<VisualId> {
+        self.popout_windows.values().map(|w| w.visual_id).collect()
+    }
 
-        let still_enabled = snapshot
-            .slots
-            .iter()
-            .any(|slot| slot.id == visual_id && slot.enabled);
-
-        if still_enabled {
-            None
+    fn sync_all_windows(&mut self) -> Task<Message> {
+        let snapshot = self.visual_manager.snapshot();
+        let settings_task = if let Some((id, panel)) = &self.settings_window {
+            let invalid = !snapshot
+                .slots
+                .iter()
+                .any(|s| s.id == panel.visual_id() && s.enabled);
+            if invalid {
+                let id = *id;
+                self.settings_window = None;
+                window::close::<Message>(id)
+            } else {
+                Task::none()
+            }
         } else {
-            let id = settings_window.id;
-            self.settings_window = None;
-            Some(window::close::<Message>(id))
+            Task::none()
+        };
+        for p in self.popout_windows.values_mut() {
+            p.sync(&snapshot);
+        }
+        let invalid: Vec<_> = self
+            .popout_windows
+            .iter()
+            .filter_map(|(id, p)| p.cached.is_none().then_some(*id))
+            .collect();
+        self.popout_windows.retain(|_, p| p.cached.is_some());
+        self.visuals_page
+            .apply_snapshot_excluding(snapshot, &self.popped_out_ids());
+        if invalid.is_empty() {
+            settings_task
+        } else {
+            Task::batch([
+                settings_task,
+                Task::batch(invalid.into_iter().map(window::close)),
+            ])
         }
     }
 
     fn title(&self, window: window::Id) -> String {
         if window == self.main_window_id {
-            return "OpenMeters".to_string();
+            return "OpenMeters".into();
         }
-
-        self.settings_window
+        let is_settings = self
+            .settings_window
             .as_ref()
-            .filter(|w| w.id == window)
-            .and_then(|w| {
-                let snapshot = self.visual_manager.snapshot();
-                snapshot
-                    .slots
-                    .iter()
-                    .find(|slot| slot.id == w.panel.visual_id())
-                    .map(|slot| format!("{} settings - OpenMeters", slot.metadata.display_name))
-            })
-            .unwrap_or_else(|| "OpenMeters".to_string())
+            .is_some_and(|(id, _)| *id == window);
+        let vid = self
+            .settings_window
+            .as_ref()
+            .filter(|(id, _)| *id == window)
+            .map(|(_, p)| p.visual_id())
+            .or_else(|| self.popout_windows.get(&window).map(|p| p.visual_id));
+        vid.and_then(|id| {
+            self.visual_manager
+                .snapshot()
+                .slots
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| {
+                    format!(
+                        "{}{} - OpenMeters",
+                        s.metadata.display_name,
+                        if is_settings { " settings" } else { "" }
+                    )
+                })
+        })
+        .unwrap_or_else(|| "OpenMeters".into())
     }
 
     fn theme(&self, window: window::Id) -> iced::Theme {
-        let bg = if window == self.main_window_id {
-            self.settings_handle
-                .borrow()
-                .settings()
-                .background_color
-                .map(|c| c.to_color())
-        } else {
-            None
-        };
+        let bg = (window == self.main_window_id || self.popout_windows.contains_key(&window))
+            .then(|| {
+                self.settings_handle
+                    .borrow()
+                    .settings()
+                    .background_color
+                    .map(|c| c.to_color())
+            })
+            .flatten();
         theme::theme(bg)
     }
 
@@ -318,7 +448,7 @@ impl UiApp {
             .map(Message::Visuals);
         let show_overlay = self
             .overlay_until
-            .map(|deadline| Instant::now() < deadline)
+            .map(|d| Instant::now() < d)
             .unwrap_or(false);
 
         let mut toasts = Vec::new();
@@ -328,153 +458,117 @@ impl UiApp {
         if self.rendering_paused {
             toasts.push("rendering paused (press p to resume)");
         }
-        if let Some(deadline) = self.exit_warning_until
-            && Instant::now() < deadline
-        {
+        if self.exit_warning_until.is_some_and(|d| Instant::now() < d) {
             toasts.push("press q again to exit");
         }
 
-        let toast_bar = if !toasts.is_empty() {
-            let toast_elements: Vec<Element<'_, Message>> = toasts
-                .iter()
-                .map(|msg| container(text(*msg).size(11)).padding([2, 6]).into())
-                .collect();
-            Some(
-                container(row(toast_elements).spacing(12))
-                    .width(Length::Fill)
-                    .align_x(Horizontal::Center),
-            )
-        } else {
+        let toast_bar = if toasts.is_empty() {
             None
+        } else {
+            Some(
+                container(
+                    row(toasts
+                        .iter()
+                        .map(|m| container(text(*m).size(11)).padding([2, 6]).into())
+                        .collect::<Vec<_>>())
+                    .spacing(12),
+                )
+                .width(Length::Fill)
+                .align_x(Horizontal::Center),
+            )
         };
 
-        if self.ui_visible {
-            let mut content = column![].spacing(12);
-
+        let content: Element<'_, Message> = if self.ui_visible {
             let mut tabs = row![
                 tab_button("config", Page::Config, self.current_page),
                 tab_button("visuals", Page::Visuals, self.current_page),
             ]
             .spacing(8)
             .width(Length::Fill);
-
             if !decorations {
                 tabs = tabs.push(drag_handle(Message::WindowDragged(self.main_window_id)));
             }
 
-            let page_content = match self.current_page {
-                Page::Config => {
-                    let content = self.config_page.view().map(Message::Config);
-                    container(content)
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .style(theme::opaque_container)
-                        .into()
-                }
+            let page_content: Element<'_, Message> = match self.current_page {
+                Page::Config => container(self.config_page.view().map(Message::Config))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .style(theme::opaque_container)
+                    .into(),
                 Page::Visuals => visuals,
             };
 
-            content = content.push(tabs).push(
+            let mut inner = column![
+                tabs,
                 container(page_content)
                     .width(Length::Fill)
-                    .height(Length::Fill),
-            );
-
-            if let Some(toast) = toast_bar {
-                content = column![content, toast].spacing(0);
+                    .height(Length::Fill)
+            ]
+            .spacing(12);
+            if let Some(t) = toast_bar {
+                inner = column![inner, t].spacing(0);
             }
-
-            let content = container(content)
+            container(inner)
                 .width(Length::Fill)
                 .height(Length::Fill)
-                .padding(APP_PADDING);
-
-            if !decorations {
-                stack![
-                    content,
-                    container(resize_handle(Message::ResizeRequested))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .align_x(Horizontal::Right)
-                        .align_y(iced::alignment::Vertical::Bottom)
-                        .padding(4)
-                ]
+                .padding(APP_PADDING)
                 .into()
-            } else {
-                content.into()
-            }
         } else {
-            let mut content = column![container(visuals).width(Length::Fill).height(Length::Fill)];
-
-            if let Some(toast) = toast_bar {
-                content = content.push(toast);
+            let mut inner = column![container(visuals).width(Length::Fill).height(Length::Fill)];
+            if let Some(t) = toast_bar {
+                inner = inner.push(t);
             }
-
-            let content = content.spacing(0).width(Length::Fill).height(Length::Fill);
-
-            if !decorations {
-                stack![
-                    content,
-                    container(resize_handle(Message::ResizeRequested))
-                        .width(Length::Fill)
-                        .height(Length::Fill)
-                        .align_x(Horizontal::Right)
-                        .align_y(iced::alignment::Vertical::Bottom)
-                        .padding(4)
-                ]
+            inner
+                .spacing(0)
+                .width(Length::Fill)
+                .height(Length::Fill)
                 .into()
-            } else {
-                content.into()
-            }
+        };
+
+        if decorations {
+            content
+        } else {
+            stack![
+                content,
+                container(resize_handle(Message::ResizeRequested))
+                    .width(Length::Fill)
+                    .height(Length::Fill)
+                    .align_x(Horizontal::Right)
+                    .align_y(iced::alignment::Vertical::Bottom)
+                    .padding(4)
+            ]
+            .into()
         }
     }
 
     fn recreate_windows(&mut self, decorations: bool) -> Task<Message> {
-        let old_main_id = self.main_window_id;
-        let (new_main_id, open_main) = window::open(window::Settings {
-            size: self.main_window_size,
-            min_size: Some(MIN_WINDOW_SIZE),
-            resizable: true,
-            decorations,
-            transparent: true,
-            ..window::Settings::default()
-        });
-        self.main_window_id = new_main_id;
-
-        let settings_task = if let Some(sw) = &self.settings_window {
-            let old_sw_id = sw.id;
-            let visual_id = sw.panel.visual_id();
-
-            let snapshot = self.visual_manager.snapshot();
-            if let Some(slot) = snapshot.slots.iter().find(|s| s.id == visual_id) {
-                let panel = create_settings_panel(visual_id, slot.kind, &self.visual_manager);
-
-                let (new_sw_id, open_sw) = window::open(window::Settings {
-                    size: DEFAULT_SETTINGS_SIZE,
-                    min_size: Some(MIN_WINDOW_SIZE),
-                    resizable: true,
-                    decorations: true,
-                    transparent: false,
-                    ..window::Settings::default()
-                });
-
-                self.settings_window = Some(SettingsWindow::new(new_sw_id, panel));
-
-                Task::batch([
-                    open_sw.map(|_| Message::WindowOpened),
-                    window::close(old_sw_id),
-                ])
-            } else {
-                self.settings_window = None;
-                window::close(old_sw_id)
-            }
-        } else {
-            Task::none()
-        };
-
+        let old_main = self.main_window_id;
+        let (id, open) = open_window(self.main_window_size, decorations, true);
+        self.main_window_id = id;
+        let settings_task = self
+            .settings_window
+            .take()
+            .map(|(old_id, panel)| {
+                let vid = panel.visual_id();
+                let snapshot = self.visual_manager.snapshot();
+                snapshot
+                    .slots
+                    .iter()
+                    .find(|s| s.id == vid)
+                    .map(|s| {
+                        let (nid, nopen) = open_window(Size::new(480.0, 600.0), true, false);
+                        self.settings_window = Some((
+                            nid,
+                            create_settings_panel(vid, s.kind, &self.visual_manager),
+                        ));
+                        Task::batch([nopen.map(|_| Message::WindowOpened), window::close(old_id)])
+                    })
+                    .unwrap_or_else(|| window::close(old_id))
+            })
+            .unwrap_or_else(Task::none);
         Task::batch([
-            open_main.map(|_| Message::WindowOpened),
-            window::close(old_main_id),
+            open.map(|_| Message::WindowOpened),
+            window::close(old_main),
             settings_task,
         ])
     }
@@ -494,15 +588,8 @@ fn update(app: &mut UiApp, message: Message) -> Task<Message> {
             };
 
             let task = app.config_page.update(msg).map(Message::Config);
-            app.visuals_page.sync_with_manager();
-
-            if let Some(close_task) =
-                app.sync_settings_window_with_snapshot(&app.visual_manager.snapshot())
-            {
-                Task::batch([task, window_task, close_task])
-            } else {
-                Task::batch([task, window_task])
-            }
+            let sync_task = app.sync_all_windows();
+            Task::batch([task, window_task, sync_task])
         }
         Message::Visuals(VisualsMessage::SettingsRequested { visual_id, kind }) => {
             app.open_settings_window(visual_id, kind)
@@ -516,6 +603,27 @@ fn update(app: &mut UiApp, message: Message) -> Task<Message> {
         Message::TogglePause => {
             app.rendering_paused = !app.rendering_paused;
             Task::none()
+        }
+        Message::PopOutOrDock => {
+            if let Some(focused) = app.focused_window
+                && let Some(popout) = app.popout_windows.remove(&focused)
+            {
+                app.visual_manager
+                    .borrow_mut()
+                    .restore_position(popout.visual_id, popout.original_index);
+                app.visuals_page
+                    .apply_snapshot_excluding(app.visual_manager.snapshot(), &app.popped_out_ids());
+                return window::close(focused);
+            }
+            if let Some((id, kind)) = app.visuals_page.hovered_visual() {
+                let task = app.open_popout_window(id, kind);
+                let snapshot = app.visual_manager.snapshot();
+                app.visuals_page
+                    .apply_snapshot_excluding(snapshot, &app.popped_out_ids());
+                task
+            } else {
+                Task::none()
+            }
         }
         Message::QuitRequested => {
             let now = Instant::now();
@@ -534,17 +642,8 @@ fn update(app: &mut UiApp, message: Message) -> Task<Message> {
             if app.rendering_paused {
                 return Task::none();
             }
-
-            let snapshot = {
-                let mut manager = app.visual_manager.borrow_mut();
-                manager.ingest_samples(&samples);
-                manager.snapshot()
-            };
-
-            let maybe_close = app.sync_settings_window_with_snapshot(&snapshot);
-            app.visuals_page.apply_snapshot(snapshot);
-
-            maybe_close.unwrap_or_else(Task::none)
+            app.visual_manager.borrow_mut().ingest_samples(&samples);
+            app.sync_all_windows()
         }
         Message::WindowOpened => Task::none(),
         Message::WindowClosed(id) => app.on_window_closed(id),
@@ -554,38 +653,44 @@ fn update(app: &mut UiApp, message: Message) -> Task<Message> {
             }
             Task::none()
         }
+        Message::WindowFocused(id) => {
+            app.focused_window = Some(id);
+            Task::none()
+        }
         Message::WindowDragged(id) => window::drag(id),
         Message::SettingsWindow(id, settings_message) => {
-            if let Some(window) = app.settings_window.as_mut()
-                && window.id == id
+            if let Some((wid, panel)) = app.settings_window.as_mut()
+                && *wid == id
             {
-                window.panel.handle_message(
-                    &settings_message,
-                    &app.visual_manager,
-                    &app.settings_handle,
-                );
+                panel.handle_message(&settings_message, &app.visual_manager, &app.settings_handle);
             }
             Task::none()
         }
     }
 }
 
+fn settings_view(panel: &ActiveSettings) -> Element<'_, SettingsMessage> {
+    container(
+        scrollable(panel.view())
+            .width(Length::Fill)
+            .height(Length::Fill),
+    )
+    .width(Length::Fill)
+    .height(Length::Fill)
+    .padding(16)
+    .style(theme::weak_container)
+    .into()
+}
+
 fn view(app: &UiApp, window: window::Id) -> Element<'_, Message> {
     if window == app.main_window_id {
         app.main_window_view()
-    } else if let Some(settings_window) = app
-        .settings_window
-        .as_ref()
-        .filter(|window_state| window_state.id == window)
-    {
-        settings_window
-            .view()
-            .map(move |msg| Message::SettingsWindow(window, msg))
+    } else if let Some((_, panel)) = app.settings_window.as_ref().filter(|(id, _)| *id == window) {
+        settings_view(panel).map(move |msg| Message::SettingsWindow(window, msg))
+    } else if let Some(popout) = app.popout_windows.get(&window) {
+        popout.view().map(Message::Visuals)
     } else {
-        container(text(""))
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
+        empty_view()
     }
 }
 
