@@ -264,9 +264,9 @@ const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
         kind: VisualKind::Oscilloscope,
         metadata: VisualMetadata {
             display_name: "Oscilloscope",
-            preferred_width: 220.0,
+            preferred_width: 150.0,
             preferred_height: 160.0,
-            min_width: 160.0,
+            min_width: 100.0,
             ..VisualMetadata::DEFAULT
         },
         build: build_module::<OscilloscopeVisual>,
@@ -297,9 +297,9 @@ const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
         kind: VisualKind::Spectrum,
         metadata: VisualMetadata {
             display_name: "Spectrum analyzer",
-            preferred_width: 320.0,
+            preferred_width: 400.0,
             preferred_height: 180.0,
-            min_width: 320.0,
+            min_width: 400.0,
             ..VisualMetadata::DEFAULT
         },
         build: build_module::<SpectrumVisual>,
@@ -308,9 +308,9 @@ const VISUAL_DESCRIPTORS: &[VisualDescriptor] = &[
         kind: VisualKind::Stereometer,
         metadata: VisualMetadata {
             display_name: "Stereometer",
-            preferred_width: 220.0,
+            preferred_width: 150.0,
             preferred_height: 220.0,
-            min_width: 200.0,
+            min_width: 100.0,
             ..VisualMetadata::DEFAULT
         },
         build: build_module::<StereometerVisual>,
