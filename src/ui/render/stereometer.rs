@@ -70,9 +70,9 @@ impl StereometerPrimitive {
 
         for (i, &(l, r)) in self.params.points.iter().enumerate() {
             let alpha = ca * (i + 1) as f32 / n as f32;
-            // Rotate point by theta
-            let rx = l * cos_theta + r * sin_theta;
-            let ry = l * -sin_theta + r * cos_theta;
+            // Rotate (L, R) into display coordinates
+            let rx = r * cos_theta + l * sin_theta;
+            let ry = r * -sin_theta + l * cos_theta;
             let px = cx + rx * radius;
             let py = cy - ry * radius;
             self.build_dot(verts, px, py, [cr, cg, cb, alpha], clip);
@@ -96,14 +96,14 @@ impl StereometerPrimitive {
         let [cr, cg, cb, ca] = self.params.trace_color;
 
         for i in 0..n - 1 {
-            let (x0, y0) = self.params.points[i];
-            let (x1, y1) = self.params.points[i + 1];
+            let (l0, r0) = self.params.points[i];
+            let (l1, r1) = self.params.points[i + 1];
 
-            // Rotate points by theta
-            let rx0 = x0 * cos_theta + y0 * sin_theta;
-            let ry0 = x0 * -sin_theta + y0 * cos_theta;
-            let rx1 = x1 * cos_theta + y1 * sin_theta;
-            let ry1 = x1 * -sin_theta + y1 * cos_theta;
+            // Rotate (L, R)
+            let rx0 = r0 * cos_theta + l0 * sin_theta;
+            let ry0 = r0 * -sin_theta + l0 * cos_theta;
+            let rx1 = r1 * cos_theta + l1 * sin_theta;
+            let ry1 = r1 * -sin_theta + l1 * cos_theta;
 
             let p0 = (
                 cx + rx0.clamp(-1.0, 1.0) * radius,
