@@ -618,17 +618,25 @@ fn draw_grid(r: &mut iced::Renderer, th: &iced::Theme, b: Rectangle, lines: &[(f
                 .flatten()
         })
         .collect();
-    let mut acc = Vec::new();
-    let max_t = cands.iter().map(|c| c.2).max().unwrap_or(0);
-    for tier in 0..=max_t {
-        for (i, c) in cands.iter().enumerate() {
-            if c.2 == tier && !acc.iter().any(|&j: &usize| (cands[j].0 - c.0).abs() < 36.0) {
-                acc.push(i);
-            }
+    let mut acc = Vec::with_capacity(cands.len());
+    let mut indices: Vec<usize> = (0..cands.len()).collect();
+    indices.sort_by_key(|&i| cands[i].2);
+
+    let bounds = |i| {
+        let (x, _, _, sz): (f32, &String, u8, Size) = cands[i];
+        let l =
+            (x - sz.width * 0.5).clamp(b.x + 6.0, (b.x + b.width - 6.0 - sz.width).max(b.x + 6.0));
+        (l, l + sz.width + 6.0)
+    };
+
+    for i in indices {
+        let (l, r) = bounds(i);
+        if !acc.iter().any(|&j| {
+            let (ol, or) = bounds(j);
+            l < or && r > ol
+        }) {
+            acc.push(i);
         }
-    }
-    if acc.is_empty() && !cands.is_empty() {
-        acc.push(0);
     }
     for &i in &acc {
         let (x, lbl, _, sz) = &cands[i];
