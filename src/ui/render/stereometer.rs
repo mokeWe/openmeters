@@ -6,17 +6,14 @@ use iced_wgpu::wgpu;
 use crate::ui::render::common::{ClipTransform, InstanceBuffer, SdfPipeline, SdfVertex};
 use crate::ui::settings::StereometerMode;
 
-const PI: f32 = std::f32::consts::PI;
-const SQRT2_INV: f32 = std::f32::consts::FRAC_1_SQRT_2;
-
 #[derive(Debug, Clone)]
 pub struct StereometerParams {
     pub instance_id: u64,
     pub bounds: Rectangle,
     pub points: Vec<(f32, f32)>,
     pub trace_color: [f32; 4],
-    pub grid_color: [f32; 4],
     pub mode: StereometerMode,
+    pub rotation: i8,
 }
 
 #[derive(Debug)]
@@ -40,7 +37,6 @@ impl StereometerPrimitive {
 
         match self.params.mode {
             StereometerMode::DotCloud => {
-                self.build_grid(&mut verts, cx, cy, radius, &clip);
                 self.build_dots(&mut verts, cx, cy, radius, &clip);
             }
             StereometerMode::Lissajous => {
@@ -51,30 +47,9 @@ impl StereometerPrimitive {
         verts
     }
 
-    fn build_grid(
-        &self,
-        verts: &mut Vec<SdfVertex>,
-        cx: f32,
-        cy: f32,
-        radius: f32,
-        clip: &ClipTransform,
-    ) {
-        let color = self.params.grid_color;
-
-        for &r in &[0.125, 0.25, 0.5, 1.0] {
-            self.build_circle(verts, cx, cy, radius * r, color, clip);
-        }
-
-        for &(dx, dy) in &[
-            (1.0, 0.0),
-            (0.0, 1.0),
-            (SQRT2_INV, SQRT2_INV),
-            (SQRT2_INV, -SQRT2_INV),
-        ] {
-            let p0 = (cx - dx * radius, cy - dy * radius);
-            let p1 = (cx + dx * radius, cy + dy * radius);
-            self.build_line_segment(verts, p0, p1, color, color, clip);
-        }
+    fn rotation_sin_cos(&self) -> (f32, f32) {
+        let theta = (self.params.rotation as f32 - 1.0) * std::f32::consts::FRAC_PI_4;
+        theta.sin_cos()
     }
 
     fn build_dots(
@@ -90,13 +65,16 @@ impl StereometerPrimitive {
             return;
         }
 
-        let scale = radius * SQRT2_INV;
+        let (sin_theta, cos_theta) = self.rotation_sin_cos();
         let [cr, cg, cb, ca] = self.params.trace_color;
 
         for (i, &(l, r)) in self.params.points.iter().enumerate() {
             let alpha = ca * (i + 1) as f32 / n as f32;
-            let px = cx + (r - l) * SQRT2_INV * scale;
-            let py = cy - (l + r) * SQRT2_INV * scale;
+            // Rotate point by theta
+            let rx = l * cos_theta + r * sin_theta;
+            let ry = l * -sin_theta + r * cos_theta;
+            let px = cx + rx * radius;
+            let py = cy - ry * radius;
             self.build_dot(verts, px, py, [cr, cg, cb, alpha], clip);
         }
     }
@@ -114,19 +92,26 @@ impl StereometerPrimitive {
             return;
         }
 
+        let (sin_theta, cos_theta) = self.rotation_sin_cos();
         let [cr, cg, cb, ca] = self.params.trace_color;
 
         for i in 0..n - 1 {
             let (x0, y0) = self.params.points[i];
             let (x1, y1) = self.params.points[i + 1];
 
+            // Rotate points by theta
+            let rx0 = x0 * cos_theta + y0 * sin_theta;
+            let ry0 = x0 * -sin_theta + y0 * cos_theta;
+            let rx1 = x1 * cos_theta + y1 * sin_theta;
+            let ry1 = x1 * -sin_theta + y1 * cos_theta;
+
             let p0 = (
-                cx + x0.clamp(-1.0, 1.0) * radius,
-                cy - y0.clamp(-1.0, 1.0) * radius,
+                cx + rx0.clamp(-1.0, 1.0) * radius,
+                cy - ry0.clamp(-1.0, 1.0) * radius,
             );
             let p1 = (
-                cx + x1.clamp(-1.0, 1.0) * radius,
-                cy - y1.clamp(-1.0, 1.0) * radius,
+                cx + rx1.clamp(-1.0, 1.0) * radius,
+                cy - ry1.clamp(-1.0, 1.0) * radius,
             );
 
             let t0 = i as f32 / (n - 1) as f32;
@@ -140,25 +125,6 @@ impl StereometerPrimitive {
                 [cr, cg, cb, ca * t1],
                 clip,
             );
-        }
-    }
-
-    fn build_circle(
-        &self,
-        verts: &mut Vec<SdfVertex>,
-        cx: f32,
-        cy: f32,
-        r: f32,
-        color: [f32; 4],
-        clip: &ClipTransform,
-    ) {
-        const SEGMENTS: usize = 64;
-        for i in 0..SEGMENTS {
-            let a0 = (i as f32 / SEGMENTS as f32) * 2.0 * PI;
-            let a1 = ((i + 1) as f32 / SEGMENTS as f32) * 2.0 * PI;
-            let p0 = (cx + a0.cos() * r, cy + a0.sin() * r);
-            let p1 = (cx + a1.cos() * r, cy + a1.sin() * r);
-            self.build_line_segment(verts, p0, p1, color, color, clip);
         }
     }
 

@@ -595,10 +595,13 @@ impl VisualModule for StereometerVisual {
 
     fn export_settings(&self) -> Option<ModuleSettings> {
         let state = self.state.borrow();
-        let (persistence, mode) = state.view_settings();
+        let (persistence, mode, scale, scale_range, rotation) = state.view_settings();
         let mut snapshot = StereometerSettings::from_config(&self.processor.config());
         snapshot.persistence = persistence;
         snapshot.mode = mode;
+        snapshot.scale = scale;
+        snapshot.scale_range = scale_range;
+        snapshot.rotation = rotation;
         snapshot.palette = PaletteSettings::maybe_from_colors(
             &state.palette(),
             &theme::DEFAULT_STEREOMETER_PALETTE,

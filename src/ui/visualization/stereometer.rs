@@ -6,7 +6,7 @@ use crate::dsp::stereometer::{
 };
 use crate::dsp::{AudioBlock, AudioProcessor, ProcessorUpdate, Reconfigurable};
 use crate::ui::render::stereometer::{StereometerParams, StereometerPrimitive};
-use crate::ui::settings::{StereometerMode, StereometerSettings};
+use crate::ui::settings::{StereometerMode, StereometerScale, StereometerSettings};
 use crate::ui::theme;
 use iced::advanced::Renderer as _;
 use iced::advanced::renderer::{self, Quad};
@@ -73,9 +73,11 @@ pub struct StereometerState {
     snapshot: StereometerSnapshot,
     display_points: Vec<(f32, f32)>,
     trace_color: Color,
-    grid_color: Color,
     persistence: f32,
     mode: StereometerMode,
+    scale: StereometerScale,
+    scale_range: f32,
+    rotation: i8,
     instance_id: u64,
 }
 
@@ -85,9 +87,11 @@ impl StereometerState {
             snapshot: StereometerSnapshot::default(),
             display_points: Vec::new(),
             trace_color: theme::DEFAULT_STEREOMETER_PALETTE[0],
-            grid_color: theme::DEFAULT_STEREOMETER_PALETTE[1],
             persistence: 0.0,
             mode: StereometerMode::default(),
+            scale: StereometerScale::default(),
+            scale_range: 15.0,
+            rotation: 0,
             instance_id: next_instance_id(),
         }
     }
@@ -95,6 +99,9 @@ impl StereometerState {
     pub fn update_view_settings(&mut self, settings: &StereometerSettings) {
         self.persistence = settings.persistence.clamp(0.0, 0.9);
         self.mode = settings.mode;
+        self.scale = settings.scale;
+        self.scale_range = settings.scale_range;
+        self.rotation = settings.rotation.clamp(-4, 4);
     }
 
     pub fn set_palette(&mut self, palette: &[Color]) {
@@ -102,14 +109,10 @@ impl StereometerState {
             .first()
             .copied()
             .unwrap_or(theme::DEFAULT_STEREOMETER_PALETTE[0]);
-        self.grid_color = palette
-            .get(1)
-            .copied()
-            .unwrap_or(theme::DEFAULT_STEREOMETER_PALETTE[1]);
     }
 
-    pub fn palette(&self) -> [Color; 2] {
-        [self.trace_color, self.grid_color]
+    pub fn palette(&self) -> [Color; 1] {
+        [self.trace_color]
     }
 
     pub fn apply_snapshot(&mut self, snapshot: &StereometerSnapshot) {
@@ -124,13 +127,34 @@ impl StereometerState {
                 .resize(snapshot.xy_points.len(), (0.0, 0.0));
         }
 
+        let apply_scale = |x: f32, y: f32| -> (f32, f32) {
+            match self.scale {
+                StereometerScale::Linear => (x, y),
+                StereometerScale::Exponential => {
+                    let length = x.hypot(y);
+                    if length < f32::EPSILON {
+                        return (0.0, 0.0);
+                    }
+                    let min_val = (-self.scale_range).exp2();
+                    let inv_log_scale = -1.0 / self.scale_range;
+                    let log_len = length.max(min_val).log2();
+                    let t = (log_len + self.scale_range) * inv_log_scale;
+                    let k = t / length;
+                    (k * x, k * y)
+                }
+            }
+        };
+
         if self.persistence <= f32::EPSILON {
-            self.display_points.copy_from_slice(&snapshot.xy_points);
+            for (dest, src) in self.display_points.iter_mut().zip(&snapshot.xy_points) {
+                *dest = apply_scale(src.0, src.1);
+            }
         } else {
             let fresh = 1.0 - self.persistence;
             for (current, incoming) in self.display_points.iter_mut().zip(&snapshot.xy_points) {
-                current.0 = current.0 * self.persistence + incoming.0 * fresh;
-                current.1 = current.1 * self.persistence + incoming.1 * fresh;
+                let scaled = apply_scale(incoming.0, incoming.1);
+                current.0 = current.0 * self.persistence + scaled.0 * fresh;
+                current.1 = current.1 * self.persistence + scaled.1 * fresh;
             }
         }
 
@@ -138,8 +162,8 @@ impl StereometerState {
         self.snapshot.correlation = snapshot.correlation;
     }
 
-    pub fn view_settings(&self) -> (f32, StereometerMode) {
-        (self.persistence, self.mode)
+    pub fn view_settings(&self) -> (f32, StereometerMode, StereometerScale, f32, i8) {
+        (self.persistence, self.mode, self.scale, self.scale_range, self.rotation)
     }
 
     fn visual_params(&self, bounds: Rectangle) -> Option<StereometerParams> {
@@ -152,8 +176,8 @@ impl StereometerState {
             bounds,
             points: self.snapshot.xy_points.clone(),
             trace_color: theme::color_to_rgba(self.trace_color),
-            grid_color: theme::color_to_rgba(self.grid_color),
             mode: self.mode,
+            rotation: self.rotation,
         })
     }
 }

@@ -51,10 +51,7 @@ pub const DEFAULT_WAVEFORM_PALETTE: [Color; 5] = [
 
 pub const DEFAULT_OSCILLOSCOPE_PALETTE: [Color; 1] = [Color::from_rgba(1.000, 1.000, 1.000, 1.0)];
 
-pub const DEFAULT_STEREOMETER_PALETTE: [Color; 2] = [
-    Color::from_rgba(1.000, 1.000, 1.000, 1.0),
-    Color::from_rgba(0.537, 0.547, 0.566, 1.0),
-];
+pub const DEFAULT_STEREOMETER_PALETTE: [Color; 1] = [Color::from_rgba(1.000, 1.000, 1.000, 1.0)];
 
 pub const DEFAULT_LOUDNESS_PALETTE: [Color; 5] = [
     Color::from_rgba(0.161, 0.161, 0.161, 1.0),
@@ -190,15 +187,14 @@ pub fn with_alpha(color: Color, alpha: f32) -> Color {
     }
 }
 
-pub fn slider_style(_theme: &Theme, status: slider::Status) -> slider::Style {
-    // Neutral track sits above the base surface; filled rail leans slightly into the accent.
-    let palette = _theme.extended_palette();
+pub fn slider_style(theme: &Theme, status: slider::Status) -> slider::Style {
+    let palette = theme.extended_palette();
+
     let track = mix_colors(palette.background.base.color, Color::WHITE, 0.16);
     let filled = mix_colors(palette.primary.base.color, Color::WHITE, 0.10);
 
     let (handle_color, border_color, border_width) = match status {
-        slider::Status::Hovered => (filled, BORDER_FOCUS, 1.0),
-        slider::Status::Dragged => (filled, BORDER_FOCUS, 1.0),
+        slider::Status::Hovered | slider::Status::Dragged => (filled, BORDER_FOCUS, 1.0),
         _ => (filled, BORDER_SUBTLE, 1.0),
     };
 
