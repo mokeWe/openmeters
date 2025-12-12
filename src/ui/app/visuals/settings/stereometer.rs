@@ -3,14 +3,23 @@ use super::widgets::{
     SliderRange, labeled_pick_list, labeled_slider, section_title, set_f32, set_if_changed,
 };
 use super::{ModuleSettingsPane, SettingsMessage};
-use crate::ui::settings::{ModuleSettings, SettingsHandle, StereometerMode, StereometerScale, StereometerSettings};
+use crate::ui::settings::{
+    ModuleSettings, PaletteSettings, SettingsHandle, StereometerMode, StereometerScale,
+    StereometerSettings,
+};
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
 use iced::widget::{column, row};
 use iced::{Element, Length};
 
 const MODE_OPTIONS: [StereometerMode; 2] = [StereometerMode::Lissajous, StereometerMode::DotCloud];
-const SCALE_OPTIONS: [StereometerScale; 2] = [StereometerScale::Linear, StereometerScale::Exponential];
+const SCALE_OPTIONS: [StereometerScale; 2] =
+    [StereometerScale::Linear, StereometerScale::Exponential];
+
+#[inline]
+fn st(m: Message) -> SettingsMessage {
+    SettingsMessage::Stereometer(m)
+}
 
 #[derive(Debug)]
 pub struct StereometerSettingsPane {
@@ -38,15 +47,13 @@ pub fn create(
     let settings = visual_manager
         .borrow()
         .module_settings(VisualKind::STEREOMETER)
-        .and_then(|stored| stored.config::<StereometerSettings>())
+        .and_then(|s| s.config::<StereometerSettings>())
         .unwrap_or_default();
-
     let palette = settings
         .palette
         .as_ref()
         .and_then(|p| p.to_array::<1>())
         .unwrap_or(theme::DEFAULT_STEREOMETER_PALETTE);
-
     StereometerSettingsPane {
         visual_id,
         settings,
@@ -60,68 +67,66 @@ impl ModuleSettingsPane for StereometerSettingsPane {
     }
 
     fn view(&self) -> Element<'_, SettingsMessage> {
-        let left_col = column![
-            labeled_pick_list("Mode", &MODE_OPTIONS, Some(self.settings.mode), |mode| {
-                SettingsMessage::Stereometer(Message::Mode(mode))
-            }),
+        let s = &self.settings;
+        let left = column![
+            labeled_pick_list("Mode", &MODE_OPTIONS, Some(s.mode), |m| st(Message::Mode(
+                m
+            ))),
             labeled_slider(
                 "Rotation",
-                self.settings.rotation as f32,
-                format!("{}", self.settings.rotation),
+                s.rotation as f32,
+                s.rotation.to_string(),
                 SliderRange::new(-4.0, 4.0, 1.0),
-                |value| SettingsMessage::Stereometer(Message::Rotation(value)),
+                |v| st(Message::Rotation(v))
             ),
         ]
         .spacing(16)
         .width(Length::Fill);
 
-        let mut right_col = column![labeled_pick_list(
+        let mut right = column![labeled_pick_list(
             "Scale",
             &SCALE_OPTIONS,
-            Some(self.settings.scale),
-            |scale| { SettingsMessage::Stereometer(Message::Scale(scale)) }
-        ),]
+            Some(s.scale),
+            |v| st(Message::Scale(v))
+        )]
         .spacing(16)
         .width(Length::Fill);
-
-        if self.settings.scale == StereometerScale::Exponential {
-            right_col = right_col.push(labeled_slider(
+        if s.scale == StereometerScale::Exponential {
+            right = right.push(labeled_slider(
                 "Scale range",
-                self.settings.scale_range,
-                format!("{:.1}", self.settings.scale_range),
+                s.scale_range,
+                format!("{:.1}", s.scale_range),
                 SliderRange::new(1.0, 30.0, 0.5),
-                |value| SettingsMessage::Stereometer(Message::ScaleRange(value)),
+                |v| st(Message::ScaleRange(v)),
             ));
         }
 
         column![
-            row![left_col, right_col].spacing(24),
+            row![left, right].spacing(24),
             labeled_slider(
                 "Segment duration",
-                self.settings.segment_duration,
-                format!("{:.1} ms", self.settings.segment_duration * 1_000.0),
+                s.segment_duration,
+                format!("{:.1} ms", s.segment_duration * 1000.0),
                 SliderRange::new(0.005, 0.2, 0.001),
-                |value| SettingsMessage::Stereometer(Message::SegmentDuration(value)),
+                |v| st(Message::SegmentDuration(v))
             ),
             labeled_slider(
                 "Sample count",
-                self.settings.target_sample_count as f32,
-                format!("{}", self.settings.target_sample_count),
+                s.target_sample_count as f32,
+                s.target_sample_count.to_string(),
                 SliderRange::new(100.0, 2000.0, 50.0),
-                |value| SettingsMessage::Stereometer(Message::TargetSampleCount(value)),
+                |v| st(Message::TargetSampleCount(v))
             ),
             labeled_slider(
                 "Persistence",
-                self.settings.persistence,
-                format!("{:.2}", self.settings.persistence),
+                s.persistence,
+                format!("{:.2}", s.persistence),
                 SliderRange::new(0.0, 1.0, 0.01),
-                |value| SettingsMessage::Stereometer(Message::Persistence(value)),
+                |v| st(Message::Persistence(v))
             ),
             column![
                 section_title("Colors"),
-                self.palette
-                    .view()
-                    .map(|e| SettingsMessage::Stereometer(Message::Palette(e)))
+                self.palette.view().map(|e| st(Message::Palette(e)))
             ]
             .spacing(8)
         ]
@@ -132,61 +137,36 @@ impl ModuleSettingsPane for StereometerSettingsPane {
     fn handle(
         &mut self,
         message: &SettingsMessage,
-        visual_manager: &VisualManagerHandle,
+        vm: &VisualManagerHandle,
         settings: &SettingsHandle,
     ) {
         let SettingsMessage::Stereometer(msg) = message else {
             return;
         };
-
+        let s = &mut self.settings;
         let changed = match msg {
-            Message::SegmentDuration(value) => {
-                set_f32(&mut self.settings.segment_duration, value.clamp(0.005, 0.2))
-            }
-            Message::TargetSampleCount(value) => {
-                let new_count = (value.round() as usize).clamp(100, 2000);
-                if self.settings.target_sample_count != new_count {
-                    self.settings.target_sample_count = new_count;
-                    true
-                } else {
-                    false
-                }
-            }
-            Message::Persistence(value) => {
-                set_f32(&mut self.settings.persistence, value.clamp(0.0, 1.0))
-            }
-            Message::Rotation(value) => {
-                let new_rotation = (value.round() as i8).clamp(-4, 4);
-                if self.settings.rotation != new_rotation {
-                    self.settings.rotation = new_rotation;
-                    true
-                } else {
-                    false
-                }
-            }
-            Message::Mode(mode) => set_if_changed(&mut self.settings.mode, *mode),
-            Message::Scale(scale) => set_if_changed(&mut self.settings.scale, *scale),
-            Message::ScaleRange(value) => {
-                set_f32(&mut self.settings.scale_range, value.clamp(1.0, 30.0))
-            }
-            Message::Palette(event) => self.palette.update(*event),
+            Message::SegmentDuration(v) => set_f32(&mut s.segment_duration, v.clamp(0.005, 0.2)),
+            Message::TargetSampleCount(v) => set_if_changed(
+                &mut s.target_sample_count,
+                (v.round() as usize).clamp(100, 2000),
+            ),
+            Message::Persistence(v) => set_f32(&mut s.persistence, v.clamp(0.0, 1.0)),
+            Message::Rotation(v) => set_if_changed(&mut s.rotation, (v.round() as i8).clamp(-4, 4)),
+            Message::Mode(m) => set_if_changed(&mut s.mode, *m),
+            Message::Scale(sc) => set_if_changed(&mut s.scale, *sc),
+            Message::ScaleRange(v) => set_f32(&mut s.scale_range, v.clamp(1.0, 30.0)),
+            Message::Palette(e) => self.palette.update(*e),
         };
-
         if changed {
-            self.settings.palette = crate::ui::settings::PaletteSettings::maybe_from_colors(
+            self.settings.palette = PaletteSettings::maybe_from_colors(
                 self.palette.colors(),
                 &theme::DEFAULT_STEREOMETER_PALETTE,
             );
-
-            let module_settings = ModuleSettings::with_config(&self.settings);
-
-            if visual_manager
-                .borrow_mut()
-                .apply_module_settings(VisualKind::STEREOMETER, &module_settings)
-            {
-                settings.update(|mgr| {
-                    mgr.set_module_config(VisualKind::STEREOMETER, &self.settings);
-                });
+            if vm.borrow_mut().apply_module_settings(
+                VisualKind::STEREOMETER,
+                &ModuleSettings::with_config(&self.settings),
+            ) {
+                settings.update(|m| m.set_module_config(VisualKind::STEREOMETER, &self.settings));
             }
         }
     }

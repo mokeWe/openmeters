@@ -1,5 +1,8 @@
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{SliderRange, labeled_pick_list, labeled_slider, section_title, set_f32};
+use super::widgets::{
+    SliderRange, labeled_pick_list, labeled_slider, section_title, set_f32, set_if_changed,
+    update_usize_from_f32,
+};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::spectrogram::FrequencyScale;
 use crate::dsp::spectrum::{AveragingMode, SpectrumConfig};
@@ -10,30 +13,21 @@ use iced::Element;
 use iced::widget::{column, toggler};
 use std::fmt;
 
-const AVERAGING_MIN: f32 = 0.0;
-const AVERAGING_MAX: f32 = 0.95;
-const AVERAGING_STEP: f32 = 0.01;
 const FFT_OPTIONS: [usize; 4] = [1024, 2048, 4096, 8192];
 const SCALE_OPTIONS: [FrequencyScale; 3] = [
     FrequencyScale::Linear,
     FrequencyScale::Logarithmic,
     FrequencyScale::Mel,
 ];
-const PEAK_HOLD_DECAY_MIN: f32 = 0.0;
-const PEAK_HOLD_DECAY_MAX: f32 = 60.0;
-const PEAK_HOLD_DECAY_STEP: f32 = 0.5;
 const AVERAGING_OPTIONS: [SpectrumAveragingMode; 3] = [
     SpectrumAveragingMode::None,
     SpectrumAveragingMode::Exponential,
     SpectrumAveragingMode::PeakHold,
 ];
-const EXPONENTIAL_RANGE: SliderRange =
-    SliderRange::new(AVERAGING_MIN, AVERAGING_MAX, AVERAGING_STEP);
-const PEAK_HOLD_DECAY_RANGE: SliderRange = SliderRange::new(
-    PEAK_HOLD_DECAY_MIN,
-    PEAK_HOLD_DECAY_MAX,
-    PEAK_HOLD_DECAY_STEP,
-);
+const EXPONENTIAL_RANGE: SliderRange = SliderRange::new(0.0, 0.95, 0.01);
+const PEAK_DECAY_RANGE: SliderRange = SliderRange::new(0.0, 60.0, 0.5);
+const SMOOTHING_RADIUS_RANGE: SliderRange = SliderRange::new(0.0, 20.0, 1.0);
+const SMOOTHING_PASSES_RANGE: SliderRange = SliderRange::new(0.0, 5.0, 1.0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum SpectrumAveragingMode {
@@ -81,30 +75,23 @@ pub enum Message {
 }
 
 pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> SpectrumSettingsPane {
-    let stored_settings = visual_manager
+    let stored = visual_manager
         .borrow()
         .module_settings(VisualKind::SPECTRUM)
-        .and_then(|stored| stored.config::<SpectrumSettings>());
+        .and_then(|s| s.config::<SpectrumSettings>());
 
-    let config = stored_settings
-        .as_ref()
-        .map(|settings| settings.to_config())
-        .unwrap_or_default();
+    let config = stored.as_ref().map(|s| s.to_config()).unwrap_or_default();
     let (averaging_mode, averaging_factor, peak_hold_decay) = split_averaging(config.averaging);
-
-    let (palette, smoothing_radius, smoothing_passes) = stored_settings
+    let palette = stored
         .as_ref()
-        .map(|s| {
-            (
-                s.palette_array::<5>()
-                    .unwrap_or(theme::DEFAULT_SPECTRUM_PALETTE),
-                s.smoothing_radius,
-                s.smoothing_passes,
-            )
-        })
-        .unwrap_or((theme::DEFAULT_SPECTRUM_PALETTE, 0, 0));
+        .and_then(|s| s.palette_array::<5>())
+        .unwrap_or(theme::DEFAULT_SPECTRUM_PALETTE);
+    let (smoothing_radius, smoothing_passes) = stored
+        .as_ref()
+        .map(|s| (s.smoothing_radius, s.smoothing_passes))
+        .unwrap_or((0, 0));
 
-    let mut pane = SpectrumSettingsPane {
+    SpectrumSettingsPane {
         visual_id,
         config,
         averaging_mode,
@@ -113,9 +100,7 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Spec
         palette: PaletteEditor::new(&palette, &theme::DEFAULT_SPECTRUM_PALETTE),
         smoothing_radius,
         smoothing_passes,
-    };
-    pane.sync_averaging_config();
-    pane
+    }
 }
 
 impl ModuleSettingsPane for SpectrumSettingsPane {
@@ -124,113 +109,99 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
     }
 
     fn view(&self) -> Element<'_, SettingsMessage> {
-        let fft_row = labeled_pick_list(
-            "FFT size",
-            FFT_OPTIONS.as_slice(),
-            Some(self.config.fft_size),
-            |size| SettingsMessage::Spectrum(Message::FftSize(size)),
-        )
-        .spacing(12);
-
-        let scale_row = labeled_pick_list(
-            "Frequency scale",
-            SCALE_OPTIONS.as_slice(),
-            Some(self.config.frequency_scale),
-            |scale| SettingsMessage::Spectrum(Message::FrequencyScale(scale)),
-        )
-        .spacing(12);
-
-        let direction_label = if self.config.reverse_frequency {
+        let dir_label = if self.config.reverse_frequency {
             "High <- Low"
         } else {
             "Low -> High"
         };
-
-        let direction_toggle = toggler(self.config.reverse_frequency)
-            .label(direction_label)
-            .spacing(8)
-            .text_size(11)
-            .on_toggle(|value| SettingsMessage::Spectrum(Message::ReverseFrequency(value)));
-
-        let grid_toggle = toggler(self.config.show_grid)
-            .label("Show frequency grid")
-            .spacing(8)
-            .text_size(11)
-            .on_toggle(|value| SettingsMessage::Spectrum(Message::ShowGrid(value)));
-
-        let peak_label_toggle = toggler(self.config.show_peak_label)
-            .label("Show peak frequency label")
-            .spacing(8)
-            .text_size(11)
-            .on_toggle(|value| SettingsMessage::Spectrum(Message::ShowPeakLabel(value)));
-
-        let mode_row = labeled_pick_list(
-            "Averaging mode",
-            AVERAGING_OPTIONS.as_slice(),
-            Some(self.averaging_mode),
-            |mode| SettingsMessage::Spectrum(Message::AveragingMode(mode)),
-        )
-        .spacing(12);
+        let toggle = |checked, label, f: fn(bool) -> Message| {
+            toggler(checked)
+                .label(label)
+                .spacing(8)
+                .text_size(11)
+                .on_toggle(move |v| SettingsMessage::Spectrum(f(v)))
+        };
 
         let mut content = column![
-            fft_row,
-            scale_row,
-            direction_toggle,
-            grid_toggle,
-            peak_label_toggle,
-            mode_row
+            labeled_pick_list("FFT size", &FFT_OPTIONS, Some(self.config.fft_size), |s| {
+                SettingsMessage::Spectrum(Message::FftSize(s))
+            })
+            .spacing(12),
+            labeled_pick_list(
+                "Frequency scale",
+                &SCALE_OPTIONS,
+                Some(self.config.frequency_scale),
+                |s| SettingsMessage::Spectrum(Message::FrequencyScale(s))
+            )
+            .spacing(12),
+            toggle(
+                self.config.reverse_frequency,
+                dir_label,
+                Message::ReverseFrequency
+            ),
+            toggle(
+                self.config.show_grid,
+                "Show frequency grid",
+                Message::ShowGrid
+            ),
+            toggle(
+                self.config.show_peak_label,
+                "Show peak frequency label",
+                Message::ShowPeakLabel
+            ),
+            labeled_pick_list(
+                "Averaging mode",
+                &AVERAGING_OPTIONS,
+                Some(self.averaging_mode),
+                |m| SettingsMessage::Spectrum(Message::AveragingMode(m))
+            )
+            .spacing(12),
         ]
         .spacing(16);
 
-        match self.averaging_mode {
-            SpectrumAveragingMode::Exponential => {
-                content = content.push(labeled_slider(
-                    "Exponential factor",
-                    self.averaging_factor,
-                    format!("{:.2}", self.averaging_factor),
-                    EXPONENTIAL_RANGE,
-                    |value| SettingsMessage::Spectrum(Message::AveragingFactor(value)),
-                ));
-            }
-            SpectrumAveragingMode::PeakHold => {
-                content = content.push(labeled_slider(
-                    "Peak decay (dB/s)",
-                    self.peak_hold_decay,
-                    format!("{:.1} dB/s", self.peak_hold_decay),
-                    PEAK_HOLD_DECAY_RANGE,
-                    |value| SettingsMessage::Spectrum(Message::PeakHoldDecay(value)),
-                ));
-            }
-            SpectrumAveragingMode::None => {}
+        if let SpectrumAveragingMode::Exponential = self.averaging_mode {
+            content = content.push(labeled_slider(
+                "Exponential factor",
+                self.averaging_factor,
+                format!("{:.2}", self.averaging_factor),
+                EXPONENTIAL_RANGE,
+                |v| SettingsMessage::Spectrum(Message::AveragingFactor(v)),
+            ));
+        } else if let SpectrumAveragingMode::PeakHold = self.averaging_mode {
+            content = content.push(labeled_slider(
+                "Peak decay (dB/s)",
+                self.peak_hold_decay,
+                format!("{:.1} dB/s", self.peak_hold_decay),
+                PEAK_DECAY_RANGE,
+                |v| SettingsMessage::Spectrum(Message::PeakHoldDecay(v)),
+            ));
         }
 
-        content = content.push(labeled_slider(
-            "Smoothing radius",
-            self.smoothing_radius as f32,
-            format!("{} bins", self.smoothing_radius),
-            SliderRange::new(0.0, 20.0, 1.0),
-            |value| SettingsMessage::Spectrum(Message::SmoothingRadius(value)),
-        ));
-
-        content = content.push(labeled_slider(
-            "Smoothing passes",
-            self.smoothing_passes as f32,
-            format!("{}", self.smoothing_passes),
-            SliderRange::new(0.0, 5.0, 1.0),
-            |value| SettingsMessage::Spectrum(Message::SmoothingPasses(value)),
-        ));
-
-        content = content.push(
-            column![
-                section_title("Colors"),
-                self.palette
-                    .view()
-                    .map(|e| SettingsMessage::Spectrum(Message::Palette(e)))
-            ]
-            .spacing(8),
-        );
-
-        content.into()
+        content
+            .push(labeled_slider(
+                "Smoothing radius",
+                self.smoothing_radius as f32,
+                format!("{} bins", self.smoothing_radius),
+                SMOOTHING_RADIUS_RANGE,
+                |v| SettingsMessage::Spectrum(Message::SmoothingRadius(v)),
+            ))
+            .push(labeled_slider(
+                "Smoothing passes",
+                self.smoothing_passes as f32,
+                self.smoothing_passes.to_string(),
+                SMOOTHING_PASSES_RANGE,
+                |v| SettingsMessage::Spectrum(Message::SmoothingPasses(v)),
+            ))
+            .push(
+                column![
+                    section_title("Colors"),
+                    self.palette
+                        .view()
+                        .map(|e| SettingsMessage::Spectrum(Message::Palette(e)))
+                ]
+                .spacing(8),
+            )
+            .into()
     }
 
     fn handle(
@@ -245,8 +216,7 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
 
         let changed = match msg {
             Message::FftSize(size) => {
-                if self.config.fft_size != *size {
-                    self.config.fft_size = *size;
+                if set_if_changed(&mut self.config.fft_size, *size) {
                     self.config.hop_size = (size / 4).max(1);
                     true
                 } else {
@@ -254,181 +224,92 @@ impl ModuleSettingsPane for SpectrumSettingsPane {
                 }
             }
             Message::AveragingMode(mode) => {
-                if self.averaging_mode != *mode {
-                    self.averaging_mode = *mode;
-                    self.sync_averaging_config();
+                if set_if_changed(&mut self.averaging_mode, *mode) {
+                    self.sync_averaging();
                     true
                 } else {
                     false
                 }
             }
-            Message::AveragingFactor(value) => {
-                let snapped = normalize_factor(*value);
-                if set_f32(&mut self.averaging_factor, snapped) {
-                    self.sync_averaging_config();
+            Message::AveragingFactor(v) => {
+                if set_f32(&mut self.averaging_factor, EXPONENTIAL_RANGE.snap(*v)) {
+                    self.sync_averaging();
                     true
                 } else {
                     false
                 }
             }
-            Message::PeakHoldDecay(value) => {
-                let snapped = normalize_decay(*value);
-                if set_f32(&mut self.peak_hold_decay, snapped) {
-                    self.sync_averaging_config();
+            Message::PeakHoldDecay(v) => {
+                if set_f32(&mut self.peak_hold_decay, PEAK_DECAY_RANGE.snap(*v)) {
+                    self.sync_averaging();
                     true
                 } else {
                     false
                 }
             }
-            Message::FrequencyScale(scale) => {
-                if self.config.frequency_scale != *scale {
-                    self.config.frequency_scale = *scale;
-                    true
-                } else {
-                    false
-                }
+            Message::FrequencyScale(s) => set_if_changed(&mut self.config.frequency_scale, *s),
+            Message::ReverseFrequency(v) => set_if_changed(&mut self.config.reverse_frequency, *v),
+            Message::ShowGrid(v) => set_if_changed(&mut self.config.show_grid, *v),
+            Message::ShowPeakLabel(v) => set_if_changed(&mut self.config.show_peak_label, *v),
+            Message::SmoothingRadius(v) => {
+                update_usize_from_f32(&mut self.smoothing_radius, *v, SMOOTHING_RADIUS_RANGE)
             }
-            Message::ReverseFrequency(value) => {
-                if self.config.reverse_frequency != *value {
-                    self.config.reverse_frequency = *value;
-                    true
-                } else {
-                    false
-                }
+            Message::SmoothingPasses(v) => {
+                update_usize_from_f32(&mut self.smoothing_passes, *v, SMOOTHING_PASSES_RANGE)
             }
-            Message::ShowGrid(value) => {
-                if self.config.show_grid != *value {
-                    self.config.show_grid = *value;
-                    true
-                } else {
-                    false
-                }
-            }
-            Message::ShowPeakLabel(value) => {
-                if self.config.show_peak_label != *value {
-                    self.config.show_peak_label = *value;
-                    true
-                } else {
-                    false
-                }
-            }
-            Message::Palette(event) => self.palette.update(*event),
-            Message::SmoothingRadius(value) => {
-                let new_value = value.round() as usize;
-                if self.smoothing_radius == new_value {
-                    false
-                } else {
-                    self.smoothing_radius = new_value;
-                    true
-                }
-            }
-            Message::SmoothingPasses(value) => {
-                let new_value = value.round() as usize;
-                if self.smoothing_passes == new_value {
-                    false
-                } else {
-                    self.smoothing_passes = new_value;
-                    true
-                }
-            }
+            Message::Palette(e) => self.palette.update(*e),
         };
 
         if changed {
-            apply_spectrum_config(self, visual_manager, settings);
+            self.persist(visual_manager, settings);
         }
-    }
-}
-
-fn apply_spectrum_config(
-    pane: &SpectrumSettingsPane,
-    visual_manager: &VisualManagerHandle,
-    settings: &SettingsHandle,
-) {
-    let mut stored = SpectrumSettings::from_config(&pane.config);
-    stored.palette =
-        PaletteSettings::maybe_from_colors(pane.palette.colors(), &theme::DEFAULT_SPECTRUM_PALETTE);
-    stored.smoothing_radius = pane.smoothing_radius;
-    stored.smoothing_passes = pane.smoothing_passes;
-
-    let module_settings = ModuleSettings::with_config(&stored);
-
-    if visual_manager
-        .borrow_mut()
-        .apply_module_settings(VisualKind::SPECTRUM, &module_settings)
-    {
-        settings.update(|mgr| {
-            mgr.set_module_config(VisualKind::SPECTRUM, &stored);
-        });
     }
 }
 
 impl SpectrumSettingsPane {
-    fn sync_averaging_config(&mut self) {
-        let factor = normalize_factor(self.averaging_factor);
-        if factor.to_bits() != self.averaging_factor.to_bits() {
-            self.averaging_factor = factor;
+    fn sync_averaging(&mut self) {
+        self.config.averaging = match self.averaging_mode {
+            SpectrumAveragingMode::None => AveragingMode::None,
+            SpectrumAveragingMode::Exponential => AveragingMode::Exponential {
+                factor: self.averaging_factor,
+            },
+            SpectrumAveragingMode::PeakHold => AveragingMode::PeakHold {
+                decay_per_second: self.peak_hold_decay,
+            },
         }
+        .normalized();
+    }
 
-        let decay = normalize_decay(self.peak_hold_decay);
-        if decay.to_bits() != self.peak_hold_decay.to_bits() {
-            self.peak_hold_decay = decay;
-        }
-
-        self.config.averaging = combine_averaging(
-            self.averaging_mode,
-            self.averaging_factor,
-            self.peak_hold_decay,
+    fn persist(&self, visual_manager: &VisualManagerHandle, settings: &SettingsHandle) {
+        let mut stored = SpectrumSettings::from_config(&self.config);
+        stored.palette = PaletteSettings::maybe_from_colors(
+            self.palette.colors(),
+            &theme::DEFAULT_SPECTRUM_PALETTE,
         );
+        stored.smoothing_radius = self.smoothing_radius;
+        stored.smoothing_passes = self.smoothing_passes;
+
+        if visual_manager
+            .borrow_mut()
+            .apply_module_settings(VisualKind::SPECTRUM, &ModuleSettings::with_config(&stored))
+        {
+            settings.update(|m| m.set_module_config(VisualKind::SPECTRUM, &stored));
+        }
     }
 }
 
-fn normalize_factor(value: f32) -> f32 {
-    let snapped = EXPONENTIAL_RANGE.snap(value);
-    AveragingMode::clamp_factor(snapped)
-}
-
-fn normalize_decay(value: f32) -> f32 {
-    let snapped = PEAK_HOLD_DECAY_RANGE.snap(value);
-    AveragingMode::clamp_decay(snapped)
-}
-
-fn split_averaging(averaging: AveragingMode) -> (SpectrumAveragingMode, f32, f32) {
-    match averaging.normalized() {
-        AveragingMode::None => (
-            SpectrumAveragingMode::None,
-            default_averaging_factor(),
-            default_peak_hold_decay(),
-        ),
-        AveragingMode::Exponential { factor } => (
-            SpectrumAveragingMode::Exponential,
-            normalize_factor(factor),
-            default_peak_hold_decay(),
-        ),
+fn split_averaging(avg: AveragingMode) -> (SpectrumAveragingMode, f32, f32) {
+    let default_factor = AveragingMode::default_exponential_factor();
+    let default_decay = AveragingMode::default_peak_decay();
+    match avg.normalized() {
+        AveragingMode::None => (SpectrumAveragingMode::None, default_factor, default_decay),
+        AveragingMode::Exponential { factor } => {
+            (SpectrumAveragingMode::Exponential, factor, default_decay)
+        }
         AveragingMode::PeakHold { decay_per_second } => (
             SpectrumAveragingMode::PeakHold,
-            default_averaging_factor(),
-            normalize_decay(decay_per_second),
+            default_factor,
+            decay_per_second,
         ),
     }
-}
-
-fn combine_averaging(mode: SpectrumAveragingMode, factor: f32, decay: f32) -> AveragingMode {
-    let mode = match mode {
-        SpectrumAveragingMode::None => AveragingMode::None,
-        SpectrumAveragingMode::Exponential => AveragingMode::Exponential {
-            factor: normalize_factor(factor),
-        },
-        SpectrumAveragingMode::PeakHold => AveragingMode::PeakHold {
-            decay_per_second: normalize_decay(decay),
-        },
-    };
-    mode.normalized()
-}
-
-fn default_averaging_factor() -> f32 {
-    normalize_factor(AveragingMode::default_exponential_factor())
-}
-
-fn default_peak_hold_decay() -> f32 {
-    normalize_decay(AveragingMode::default_peak_decay())
 }

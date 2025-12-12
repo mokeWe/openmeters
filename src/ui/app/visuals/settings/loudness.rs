@@ -1,12 +1,19 @@
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{CONTROL_SPACING, labeled_pick_list, section_title};
+use super::widgets::{CONTROL_SPACING, labeled_pick_list, section_title, set_if_changed};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::ui::settings::{LoudnessSettings, ModuleSettings, PaletteSettings, SettingsHandle};
 use crate::ui::theme;
 use crate::ui::visualization::loudness::{LOUDNESS_PALETTE_SIZE, MeterMode};
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
-use iced::Element;
-use iced::widget::column;
+use iced::{Element, widget::column};
+
+const PALETTE_LABELS: [&str; 5] = [
+    "Background",
+    "Left Ch 1",
+    "Left Ch 2",
+    "Right Fill",
+    "Guide Line",
+];
 
 #[derive(Debug)]
 pub struct LoudnessSettingsPane {
@@ -17,14 +24,14 @@ pub struct LoudnessSettingsPane {
 
 #[derive(Debug, Clone)]
 pub enum Message {
-    Mode(MeterSide, MeterMode),
+    LeftMode(MeterMode),
+    RightMode(MeterMode),
     Palette(PaletteEvent),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MeterSide {
-    Left,
-    Right,
+#[inline]
+fn loud(message: Message) -> SettingsMessage {
+    SettingsMessage::Loudness(message)
 }
 
 pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> LoudnessSettingsPane {
@@ -38,21 +45,13 @@ pub fn create(visual_id: VisualId, visual_manager: &VisualManagerHandle) -> Loud
         .palette_array::<LOUDNESS_PALETTE_SIZE>()
         .unwrap_or(theme::DEFAULT_LOUDNESS_PALETTE);
 
-    const PALETTE_LABELS: &[&str] = &[
-        "Background",
-        "Left Ch 1",
-        "Left Ch 2",
-        "Right Fill",
-        "Guide Line",
-    ];
-
     LoudnessSettingsPane {
         visual_id,
         settings,
         palette: PaletteEditor::with_labels(
             &palette,
             &theme::DEFAULT_LOUDNESS_PALETTE,
-            PALETTE_LABELS,
+            &PALETTE_LABELS,
         ),
     }
 }
@@ -63,26 +62,29 @@ impl ModuleSettingsPane for LoudnessSettingsPane {
     }
 
     fn view(&self) -> Element<'_, SettingsMessage> {
-        let left_mode = labeled_pick_list(
-            "Left meter mode",
-            MeterMode::ALL,
-            Some(self.settings.left_mode),
-            |mode| SettingsMessage::Loudness(Message::Mode(MeterSide::Left, mode)),
-        )
-        .spacing(CONTROL_SPACING);
+        let mode_pick_list =
+            |label: &'static str, current: MeterMode, ctor: fn(MeterMode) -> Message| {
+                labeled_pick_list(label, MeterMode::ALL, Some(current), move |mode| {
+                    loud(ctor(mode))
+                })
+                .spacing(CONTROL_SPACING)
+            };
 
-        let right_mode = labeled_pick_list(
+        let left_mode = mode_pick_list(
+            "Left meter mode",
+            self.settings.left_mode,
+            Message::LeftMode,
+        );
+        let right_mode = mode_pick_list(
             "Right meter mode",
-            MeterMode::ALL,
-            Some(self.settings.right_mode),
-            |mode| SettingsMessage::Loudness(Message::Mode(MeterSide::Right, mode)),
-        )
-        .spacing(CONTROL_SPACING);
+            self.settings.right_mode,
+            Message::RightMode,
+        );
 
         let palette_controls = self
             .palette
             .view()
-            .map(|event| SettingsMessage::Loudness(Message::Palette(event)));
+            .map(|event| loud(Message::Palette(event)));
 
         column![
             left_mode,
@@ -104,7 +106,8 @@ impl ModuleSettingsPane for LoudnessSettingsPane {
         };
 
         let changed = match msg {
-            Message::Mode(side, mode) => self.set_meter_mode(*side, *mode),
+            Message::LeftMode(mode) => set_if_changed(&mut self.settings.left_mode, *mode),
+            Message::RightMode(mode) => set_if_changed(&mut self.settings.right_mode, *mode),
             Message::Palette(event) => self.palette.update(*event),
         };
 
@@ -115,20 +118,6 @@ impl ModuleSettingsPane for LoudnessSettingsPane {
 }
 
 impl LoudnessSettingsPane {
-    fn set_meter_mode(&mut self, side: MeterSide, mode: MeterMode) -> bool {
-        let target = match side {
-            MeterSide::Left => &mut self.settings.left_mode,
-            MeterSide::Right => &mut self.settings.right_mode,
-        };
-
-        if *target == mode {
-            return false;
-        }
-
-        *target = mode;
-        true
-    }
-
     fn push_changes(&self, visual_manager: &VisualManagerHandle, settings_handle: &SettingsHandle) {
         let mut settings = self.settings.clone();
         settings.palette = PaletteSettings::maybe_from_colors(
@@ -136,15 +125,11 @@ impl LoudnessSettingsPane {
             &theme::DEFAULT_LOUDNESS_PALETTE,
         );
 
-        let module_settings = ModuleSettings::with_config(&settings);
-
-        if visual_manager
-            .borrow_mut()
-            .apply_module_settings(VisualKind::LOUDNESS, &module_settings)
-        {
-            settings_handle.update(|mgr| {
-                mgr.set_module_config(VisualKind::LOUDNESS, &settings);
-            });
+        if visual_manager.borrow_mut().apply_module_settings(
+            VisualKind::LOUDNESS,
+            &ModuleSettings::with_config(&settings),
+        ) {
+            settings_handle.update(|mgr| mgr.set_module_config(VisualKind::LOUDNESS, &settings));
         }
     }
 }

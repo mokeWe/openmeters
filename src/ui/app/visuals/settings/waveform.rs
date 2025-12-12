@@ -1,5 +1,5 @@
 use super::palette::{PaletteEditor, PaletteEvent};
-use super::widgets::{SliderRange, labeled_slider, section_title};
+use super::widgets::{SliderRange, labeled_slider, section_title, set_f32, set_if_changed};
 use super::{ModuleSettingsPane, SettingsMessage};
 use crate::dsp::waveform::{
     DownsampleStrategy, MAX_SCROLL_SPEED, MIN_SCROLL_SPEED, WaveformConfig,
@@ -93,35 +93,20 @@ impl ModuleSettingsPane for WaveformSettingsPane {
         let SettingsMessage::Waveform(msg) = message else {
             return;
         };
-
         let changed = match msg {
-            Message::ScrollSpeed(v) => {
-                let new = v.clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED);
-                if self.config.scroll_speed != new {
-                    self.config.scroll_speed = new;
-                    true
-                } else {
-                    false
-                }
-            }
-            Message::Downsample(d) => {
-                if self.config.downsample != *d {
-                    self.config.downsample = *d;
-                    true
-                } else {
-                    false
-                }
-            }
+            Message::ScrollSpeed(v) => set_f32(
+                &mut self.config.scroll_speed,
+                v.clamp(MIN_SCROLL_SPEED, MAX_SCROLL_SPEED),
+            ),
+            Message::Downsample(d) => set_if_changed(&mut self.config.downsample, *d),
             Message::Palette(e) => self.palette.update(*e),
         };
-
         if changed {
             let mut stored = WaveformSettings::from_config(&self.config);
             stored.palette = PaletteSettings::maybe_from_colors(
                 self.palette.colors(),
                 &theme::DEFAULT_WAVEFORM_PALETTE,
             );
-
             if vm
                 .borrow_mut()
                 .apply_module_settings(VisualKind::WAVEFORM, &ModuleSettings::with_config(&stored))

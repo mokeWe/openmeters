@@ -163,7 +163,13 @@ impl StereometerState {
     }
 
     pub fn view_settings(&self) -> (f32, StereometerMode, StereometerScale, f32, i8) {
-        (self.persistence, self.mode, self.scale, self.scale_range, self.rotation)
+        (
+            self.persistence,
+            self.mode,
+            self.scale,
+            self.scale_range,
+            self.rotation,
+        )
     }
 
     fn visual_params(&self, bounds: Rectangle) -> Option<StereometerParams> {
