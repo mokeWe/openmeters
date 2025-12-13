@@ -423,8 +423,8 @@ impl std::fmt::Display for StereometerMode {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum StereometerScale {
-    #[default]
     Linear,
+    #[default]
     Exponential,
 }
 
@@ -453,6 +453,8 @@ pub struct StereometerSettings {
     #[serde(default)]
     pub rotation: i8,
     #[serde(default)]
+    pub flip: bool,
+    #[serde(default)]
     pub palette: Option<PaletteSettings>,
 }
 
@@ -475,7 +477,8 @@ impl StereometerSettings {
             mode: StereometerMode::default(),
             scale: StereometerScale::default(),
             scale_range: default_scale_range(),
-            rotation: 0,
+            rotation: -1,
+            flip: true,
             palette: None,
         }
     }

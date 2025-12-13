@@ -14,6 +14,7 @@ pub struct StereometerParams {
     pub trace_color: [f32; 4],
     pub mode: StereometerMode,
     pub rotation: i8,
+    pub flip: bool,
 }
 
 #[derive(Debug)]
@@ -47,9 +48,11 @@ impl StereometerPrimitive {
         verts
     }
 
-    fn rotation_sin_cos(&self) -> (f32, f32) {
-        let theta = (self.params.rotation as f32 - 1.0) * std::f32::consts::FRAC_PI_4;
-        theta.sin_cos()
+    fn transform_sample(&self, l: f32, r: f32, sin_theta: f32, cos_theta: f32) -> (f32, f32) {
+        let (l, r) = if self.params.flip { (r, l) } else { (l, r) };
+        let x = l * cos_theta + r * sin_theta;
+        let y = l * sin_theta - r * cos_theta;
+        (x, y)
     }
 
     fn build_dots(
@@ -65,16 +68,15 @@ impl StereometerPrimitive {
             return;
         }
 
-        let (sin_theta, cos_theta) = self.rotation_sin_cos();
+        let theta = (self.params.rotation as f32) * std::f32::consts::FRAC_PI_4;
+        let (sin_theta, cos_theta) = theta.sin_cos();
         let [cr, cg, cb, ca] = self.params.trace_color;
 
         for (i, &(l, r)) in self.params.points.iter().enumerate() {
             let alpha = ca * (i + 1) as f32 / n as f32;
-            // Rotate (L, R) into display coordinates
-            let rx = r * cos_theta + l * sin_theta;
-            let ry = r * -sin_theta + l * cos_theta;
-            let px = cx + rx * radius;
-            let py = cy - ry * radius;
+            let (dx, dy) = self.transform_sample(l, r, sin_theta, cos_theta);
+            let px = cx + dx * radius;
+            let py = cy + dy * radius;
             self.build_dot(verts, px, py, [cr, cg, cb, alpha], clip);
         }
     }
@@ -92,26 +94,24 @@ impl StereometerPrimitive {
             return;
         }
 
-        let (sin_theta, cos_theta) = self.rotation_sin_cos();
+        let theta = (self.params.rotation as f32) * std::f32::consts::FRAC_PI_4;
+        let (sin_theta, cos_theta) = theta.sin_cos();
         let [cr, cg, cb, ca] = self.params.trace_color;
 
         for i in 0..n - 1 {
             let (l0, r0) = self.params.points[i];
             let (l1, r1) = self.params.points[i + 1];
 
-            // Rotate (L, R)
-            let rx0 = r0 * cos_theta + l0 * sin_theta;
-            let ry0 = r0 * -sin_theta + l0 * cos_theta;
-            let rx1 = r1 * cos_theta + l1 * sin_theta;
-            let ry1 = r1 * -sin_theta + l1 * cos_theta;
+            let (dx0, dy0) = self.transform_sample(l0, r0, sin_theta, cos_theta);
+            let (dx1, dy1) = self.transform_sample(l1, r1, sin_theta, cos_theta);
 
             let p0 = (
-                cx + rx0.clamp(-1.0, 1.0) * radius,
-                cy - ry0.clamp(-1.0, 1.0) * radius,
+                cx + dx0.clamp(-1.0, 1.0) * radius,
+                cy + dy0.clamp(-1.0, 1.0) * radius,
             );
             let p1 = (
-                cx + rx1.clamp(-1.0, 1.0) * radius,
-                cy - ry1.clamp(-1.0, 1.0) * radius,
+                cx + dx1.clamp(-1.0, 1.0) * radius,
+                cy + dy1.clamp(-1.0, 1.0) * radius,
             );
 
             let t0 = i as f32 / (n - 1) as f32;

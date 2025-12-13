@@ -9,7 +9,7 @@ use crate::ui::settings::{
 };
 use crate::ui::theme;
 use crate::ui::visualization::visual_manager::{VisualId, VisualKind, VisualManagerHandle};
-use iced::widget::{column, row};
+use iced::widget::{column, row, toggler};
 use iced::{Element, Length};
 
 const MODE_OPTIONS: [StereometerMode; 2] = [StereometerMode::Lissajous, StereometerMode::DotCloud];
@@ -34,6 +34,7 @@ pub enum Message {
     TargetSampleCount(f32),
     Persistence(f32),
     Rotation(f32),
+    Flip(bool),
     Mode(StereometerMode),
     Scale(StereometerScale),
     ScaleRange(f32),
@@ -79,6 +80,9 @@ impl ModuleSettingsPane for StereometerSettingsPane {
                 SliderRange::new(-4.0, 4.0, 1.0),
                 |v| st(Message::Rotation(v))
             ),
+            toggler(s.flip)
+                .label("Flip")
+                .on_toggle(|v| st(Message::Flip(v))),
         ]
         .spacing(16)
         .width(Length::Fill);
@@ -152,6 +156,7 @@ impl ModuleSettingsPane for StereometerSettingsPane {
             ),
             Message::Persistence(v) => set_f32(&mut s.persistence, v.clamp(0.0, 1.0)),
             Message::Rotation(v) => set_if_changed(&mut s.rotation, (v.round() as i8).clamp(-4, 4)),
+            Message::Flip(v) => set_if_changed(&mut s.flip, *v),
             Message::Mode(m) => set_if_changed(&mut s.mode, *m),
             Message::Scale(sc) => set_if_changed(&mut s.scale, *sc),
             Message::ScaleRange(v) => set_f32(&mut s.scale_range, v.clamp(1.0, 30.0)),

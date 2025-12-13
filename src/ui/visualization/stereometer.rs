@@ -78,6 +78,7 @@ pub struct StereometerState {
     scale: StereometerScale,
     scale_range: f32,
     rotation: i8,
+    flip: bool,
     instance_id: u64,
 }
 
@@ -92,6 +93,7 @@ impl StereometerState {
             scale: StereometerScale::default(),
             scale_range: 15.0,
             rotation: 0,
+            flip: false,
             instance_id: next_instance_id(),
         }
     }
@@ -102,6 +104,7 @@ impl StereometerState {
         self.scale = settings.scale;
         self.scale_range = settings.scale_range;
         self.rotation = settings.rotation.clamp(-4, 4);
+        self.flip = settings.flip;
     }
 
     pub fn set_palette(&mut self, palette: &[Color]) {
@@ -184,6 +187,7 @@ impl StereometerState {
             trace_color: theme::color_to_rgba(self.trace_color),
             mode: self.mode,
             rotation: self.rotation,
+            flip: self.flip,
         })
     }
 }
