@@ -51,7 +51,7 @@ Checked features are implemented, unchecked features are planned. If you have id
   - [x] Two visual modes:
     - [x] Lissajous (draws lines between samples)
     - [x] Dot cloud (plots samples as points)
-  - [x] Flip L/R channels (for M/S monitoring)
+  - [x] Ability to flip L/R channels (for M/S monitoring)
   - [x] Adjustable scale (linear/exponential)
   - [x] Adjustable rotation
 - [x] **waveform**
