@@ -16,6 +16,9 @@ Checked features are implemented, unchecked features are planned. If you have id
 
 - [x] Per-application capture
 - [x] Per-device capture
+- [x] Pop-out windows for individual visuals
+- [x] Adjustable background color & opacity
+- [x] Ability to enable/disable window decorations
 
 #### visuals
 
@@ -43,11 +46,16 @@ Checked features are implemented, unchecked features are planned. If you have id
     - [x] none
   - [x] mel, log, and linear scales
   - [x] Adjustable colormap
-- [x] **stereometer**
+- [x] **stereometer** (X/Y vector scope, M/S goniometer)
   - [ ] Correlation meter
-  - [x] Vectorscope/XY mode
-  - [x] 'Dot cloud' (Mid/Side goniometer) mode
+  - [x] Two visual modes:
+    - [x] Lissajous (draws lines between samples)
+    - [x] Dot cloud (plots samples as points)
+  - [x] Flip L/R channels (for M/S monitoring)
+  - [x] Adjustable scale (linear/exponential)
+  - [x] Adjustable rotation
 - [x] **waveform**
+  - [x] adjustable scroll speed
   - [x] Adjustable colormap
 
 ## build and run
@@ -82,6 +90,7 @@ Upon launch you'll see a configuration page. Here you can select which applicati
 - `ctrl+shift+h`: Show/hide top bar
 - `p`: Pause/resume audio capture
 - `q` twice: Quit application
+- `ctrl+space`: Pop-out/in hovered visual.
 
 ### configuration
 
